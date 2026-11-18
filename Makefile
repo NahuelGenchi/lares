@@ -18,7 +18,7 @@ HEADERS = $(wildcard src/*.h src/pad/*.h)
 
 all: build/lares build/lares-pad
 
-build/resources.c: data/lares.gresource.xml data/style.css data/pad/controller.png data/pad/glow.png
+build/resources.c: data/lares.gresource.xml data/style.css data/pad/controller.txt
 	@mkdir -p build
 	glib-compile-resources --sourcedir=data --generate-source --target=$@ $<
 
@@ -40,6 +40,7 @@ install: all
 	install -Dm644 -t $(ADDONS)/$(ADDON) data/addon/metadata.json data/addon/extension.js \
 		data/addon/controllerArt.js data/addon/stylesheet.css
 	install -Dm644 -t $(ADDONS)/$(ADDON)/icons data/addon/icons/lares-pad-symbolic.svg
+	@# The addon still draws Padlight's picture and glow; the window draws data/pad/controller.txt.
 	install -Dm644 -t $(ADDONS)/$(ADDON)/images data/pad/controller.png data/pad/glow.png
 	@# Monocraft, Lares' lettering, unless it's installed already (SIL OFL 1.1)
 	@if ! fc-list | grep -qi monocraft; then \
@@ -55,7 +56,7 @@ check: build/resources.c
 	$(CC) $(CFLAGS) -Werror $(GTK) -o build/check/lares $(APP_SOURCES) $(GTK_LIBS)
 	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/lares-pad $(HELPER_SOURCES) $(GIO_LIBS)
 	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/unit tests/unit.c src/pad/pads.c src/pad/padconf.c \
-		src/remote_model.c $(GIO_LIBS)
+		src/pad_map.c src/remote_model.c $(GIO_LIBS)
 	build/check/unit
 	@for f in data/addon/*.js; do node --check "$$f" || exit 1; done
 	@echo "make check: all passed"

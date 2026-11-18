@@ -1,299 +1,252 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "pad_picture.h"
-#include "pad/pads.h"
+#include "pad_map.h"
 #include <math.h>
 #include <string.h>
 
-/* Every position is in pixels of the full-size artwork (1444 by 1007). */
-#define ART_W          1444.0
-#define ART_H          1007.0
-#define MARGIN_SIDE    130.0     /* room for the glow */
-#define MARGIN_TOP     110.0     /* and above it, for the trigger gauges */
-#define MARGIN_BOTTOM  100.0
-#define GLOW_MARGIN    130.0     /* the glow picture is the outline, blurred, this much around */
-#define CENTER_X       721.25
-#define PRESSED_ALPHA  0.82
-#define SEEN_ALPHA     0.36      /* buttons the test has seen, while they're up again */
-#define STICK_ALPHA    0.6
-#define CAP_RADIUS     80.0
-#define WELL_RADIUS    92.5
-#define STICK_TRAVEL   30.0
-#define PLACEHOLDER_ALPHA 0.16
-#define SHAKE_PX       3.0
-#define SHAKE_STEP_MS  45.0
-#define SHAKE_STEPS    8
+#define PIXEL             2       /* screen pixels per map pixel, as Monocraft's at 18 px */
+#define FAINT_ALPHA       0.4f    /* the D-pad's middle lines */
+#define SEEN_ALPHA        0.36f   /* buttons the test has seen, while they're up again */
+#define PLACEHOLDER_ALPHA 0.3f
+#define SHAKE_STEP_MS     45.0
+#define SHAKE_STEPS       8
 
-static const double GREEN[3] = { 0.2, 0.86, 0.2 };
-static const double GLOW_DARK[4] = { 0.2, 0.86, 0.2, 0.55 };
-static const double GLOW_LIGHT[4] = { 0.06, 0.49, 0.06, 0.5 };
+/* The map is read the first time a picture is made, and only then: about
+ * 35 KB that the rest of Lares never pays for. */
+static PadMap *map;
+/* Each trigger gauge's inside, in map pixels; LT's fills from the left, RT's
+ * from the right, so the two mirror each other. */
+static struct { int x0, x1; } gauges[2];
 
-static const struct { PadButton b; double x, y, r; } ROUND[] = {
-    { PB_A, 1086.5, 370, 45.5 }, { PB_B, 1182.5, 277.5, 45.5 }, { PB_X, 988.5, 275.5, 45.5 },
-    { PB_Y, 1082.5, 183, 44.5 }, { PB_VIEW, 618, 277.5, 33.5 }, { PB_MENU, 824.5, 277.5, 33.5 },
-    { PB_XBOX, 721.5, 134, 53 },
-};
-static const struct { PadButton b; double x, y, w, h, r; } BOXES[] = {
-    { PB_SHARE, 680, 328, 80, 50, 20 }, { PB_UP, 499, 407, 71, 69, 12 }, { PB_DOWN, 499, 546, 71, 63, 12 },
-    { PB_LEFT, 433, 476, 66, 70, 12 }, { PB_RIGHT, 570, 476, 70, 70, 12 },
-};
-/* The left bumper's lower edge follows the seam with the faceplate; the rest
- * overshoots the outline and is trimmed by the artwork's own transparency. */
-static const double LEFT_BUMPER[][2] = {
-    { 200, 150 }, { 212, 140 }, { 228, 121 }, { 260, 98 }, { 300, 78 }, { 340, 63 }, { 380, 52 },
-    { 420, 44 }, { 460, 39 }, { 500, 37 }, { 506, 30 }, { 506, -10 }, { 200, -10 },
-};
-static const double LEFT_TRIGGER[5] = { 300, -56, 170, 44, 14 };
-
-/* The artwork is decoded once, the first time a picture is shown, and only
- * then: about 1.5 MB that the rest of Lares never pays for. */
-static cairo_surface_t *art, *glow;
+/* What a frame shows, worked out from the controller's state: a new state
+ * that looks the same doesn't paint the picture again. */
+typedef struct {
+    guint32 held, seen;
+    int caps[2][2];     /* each stick cap's offset, in map pixels */
+    int pulled[2];      /* how many columns of each trigger gauge are lit */
+} Look;
 
 struct _LaresPadPicture {
     GtkWidget parent;
-    int height;
+    GtkWidget *lit;     /* carries the accent color; see PadLit */
     gboolean placeholder;
     PadState state;
+    Look look;
     guint32 seen;
     gint64 shake_start;
-    double shake;
+    int shake;          /* -1, 0 or 1 map pixel */
     guint tick;
-    /* The artwork and glow scaled to this picture's size, made once per size:
-     * a frame then only copies them and paints what's lit. */
-    cairo_surface_t *art_cache, *glow_cache;
-    double cache_fit;
+    /* The picture at one screen pixel per map pixel, made again only when
+     * its look or colors change; the snapshot scales it up. */
+    GdkTexture *texture;
 };
 
 G_DEFINE_FINAL_TYPE(LaresPadPicture, lares_pad_picture, GTK_TYPE_WIDGET)
 
-/* ---------------------------------------------------------------- loading */
-
-typedef struct { const guchar *data; gsize left; } PngSource;
-
-static cairo_status_t read_png(void *closure, unsigned char *out, unsigned int length)
+static void invalidate(LaresPadPicture *s)
 {
-    PngSource *s = closure;
-    if (length > s->left) return CAIRO_STATUS_READ_ERROR;
-    memcpy(out, s->data, length);
-    s->data += length;
-    s->left -= length;
-    return CAIRO_STATUS_SUCCESS;
+    g_clear_object(&s->texture);
+    gtk_widget_queue_draw(GTK_WIDGET(s));
 }
 
-static cairo_surface_t *load_png(const char *resource)
+/* ---------------------------------------------------------- accent color */
+
+/* GTK hands a widget only its own `color`, so the accent comes from a tiny
+ * child styled `padpicture > lit { color: var(--accent); }`. It is never
+ * drawn and takes no room. */
+#define PAD_TYPE_LIT (pad_lit_get_type())
+G_DECLARE_FINAL_TYPE(PadLit, pad_lit, PAD, LIT, GtkWidget)
+struct _PadLit { GtkWidget parent; };
+G_DEFINE_FINAL_TYPE(PadLit, pad_lit, GTK_TYPE_WIDGET)
+
+static void pad_lit_css_changed(GtkWidget *w, GtkCssStyleChange *change)
 {
-    GBytes *bytes = g_resources_lookup_data(resource, 0, NULL);
-    if (!bytes) return NULL;
-    PngSource src;
-    src.data = g_bytes_get_data(bytes, &src.left);
-    cairo_surface_t *s = cairo_image_surface_create_from_png_stream(read_png, &src);
+    GTK_WIDGET_CLASS(pad_lit_parent_class)->css_changed(w, change);
+    GtkWidget *picture = gtk_widget_get_parent(w);
+    if (picture) invalidate(LARES_PAD_PICTURE(picture));
+}
+
+static void pad_lit_class_init(PadLitClass *k)
+{
+    GtkWidgetClass *wc = GTK_WIDGET_CLASS(k);
+    wc->css_changed = pad_lit_css_changed;
+    gtk_widget_class_set_css_name(wc, "lit");
+    gtk_widget_class_set_accessible_role(wc, GTK_ACCESSIBLE_ROLE_PRESENTATION);
+}
+
+static void pad_lit_init(PadLit *s) {}
+
+/* ---------------------------------------------------------------- loading */
+
+static void load_map(void)
+{
+    if (map) return;
+    GBytes *bytes = g_resources_lookup_data("/com/nahuelgenchi/Lares/pad/controller.txt", 0, NULL);
+    if (!bytes) return;
+    gsize length;
+    const char *text = g_bytes_get_data(bytes, &length);
+    GError *error = NULL;
+    map = pad_map_parse(text, length, &error);
     g_bytes_unref(bytes);
-    if (cairo_surface_status(s) != CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(s); return NULL; }
-    return s;
+    if (!map) {
+        g_warning("The controller picture's map: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+    for (int g = 0; g < 2; g++) {
+        gauges[g].x0 = map->width;
+        gauges[g].x1 = -1;
+    }
+    for (int y = 0; y < map->height; y++)
+        for (int x = 0; x < map->width; x++) {
+            guint8 cell = pad_map_at(map, x, y);
+            PadButton b = pad_cell_button(cell);
+            if (pad_cell_kind(cell) != PAD_CELL_AREA || (b != PB_LT && b != PB_RT)) continue;
+            int g = b == PB_RT;
+            gauges[g].x0 = MIN(gauges[g].x0, x);
+            gauges[g].x1 = MAX(gauges[g].x1, x);
+        }
 }
 
 /* ---------------------------------------------------------------- drawing */
 
-static void rounded_box(cairo_t *cr, double x, double y, double w, double h, double r)
+/* A stick moves in a circle; the raw corners reach past it. */
+static void cap_offset(float dx, float dy, int out[2])
 {
-    cairo_new_sub_path(cr);
-    cairo_arc(cr, x + w - r, y + r, r, -G_PI / 2, 0);
-    cairo_arc(cr, x + w - r, y + h - r, r, 0, G_PI / 2);
-    cairo_arc(cr, x + r, y + h - r, r, G_PI / 2, G_PI);
-    cairo_arc(cr, x + r, y + r, r, G_PI, 3 * G_PI / 2);
-    cairo_close_path(cr);
-}
-
-static double mirror(double x) { return 2 * CENTER_X - x; }
-
-static cairo_surface_t *scaled(cairo_surface_t *src, double out_w, double fit)
-{
-    double k = out_w * fit / cairo_image_surface_get_width(src);
-    int w = (int)ceil(cairo_image_surface_get_width(src) * k);
-    int h = (int)ceil(cairo_image_surface_get_height(src) * k);
-    cairo_surface_t *dst = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, MAX(1, w), MAX(1, h));
-    cairo_t *cr = cairo_create(dst);
-    cairo_scale(cr, k, k);
-    cairo_set_source_surface(cr, src, 0, 0);
-    cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
-    cairo_paint(cr);
-    cairo_destroy(cr);
-    return dst;
-}
-
-static void ensure_cache(LaresPadPicture *s, double fit)
-{
-    if (s->art_cache && fabs(s->cache_fit - fit) < 1e-6) return;
-    g_clear_pointer(&s->art_cache, cairo_surface_destroy);
-    g_clear_pointer(&s->glow_cache, cairo_surface_destroy);
-    s->art_cache = scaled(art, ART_W, fit);
-    s->glow_cache = scaled(glow, ART_W + 2 * GLOW_MARGIN, fit);
-    s->cache_fit = fit;
-}
-
-/* Called in artwork units; the cache is in pixels, so it's drawn 1:1. */
-static void paint_art(LaresPadPicture *s, cairo_t *cr)
-{
-    cairo_save(cr);
-    cairo_scale(cr, 1 / s->cache_fit, 1 / s->cache_fit);
-    cairo_set_source_surface(cr, s->art_cache, 0, 0);
-    cairo_paint(cr);
-    cairo_restore(cr);
-}
-
-/* The controller's flat shape in one color. */
-static void paint_silhouette(LaresPadPicture *s, cairo_t *cr, const double rgb[3], double alpha)
-{
-    cairo_save(cr);
-    cairo_scale(cr, 1 / s->cache_fit, 1 / s->cache_fit);
-    cairo_set_source_rgba(cr, rgb[0], rgb[1], rgb[2], alpha);
-    cairo_mask_surface(cr, s->art_cache, 0, 0);
-    cairo_restore(cr);
-}
-
-static void draw_glow(LaresPadPicture *s, cairo_t *cr, const double c[4])
-{
-    cairo_save(cr);
-    cairo_translate(cr, -GLOW_MARGIN, -GLOW_MARGIN);
-    cairo_scale(cr, 1 / s->cache_fit, 1 / s->cache_fit);
-    cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]);
-    cairo_mask_surface(cr, s->glow_cache, 0, 0);
-    cairo_restore(cr);
-}
-
-static void draw_trigger(cairo_t *cr, double value, gboolean right, const double fg[3], gboolean seen)
-{
-    double x = LEFT_TRIGGER[0], y = LEFT_TRIGGER[1], w = LEFT_TRIGGER[2], h = LEFT_TRIGGER[3], r = LEFT_TRIGGER[4];
-    double left = right ? mirror(x + w) : x;
-    rounded_box(cr, left, y, w, h, r);
-    if (seen) cairo_set_source_rgba(cr, GREEN[0], GREEN[1], GREEN[2], SEEN_ALPHA);
-    else cairo_set_source_rgba(cr, fg[0], fg[1], fg[2], 0.18);
-    cairo_fill(cr);
-    double pulled = CLAMP(value, 0, 1);
-    if (pulled <= 0) return;
-    /* Fills from the outside in, so the two gauges mirror each other. */
-    cairo_save(cr);
-    cairo_rectangle(cr, right ? left + w * (1 - pulled) : left, y, w * pulled, h);
-    cairo_clip(cr);
-    rounded_box(cr, left, y, w, h, r);
-    cairo_set_source_rgb(cr, GREEN[0], GREEN[1], GREEN[2]);
-    cairo_fill(cr);
-    cairo_restore(cr);
-}
-
-static void draw_bumper(LaresPadPicture *s, cairo_t *cr, gboolean right, double alpha)
-{
-    cairo_save(cr);
-    for (guint i = 0; i < G_N_ELEMENTS(LEFT_BUMPER); i++) {
-        double x = right ? mirror(LEFT_BUMPER[i][0]) : LEFT_BUMPER[i][0];
-        if (i == 0) cairo_move_to(cr, x, LEFT_BUMPER[i][1]);
-        else cairo_line_to(cr, x, LEFT_BUMPER[i][1]);
-    }
-    cairo_close_path(cr);
-    cairo_clip(cr);
-    paint_silhouette(s, cr, GREEN, alpha);
-    cairo_restore(cr);
-}
-
-static void draw_stick(LaresPadPicture *s, cairo_t *cr, double cx, double cy, double dx, double dy, double alpha)
-{
-    /* A real stick moves in a circle; the raw corners reach past it. */
     double reach = hypot(dx, dy);
     if (reach > 1) { dx /= reach; dy /= reach; }
-    /* The empty well where the cap sits in the artwork */
-    cairo_arc(cr, cx, cy, WELL_RADIUS, 0, 2 * G_PI);
-    cairo_set_source_rgb(cr, 0.03, 0.03, 0.03);
-    cairo_fill(cr);
-    /* The cap itself, cut from the artwork and slid to where the stick is */
-    cairo_save(cr);
-    cairo_translate(cr, dx * STICK_TRAVEL, dy * STICK_TRAVEL);
-    cairo_arc(cr, cx, cy, CAP_RADIUS, 0, 2 * G_PI);
-    cairo_clip(cr);
-    paint_art(s, cr);
-    if (alpha > 0) {
-        cairo_set_source_rgba(cr, GREEN[0], GREEN[1], GREEN[2], alpha);
-        cairo_paint(cr);
-    }
-    cairo_restore(cr);
+    out[0] = (int)lround(dx * PAD_MAP_STICK_TRAVEL);
+    out[1] = (int)lround(dy * PAD_MAP_STICK_TRAVEL);
 }
 
-static double lit(LaresPadPicture *s, PadButton b, double pressed_alpha)
+static Look look_of(LaresPadPicture *s)
 {
-    if (s->state.buttons & PB_BIT(b)) return pressed_alpha;
-    return s->seen & PB_BIT(b) ? SEEN_ALPHA : 0;
+    Look l = { 0 };
+    if (s->placeholder) return l;
+    /* The gauges stand for the triggers, lit as far as they are pulled. */
+    l.held = s->state.buttons & ~(PB_BIT(PB_LT) | PB_BIT(PB_RT));
+    l.seen = s->seen;
+    cap_offset(s->state.lx, s->state.ly, l.caps[0]);
+    cap_offset(s->state.rx, s->state.ry, l.caps[1]);
+    float pull[2] = { s->state.lt, s->state.rt };
+    for (int g = 0; g < 2; g++)
+        l.pulled[g] = (int)lround(CLAMP(pull[g], 0, 1) * (gauges[g].x1 - gauges[g].x0 + 1));
+    return l;
 }
 
-static void draw_controller(LaresPadPicture *s, cairo_t *cr, double width, double height, const double fg[3])
+static gboolean gauge_lit(const Look *l, PadButton b, int x)
 {
-    double full_w = ART_W + 2 * MARGIN_SIDE, full_h = MARGIN_TOP + ART_H + MARGIN_BOTTOM;
-    double fit = MIN(width / full_w, height / full_h);
-    ensure_cache(s, fit);
-    cairo_save(cr);
-    /* Whole pixels, so the cached artwork is copied without resampling. */
-    cairo_translate(cr, round((width - full_w * fit) / 2 + s->shake), round((height - full_h * fit) / 2));
-    cairo_scale(cr, fit, fit);
-    cairo_translate(cr, MARGIN_SIDE, MARGIN_TOP);
-
-    /* Light text means a dark background. */
-    gboolean on_dark = 0.299 * fg[0] + 0.587 * fg[1] + 0.114 * fg[2] > 0.5;
-    draw_glow(s, cr, on_dark ? GLOW_DARK : GLOW_LIGHT);
-    draw_trigger(cr, s->state.lt, FALSE, fg, s->seen & PB_BIT(PB_LT));
-    draw_trigger(cr, s->state.rt, TRUE, fg, s->seen & PB_BIT(PB_RT));
-    paint_art(s, cr);
-    if (lit(s, PB_LB, PRESSED_ALPHA) > 0) draw_bumper(s, cr, FALSE, lit(s, PB_LB, PRESSED_ALPHA));
-    if (lit(s, PB_RB, PRESSED_ALPHA) > 0) draw_bumper(s, cr, TRUE, lit(s, PB_RB, PRESSED_ALPHA));
-    for (guint i = 0; i < G_N_ELEMENTS(ROUND); i++) {
-        double a = lit(s, ROUND[i].b, PRESSED_ALPHA);
-        if (a <= 0) continue;
-        cairo_set_source_rgba(cr, GREEN[0], GREEN[1], GREEN[2], a);
-        cairo_arc(cr, ROUND[i].x, ROUND[i].y, ROUND[i].r, 0, 2 * G_PI);
-        cairo_fill(cr);
-    }
-    for (guint i = 0; i < G_N_ELEMENTS(BOXES); i++) {
-        double a = lit(s, BOXES[i].b, PRESSED_ALPHA);
-        if (a <= 0) continue;
-        cairo_set_source_rgba(cr, GREEN[0], GREEN[1], GREEN[2], a);
-        rounded_box(cr, BOXES[i].x, BOXES[i].y, BOXES[i].w, BOXES[i].h, BOXES[i].r);
-        cairo_fill(cr);
-    }
-    draw_stick(s, cr, 358, 277.5, s->state.lx, s->state.ly, lit(s, PB_LS, STICK_ALPHA));
-    draw_stick(s, cr, 906.5, 490.5, s->state.rx, s->state.ry, lit(s, PB_RS, STICK_ALPHA));
-    cairo_restore(cr);
+    int g = b == PB_RT;
+    if (g) return x > gauges[g].x1 - l->pulled[g];
+    return x < gauges[g].x0 + l->pulled[g];
 }
 
-static void draw_placeholder(LaresPadPicture *s, cairo_t *cr, double width, double height, const double fg[3])
+static void put(guchar *px, int x, int y, PadPaint paint, const GdkRGBA *fg, const GdkRGBA *accent,
+                float strength)
 {
-    double fit = MIN(width / ART_W, height / ART_H);
-    ensure_cache(s, fit);
-    cairo_save(cr);
-    cairo_translate(cr, round((width - ART_W * fit) / 2), round((height - ART_H * fit) / 2));
-    cairo_scale(cr, fit, fit);
-    paint_silhouette(s, cr, fg, PLACEHOLDER_ALPHA);
-    cairo_restore(cr);
+    const GdkRGBA *c = fg;
+    float alpha = 1;
+    switch (paint) {
+    case PAD_PAINT_NONE: return;
+    case PAD_PAINT_LINE: break;
+    case PAD_PAINT_FAINT: alpha = FAINT_ALPHA; break;
+    case PAD_PAINT_LIT: c = accent; break;
+    case PAD_PAINT_SEEN: c = accent; alpha = SEEN_ALPHA; break;
+    }
+    if (x < 0 || y < 0 || x >= map->width || y >= map->height) return;
+    guchar *p = px + ((gsize)y * map->width + x) * 4;
+    p[0] = (guchar)lroundf(c->red * 255);
+    p[1] = (guchar)lroundf(c->green * 255);
+    p[2] = (guchar)lroundf(c->blue * 255);
+    p[3] = (guchar)lroundf(c->alpha * alpha * strength * 255);
+}
+
+static GdkTexture *paint(LaresPadPicture *s)
+{
+    GdkRGBA fg, accent;
+    gtk_widget_get_color(GTK_WIDGET(s), &fg);
+    gtk_widget_get_color(s->lit, &accent);
+    const Look *l = &s->look;
+    float strength = s->placeholder ? PLACEHOLDER_ALPHA : 1;
+    gsize size = (gsize)map->width * map->height * 4;
+    guchar *px = g_malloc0(size);
+
+    /* Everything that stays put, then the caps where the sticks have them. */
+    for (int pass = 0; pass < 2; pass++)
+        for (int y = 0; y < map->height; y++)
+            for (int x = 0; x < map->width; x++) {
+                guint8 cell = pad_map_at(map, x, y);
+                PadCellKind kind = pad_cell_kind(cell);
+                PadButton b = pad_cell_button(cell);
+                gboolean cap = kind == PAD_CELL_CAP_LINE || kind == PAD_CELL_CAP_AREA;
+                if (cap != (pass == 1)) continue;
+                if (s->placeholder && kind == PAD_CELL_GAUGE) continue;
+                guint32 held = l->held;
+                if (kind == PAD_CELL_AREA && (b == PB_LT || b == PB_RT) && gauge_lit(l, b, x))
+                    held |= PB_BIT(b);
+                int dx = 0, dy = 0;
+                if (cap) {
+                    dx = l->caps[b == PB_RS][0];
+                    dy = l->caps[b == PB_RS][1];
+                }
+                put(px, x + dx, y + dy, pad_cell_paint(cell, held, l->seen), &fg, &accent, strength);
+            }
+
+    GBytes *bytes = g_bytes_new_take(px, size);
+    GdkTexture *texture = gdk_memory_texture_new(map->width, map->height, GDK_MEMORY_R8G8B8A8,
+                                                 bytes, (gsize)map->width * 4);
+    g_bytes_unref(bytes);
+    return texture;
+}
+
+static int pixel_for(LaresPadPicture *s, int width)
+{
+    if (s->placeholder || width < map->width * PIXEL) return 1;
+    return PIXEL;
 }
 
 static void picture_snapshot(GtkWidget *w, GtkSnapshot *snap)
 {
     LaresPadPicture *s = LARES_PAD_PICTURE(w);
-    if (!art || !glow) return;
-    int width = gtk_widget_get_width(w), height = gtk_widget_get_height(w);
-    GdkRGBA c;
-    gtk_widget_get_color(w, &c);
-    double fg[3] = { c.red, c.green, c.blue };
-    cairo_t *cr = gtk_snapshot_append_cairo(snap, &GRAPHENE_RECT_INIT(-8, 0, width + 16, height));
-    if (s->placeholder) draw_placeholder(s, cr, width, height, fg);
-    else draw_controller(s, cr, width, height, fg);
-    cairo_destroy(cr);
+    if (!map) return;
+    int width = gtk_widget_get_width(w);
+    int p = pixel_for(s, width);
+    if (!s->texture) s->texture = paint(s);
+    /* Whole pixels, so every map pixel lands on the screen's grid. */
+    float x = (float)((width - map->width * p) / 2 + s->shake * p);
+    gtk_snapshot_append_scaled_texture(snap, s->texture, GSK_SCALING_FILTER_NEAREST,
+                                       &GRAPHENE_RECT_INIT(x, 0, map->width * p, map->height * p));
 }
 
 /* ----------------------------------------------------------------- widget */
 
+static GtkSizeRequestMode picture_request_mode(GtkWidget *w)
+{
+    return GTK_SIZE_REQUEST_HEIGHT_FOR_WIDTH;
+}
+
+/* Two screen pixels per map pixel when there's room, one when there isn't. */
 static void picture_measure(GtkWidget *w, GtkOrientation o, int for_size,
                             int *min, int *nat, int *min_base, int *nat_base)
 {
     LaresPadPicture *s = LARES_PAD_PICTURE(w);
-    if (o == GTK_ORIENTATION_VERTICAL) *min = *nat = s->height;
-    else { *min = 120; *nat = (int)(s->height * (ART_W + 2 * MARGIN_SIDE) / (MARGIN_TOP + ART_H + MARGIN_BOTTOM)); }
+    if (!map) { *min = *nat = 0; return; }
+    int most = s->placeholder ? 1 : PIXEL;
+    if (o == GTK_ORIENTATION_HORIZONTAL) {
+        *min = map->width;
+        *nat = map->width * most;
+    } else if (for_size < 0) {
+        *min = map->height;
+        *nat = map->height * most;
+    } else {
+        *min = *nat = map->height * pixel_for(s, for_size);
+    }
+}
+
+static void picture_size_allocate(GtkWidget *w, int width, int height, int baseline)
+{
+    gtk_widget_allocate(LARES_PAD_PICTURE(w)->lit, 0, 0, -1, NULL);
 }
 
 static gboolean shake_tick(GtkWidget *w, GdkFrameClock *clock, gpointer data)
@@ -309,11 +262,14 @@ static gboolean shake_tick(GtkWidget *w, GdkFrameClock *clock, gpointer data)
         gtk_widget_queue_draw(w);
         return G_SOURCE_REMOVE;
     }
-    /* Side to side, easing in and out of each turn. */
+    /* Side to side, a whole pixel at a time. */
     double phase = fmod(t / SHAKE_STEP_MS, 2.0);
     double eased = 0.5 - 0.5 * cos(G_PI * (phase < 1 ? phase : 2 - phase));
-    s->shake = -SHAKE_PX + 2 * SHAKE_PX * eased;
-    gtk_widget_queue_draw(w);
+    int shake = (int)lround(2 * eased - 1);
+    if (shake != s->shake) {
+        s->shake = shake;
+        gtk_widget_queue_draw(w);
+    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -323,41 +279,50 @@ void lares_pad_picture_shake(LaresPadPicture *s)
     if (!s->tick) s->tick = gtk_widget_add_tick_callback(GTK_WIDGET(s), shake_tick, NULL, NULL);
 }
 
+static void update_look(LaresPadPicture *s)
+{
+    if (!map) return;
+    Look l = look_of(s);
+    if (memcmp(&l, &s->look, sizeof l) == 0) return;
+    s->look = l;
+    invalidate(s);
+}
+
 void lares_pad_picture_set_state(LaresPadPicture *s, const PadState *state)
 {
     PadState idle = { 0 };
     if (!state) state = &idle;
-    if (memcmp(state, &s->state, sizeof *state) == 0) return;
     s->state = *state;
-    gtk_widget_queue_draw(GTK_WIDGET(s));
+    update_look(s);
 }
 
 void lares_pad_picture_set_seen(LaresPadPicture *s, guint32 seen)
 {
-    if (seen == s->seen) return;
     s->seen = seen;
-    gtk_widget_queue_draw(GTK_WIDGET(s));
+    update_look(s);
 }
 
 static void picture_css_changed(GtkWidget *w, GtkCssStyleChange *change)
 {
     GTK_WIDGET_CLASS(lares_pad_picture_parent_class)->css_changed(w, change);
-    gtk_widget_queue_draw(w);
+    invalidate(LARES_PAD_PICTURE(w));
 }
 
-static void picture_finalize(GObject *o)
+static void picture_dispose(GObject *o)
 {
     LaresPadPicture *s = LARES_PAD_PICTURE(o);
-    g_clear_pointer(&s->art_cache, cairo_surface_destroy);
-    g_clear_pointer(&s->glow_cache, cairo_surface_destroy);
-    G_OBJECT_CLASS(lares_pad_picture_parent_class)->finalize(o);
+    g_clear_pointer(&s->lit, gtk_widget_unparent);
+    g_clear_object(&s->texture);
+    G_OBJECT_CLASS(lares_pad_picture_parent_class)->dispose(o);
 }
 
 static void lares_pad_picture_class_init(LaresPadPictureClass *k)
 {
-    G_OBJECT_CLASS(k)->finalize = picture_finalize;
+    G_OBJECT_CLASS(k)->dispose = picture_dispose;
     GtkWidgetClass *wc = GTK_WIDGET_CLASS(k);
+    wc->get_request_mode = picture_request_mode;
     wc->measure = picture_measure;
+    wc->size_allocate = picture_size_allocate;
     wc->snapshot = picture_snapshot;
     wc->css_changed = picture_css_changed;
     gtk_widget_class_set_css_name(wc, "padpicture");
@@ -366,15 +331,16 @@ static void lares_pad_picture_class_init(LaresPadPictureClass *k)
 
 static void lares_pad_picture_init(LaresPadPicture *s)
 {
-    if (!art) art = load_png("/com/nahuelgenchi/Lares/pad/controller.png");
-    if (!glow) glow = load_png("/com/nahuelgenchi/Lares/pad/glow.png");
+    load_map();
+    s->lit = g_object_new(PAD_TYPE_LIT, NULL);
+    gtk_widget_set_parent(s->lit, GTK_WIDGET(s));
 }
 
-GtkWidget *lares_pad_picture_new(int height, gboolean placeholder)
+GtkWidget *lares_pad_picture_new(gboolean placeholder)
 {
     LaresPadPicture *s = g_object_new(LARES_TYPE_PAD_PICTURE, NULL);
-    s->height = height;
     s->placeholder = placeholder;
+    s->look = look_of(s);
     gtk_widget_set_hexpand(GTK_WIDGET(s), TRUE);
     gtk_accessible_update_property(GTK_ACCESSIBLE(s), GTK_ACCESSIBLE_PROPERTY_LABEL,
         placeholder ? "No controller connected" : "The controller, live", -1);
