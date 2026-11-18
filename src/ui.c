@@ -54,7 +54,7 @@ GtkWidget *ui_group(GtkWidget *page, const char *heading)
  * name over the settings that follow. */
 void ui_subheading(GtkWidget *group, const char *const *art, const char *title)
 {
-    GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_box_append(GTK_BOX(head), ui_icon(art, 2, "tile-icon"));
     GtkWidget *l = ui_label(title, "card-title");
     gtk_widget_set_valign(l, GTK_ALIGN_CENTER);
@@ -71,6 +71,8 @@ GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub)
     gtk_widget_add_css_class(row, "setting");
     GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_hexpand(texts, TRUE);
+    /* A title alone sits level with its control, not at the row's top. */
+    gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(texts), ui_label(title, NULL));
     if (sub) {
         GtkWidget *l = ui_paragraph(sub, "muted");

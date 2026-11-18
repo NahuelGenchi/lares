@@ -17,7 +17,7 @@
 #include "pad/padinput.h"
 #include "pad/padpair.h"
 
-#define GAUGE_SIZE     116
+#define GAUGE_SIZE     126
 #define DEAD_ZONE      0.10    /* games commonly ignore about this much around the centre */
 #define REST_STILL     0.02    /* a stick rests once it holds this still */
 #define REST_MS        600     /* for this long */
@@ -423,7 +423,7 @@ static void on_pencil(GtkButton *b, Card *c)
 
 static GtkWidget *fact(const char *heading, GtkWidget *value)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_box_append(GTK_BOX(box), ui_label(heading, "muted"));
     gtk_box_append(GTK_BOX(box), value);
     return box;
@@ -530,7 +530,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     GtkWidget *art = ui_icon(ART_GAMEPAD, 4, "device-art");
     gtk_widget_add_css_class(art, "on");
     gtk_box_append(GTK_BOX(head), art);
-    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_hexpand(texts, TRUE);
     gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
     c->name = ui_label(pad_name(pad), "card-title");
@@ -610,7 +610,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     gtk_box_append(GTK_BOX(card), c->stack);
 
     /* Battery, model and firmware; the connection is in the line under the name. */
-    GtkWidget *facts = lares_wrap_new(36);
+    GtkWidget *facts = lares_wrap_new(27);
     GtkWidget *bat = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
     if (pad->battery.known) {
         GtkWidget *meter = lares_meter_new(10, 2);
@@ -702,10 +702,13 @@ static void build_away(PadView *v)
         gtk_widget_add_css_class(card, "card");
         gtk_widget_add_css_class(card, "padded");
         gtk_box_append(GTK_BOX(card), ui_icon(ART_GAMEPAD, 4, "device-art"));
-        GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
         gtk_widget_set_hexpand(texts, TRUE);
         gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
-        gtk_box_append(GTK_BOX(texts), ui_label(d->name, NULL));
+        /* The name gives way, not the button, so the card keeps its padding. */
+        GtkWidget *name = ui_label(d->name, NULL);
+        gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
+        gtk_box_append(GTK_BOX(texts), name);
         gtk_box_append(GTK_BOX(texts), ui_label("Not connected", "muted"));
         if (v->away_error_id && g_str_equal(v->away_error_id, d->id))
             gtk_box_append(GTK_BOX(texts), ui_paragraph(v->away_error, "bad"));
@@ -720,6 +723,9 @@ static void build_away(PadView *v)
     }
     /* An away card already says no controller is connected. */
     if (v->empty) gtk_widget_set_visible(v->empty, !any);
+    /* A box with nothing to show would still take the page's gap. */
+    gtk_widget_set_visible(v->away, any);
+    gtk_widget_set_visible(v->cards, pads_list(v->app->pads)->len > 0 || !any);
 }
 
 /* --------------------------------------------------------------- pairing */
@@ -742,6 +748,7 @@ static void show_pairing(gpointer data)
     GtkWidget *c;
     while ((c = gtk_widget_get_first_child(v->pair_found))) gtk_box_remove(GTK_BOX(v->pair_found), c);
     GPtrArray *found = padpair_state(v->pair) == PAIR_SEARCHING ? padpair_found(v->pair) : NULL;
+    gtk_widget_set_visible(v->pair_found, found && found->len > 0);
     for (guint i = 0; found && i < found->len; i++) {
         PairFound *f = found->pdata[i];
         GtkWidget *b = button(f->name, "chip", G_CALLBACK(on_pair_found), v);
@@ -868,7 +875,7 @@ static void build_settings(PadView *v, GtkWidget *page)
     gtk_box_append(GTK_BOX(off), open);
     gtk_box_append(GTK_BOX(page), v->helper_off);
 
-    v->depends = gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
+    v->depends = gtk_box_new(GTK_ORIENTATION_VERTICAL, 36);
     gtk_box_append(GTK_BOX(page), v->depends);
 
     GtkWidget *alerts = ui_group(v->depends, "Alerts");
@@ -1022,18 +1029,16 @@ GtkWidget *pad_view_build(Lares *app, Section *self)
     v->pair_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(v->pair_card, "card");
     gtk_widget_add_css_class(v->pair_card, "padded");
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-    /* The hint and the button say what this card is for. */
+    /* The hint and the button say what this card is for: the hint across
+     * the card, the controllers found, then the button, so the hint doesn't
+     * wrap into a narrow column beside it. */
     v->pair_status = ui_paragraph("", "muted");
-    gtk_widget_set_hexpand(v->pair_status, TRUE);
-    gtk_widget_set_valign(v->pair_status, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(row), v->pair_status);
-    v->pair_action = button("Pair a controller", "primary", G_CALLBACK(on_pair_action), v);
-    gtk_widget_set_valign(v->pair_action, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(row), v->pair_action);
-    gtk_box_append(GTK_BOX(v->pair_card), row);
+    gtk_box_append(GTK_BOX(v->pair_card), v->pair_status);
     v->pair_found = lares_wrap_new(9);
     gtk_box_append(GTK_BOX(v->pair_card), v->pair_found);
+    v->pair_action = button("Pair a controller", "primary", G_CALLBACK(on_pair_action), v);
+    gtk_widget_set_halign(v->pair_action, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(v->pair_card), v->pair_action);
     gtk_box_append(GTK_BOX(v->page), v->pair_card);
     show_pairing(v);
 

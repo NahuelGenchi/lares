@@ -381,7 +381,7 @@ GtkWidget *lares_mode_switch_new(const char *const *icon_a, const char *label_a,
 
 struct _LaresWrap {
     GtkWidget parent;
-    int spacing;
+    int spacing, row_spacing;
 };
 
 G_DEFINE_FINAL_TYPE(LaresWrap, lares_wrap, GTK_TYPE_WIDGET)
@@ -399,7 +399,7 @@ static int wrap_layout(LaresWrap *s, int width, gboolean place)
         gtk_widget_measure(c, GTK_ORIENTATION_VERTICAL, cw, NULL, &ch, NULL, NULL);
         if (x > 0 && x + cw > width) {
             x = 0;
-            y += line + s->spacing;
+            y += line + s->row_spacing;
             line = 0;
         }
         if (place) gtk_widget_size_allocate(c, &(GtkAllocation){ x, y, cw, ch }, -1);
@@ -460,13 +460,19 @@ static void lares_wrap_class_init(LaresWrapClass *k)
     gtk_widget_class_set_css_name(wc, "wrap");
 }
 
-static void lares_wrap_init(LaresWrap *s) { s->spacing = 9; }
+static void lares_wrap_init(LaresWrap *s) { s->spacing = s->row_spacing = 9; }
 
 GtkWidget *lares_wrap_new(int spacing)
 {
     LaresWrap *s = g_object_new(LARES_TYPE_WRAP, NULL);
-    s->spacing = spacing;
+    s->spacing = s->row_spacing = spacing;
     return GTK_WIDGET(s);
+}
+
+void lares_wrap_set_row_spacing(LaresWrap *s, int spacing)
+{
+    s->row_spacing = spacing;
+    gtk_widget_queue_resize(GTK_WIDGET(s));
 }
 
 void lares_wrap_append(LaresWrap *s, GtkWidget *child)
@@ -650,7 +656,7 @@ static void lares_nav_init(LaresNav *s)
     gtk_widget_add_css_class(s->pill, "pill");
     gtk_widget_set_can_target(s->pill, FALSE);
     gtk_widget_set_parent(s->pill, GTK_WIDGET(s));
-    s->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    s->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_parent(s->box, GTK_WIDGET(s));
 }
 
@@ -664,7 +670,7 @@ GtkWidget *lares_nav_new(void)
 struct _LaresClamp {
     GtkWidget parent;
     GtkWidget *child;
-    int max;
+    int max, lead;
 };
 
 G_DEFINE_FINAL_TYPE(LaresClamp, lares_clamp, GTK_TYPE_WIDGET)
@@ -686,7 +692,7 @@ static void clamp_allocate(GtkWidget *w, int width, int height, int baseline)
 {
     LaresClamp *s = LARES_CLAMP(w);
     int cw = MIN(width, s->max);
-    gtk_widget_size_allocate(s->child, &(GtkAllocation){ (width - cw) / 2, 0, cw, height }, -1);
+    gtk_widget_size_allocate(s->child, &(GtkAllocation){ MIN((width - cw) / 2, s->lead), 0, cw, height }, -1);
 }
 
 static void clamp_dispose(GObject *o)
@@ -705,12 +711,13 @@ static void lares_clamp_class_init(LaresClampClass *k)
     gtk_widget_class_set_css_name(wc, "clamp");
 }
 
-static void lares_clamp_init(LaresClamp *s) { s->max = 620; }
+static void lares_clamp_init(LaresClamp *s) { s->max = s->lead = 620; }
 
-GtkWidget *lares_clamp_new(GtkWidget *child, int max_width)
+GtkWidget *lares_clamp_new(GtkWidget *child, int max_width, int max_lead)
 {
     LaresClamp *s = g_object_new(LARES_TYPE_CLAMP, NULL);
     s->max = max_width;
+    s->lead = max_lead;
     s->child = child;
     gtk_widget_set_parent(child, GTK_WIDGET(s));
     return GTK_WIDGET(s);
