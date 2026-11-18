@@ -12,7 +12,9 @@
  * with report command + 1 and the same sub-command. Settings live in
  * profiles: 0 is what the mouse does now, 1 what it reloads when switched
  * on. Packets go at least 10 ms apart and each waits for its answer, or
- * the mouse drops some over the air. Nothing here sends a factory reset. */
+ * the mouse drops some over the air. For about a tenth of a second after
+ * storing a change in profile 1 it also drops questions, so one that goes
+ * unanswered is asked again. Nothing here sends a factory reset. */
 #include "hyperx.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -34,6 +36,7 @@
 #define LIGHT_GET     0x03
 #define PACE_US       10000
 #define ANSWER_MS     500
+#define TRIES         3      /* for a question, as the mouse drops some while storing */
 #define DPI_STEP      50
 #define DEFAULT_SPEED 50     /* of breathing and the colour cycle; lower is faster */
 
@@ -384,7 +387,9 @@ static gboolean ask(Port *p, const guint8 *packet, guint8 *answer)
 static gboolean ask_live(Port *p, guint8 command, guint8 sub, guint8 *answer)
 {
     const guint8 q[HYPERX_REPORT] = { command, sub, 0 };
-    return ask(p, q, answer);
+    for (int i = 0; i < TRIES; i++)
+        if (ask(p, q, answer)) return TRUE;
+    return FALSE;
 }
 
 /* The receiver answers this itself, asleep or not. */
@@ -463,9 +468,15 @@ static gboolean write_both(Port *p, const MouseSettings *base, const MouseSettin
     for (guint16 slot = 0; slot < 2; slot++) {
         int n = hyperx_packets(&now, &merged, slot, packets);
         if (n < 0) return fail(error, G_IO_ERROR_INVALID_ARGUMENT, "The mouse can't hold that setting.");
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
+            guint8 answer[HYPERX_REPORT];
             if (!send_change(p, packets[i]))
                 return fail(error, G_IO_ERROR_TIMED_OUT, "It didn't take the change; it may have fallen asleep.");
+            /* Storing it, the mouse would drop the next packet too: wait
+             * until it answers again. */
+            if (slot == 1 && !ask_live(p, DPI, GET, answer))
+                return fail(error, G_IO_ERROR_TIMED_OUT, "It didn't answer; it may have fallen asleep.");
+        }
     }
     if (!read_state(p, state, error)) return FALSE;
     MouseSettings got;
