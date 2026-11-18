@@ -180,17 +180,17 @@ const char *const ART_KEYBOARD[] = {
     "...........",
     NULL };
 
-/* The split, the scroll wheel, the buttons' edge and the body. Nine rows
- * like the rest, as a taller icon would make its sidebar row taller. */
+/* Solid, like the keyboard and gamepad, with the split between the buttons:
+ * outlines with two hollow buttons read as a face at this size. */
 const char *const ART_MOUSE[] = {
     "..###..",
-    ".#.#.#.",
-    "#.###.#",
-    "#.#.#.#",
-    "#.###.#",
+    ".##.##.",
+    "###.###",
+    "###.###",
     "#######",
-    "#.....#",
-    ".#...#.",
+    "#######",
+    "#######",
+    ".#####.",
     "..###..",
     NULL };
 
