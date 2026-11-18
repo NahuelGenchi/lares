@@ -77,12 +77,14 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
     gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(texts), name);
 
+    /* Connected goes without saying: the icon lights up, and a Bluetooth one
+     * offers Disconnect. */
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     const char *status = busy && d->battery_locked ? "Waiting for your password…"
                        : busy ? (d->connected ? "Disconnecting…" : "Connecting…")
                        : !d->connected ? "Not connected"
-                       : d->charging ? "Charging" : "Connected";
-    gtk_box_append(GTK_BOX(texts), ui_label(status, "muted"));
+                       : d->charging ? "Charging" : NULL;
+    if (status) gtk_box_append(GTK_BOX(texts), ui_label(status, "muted"));
 
     if (d->connected && d->battery >= 0) {
         GtkWidget *bat = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
@@ -97,10 +99,13 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
     }
     /* Allow sits under what it allows, which leaves the name its room. */
     if (d->connected && d->battery_locked) {
-        GtkWidget *hint = ui_label("Lares can show its battery once you allow it. That asks for your password, "
-                                   "one time.", "muted");
-        gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
-        gtk_box_append(GTK_BOX(texts), hint);
+        /* While it waits, the line above says so. */
+        if (!busy) {
+            GtkWidget *hint = ui_label("Lares can show its battery once you allow it. That asks for your password, "
+                                       "one time.", "muted");
+            gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+            gtk_box_append(GTK_BOX(texts), hint);
+        }
         GtkWidget *allow = action_button(v, d, busy);
         gtk_widget_set_halign(allow, GTK_ALIGN_START);
         gtk_box_append(GTK_BOX(texts), allow);
