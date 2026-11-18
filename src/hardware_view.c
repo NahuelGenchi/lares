@@ -106,7 +106,7 @@ static void on_sample(gpointer user)
         set_text(v->gpu.facts[2], buf);
     }
 
-    set_space(&v->mem, s->mem_used, s->mem_used, s->mem_total, "Memory used");
+    set_space(&v->mem, s->mem_used, s->mem_used, s->mem_total, "Used");
     /* The drive shows the room left. */
     set_space(&v->disk, s->disk_total - s->disk_used, s->disk_used, s->disk_total, "Free");
     char buf[32] = "";
@@ -129,8 +129,7 @@ GtkWidget *hardware_build(Lares *app, Section *self)
     if (info->gpu_name)
         gtk_box_append(GTK_BOX(page), make_card(&v->gpu, ART_SCREEN, info->gpu_name, NULL, TRUE));
     gtk_box_append(GTK_BOX(page), make_card(&v->mem, ART_MEMORY, "Memory", NULL, FALSE));
-    gtk_box_append(GTK_BOX(page), make_card(&v->disk, ART_DISK, info->disk_name ? info->disk_name : "Drive",
-                                            "System drive", FALSE));
+    gtk_box_append(GTK_BOX(page), make_card(&v->disk, ART_DISK, "System drive", info->disk_kind, FALSE));
 
     hardware_watch(app->hw, on_sample, v);
     return page;

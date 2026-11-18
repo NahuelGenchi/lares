@@ -18,7 +18,7 @@ typedef struct {
     char *cpu_name;
     int threads;
     char *gpu_name;      /* NULL when the GPU reports no load (no AMD sysfs) */
-    char *disk_name;
+    char *disk_kind;     /* "NVMe" for an NVMe system drive, NULL for others */
 } HwInfo;
 
 typedef struct Hardware Hardware;
