@@ -17,7 +17,6 @@
 #include "pad/padinput.h"
 #include "pad/padpair.h"
 
-#define PICTURE_HEIGHT 236
 #define GAUGE_SIZE     116
 #define DEAD_ZONE      0.10    /* games commonly ignore about this much around the centre */
 #define REST_STILL     0.02    /* a stick rests once it holds this still */
@@ -466,8 +465,7 @@ static GtkWidget *sticks_page(Card *c)
         gtk_widget_set_halign(c->gauges[i], GTK_ALIGN_START);
         gtk_widget_add_css_class(c->gauges[i], "gauge");
         gtk_box_append(GTK_BOX(col), c->gauges[i]);
-        c->stick_text[i] = ui_label("", "muted");
-        gtk_label_set_wrap(GTK_LABEL(c->stick_text[i]), TRUE);
+        c->stick_text[i] = ui_paragraph("", "muted");
         gtk_box_append(GTK_BOX(col), c->stick_text[i]);
         gtk_box_append(GTK_BOX(col), meter_row(&c->trig_meter[i], &c->trig_text[i], 15, trig[i]));
         gtk_box_append(GTK_BOX(row), col);
@@ -491,8 +489,7 @@ static GtkWidget *vibration_page(Card *c)
     lares_meter_set_interactive(LARES_METER(c->length), on_length, c);
     show_vibration(c);
     GtkWidget *foot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-    GtkWidget *note = ui_label("Linux drives these two motors; the ones in the triggers aren't part of it.", "muted");
-    gtk_label_set_wrap(GTK_LABEL(note), TRUE);
+    GtkWidget *note = ui_paragraph("Linux drives these two motors; the ones in the triggers aren't part of it.", "muted");
     gtk_widget_set_hexpand(note, TRUE);
     gtk_box_append(GTK_BOX(foot), note);
     c->play = button("Play", "primary", G_CALLBACK(on_play), c);
@@ -589,7 +586,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
         lares_wrap_append(LARES_WRAP(tabs), tb);
     }
     GtkWidget *test = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
-    c->picture = lares_pad_picture_new(PICTURE_HEIGHT, FALSE);
+    c->picture = lares_pad_picture_new(FALSE);
     lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->picture), m->seen);
     gtk_box_append(GTK_BOX(test), c->picture);
     GtkWidget *count_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
@@ -632,16 +629,14 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     if (pad->firmware_update) {
         char *hint = g_strdup_printf("Firmware %s is out. Linux has no updater for it: use the Xbox Accessories "
                                      "app on Windows, or an Xbox console.", pad->firmware_update);
-        GtkWidget *l = ui_label(hint, "warn");
-        gtk_label_set_wrap(GTK_LABEL(l), TRUE);
+        GtkWidget *l = ui_paragraph(hint, "warn");
         gtk_box_append(GTK_BOX(card), l);
         g_free(hint);
     }
     char *details = g_strdup_printf("%s · %s", pad->driver ? pad->driver : "Unknown driver", pad->event_node);
     gtk_box_append(GTK_BOX(card), ui_label(details, "muted"));
     g_free(details);
-    c->users = ui_label(g_hash_table_lookup(v->users, pad->path), "muted");
-    gtk_label_set_wrap(GTK_LABEL(c->users), TRUE);
+    c->users = ui_paragraph(g_hash_table_lookup(v->users, pad->path), "muted");
     gtk_widget_set_visible(c->users, g_hash_table_contains(v->users, pad->path));
     gtk_box_append(GTK_BOX(card), c->users);
 
@@ -961,9 +956,8 @@ static void rebuild(gpointer data)
         GtkWidget *empty = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
         gtk_widget_add_css_class(empty, "card");
         gtk_widget_add_css_class(empty, "padded");
-        gtk_box_append(GTK_BOX(empty), lares_pad_picture_new(124, TRUE));
-        GtkWidget *hint = ui_label("No controller connected. Plug in a USB cable, or connect one over Bluetooth.", "muted");
-        gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+        gtk_box_append(GTK_BOX(empty), lares_pad_picture_new(TRUE));
+        GtkWidget *hint = ui_paragraph("No controller connected. Plug in a USB cable, or connect one over Bluetooth.", "muted");
         gtk_label_set_xalign(GTK_LABEL(hint), 0.5);
         gtk_box_append(GTK_BOX(empty), hint);
         gtk_box_append(GTK_BOX(v->cards), empty);
@@ -1007,8 +1001,7 @@ GtkWidget *pad_view_build(Lares *app, Section *self)
     GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_widget_set_hexpand(texts, TRUE);
     gtk_box_append(GTK_BOX(texts), ui_label("A new controller", NULL));
-    v->pair_status = ui_label("", "muted");
-    gtk_label_set_wrap(GTK_LABEL(v->pair_status), TRUE);
+    v->pair_status = ui_paragraph("", "muted");
     gtk_box_append(GTK_BOX(texts), v->pair_status);
     gtk_box_append(GTK_BOX(row), texts);
     v->pair_action = button("Pair a controller", "primary", G_CALLBACK(on_pair_action), v);

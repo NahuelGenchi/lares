@@ -93,7 +93,7 @@ window.lares .app-name {
 /* ------------------------------------------------------------------ page */
 
 .page {
-  padding: 9px 36px 36px 18px;
+  padding: 18px 36px 36px 18px;
 }
 
 .muted { color: var(--muted); }
@@ -235,10 +235,10 @@ modeswitch > button.selected:focus-visible {
 .hint {
   color: var(--muted);
   margin-top: 4px;
-  line-height: 1.5;
 }
 
-.note-text {
+/* Text that wraps (ui_paragraph) gets room between its lines. */
+.para {
   line-height: 1.5;
 }
 
@@ -506,6 +506,7 @@ window.lares viewport {
 .value { color: var(--accent); }
 
 padpicture, .gauge { color: var(--text); }
+padpicture > lit { color: var(--accent); }
 
 meter.interactive:focus-visible {
   outline: 2px solid var(--accent);
@@ -513,6 +514,12 @@ meter.interactive:focus-visible {
 }
 
 .setting { min-height: 36px; }
+
+/* Settings in one card are split by a line, centred in the card's gap. */
+.setting ~ .setting {
+  border-top: 2px solid var(--line);
+  padding-top: 18px;
+}
 
 /* Some desktop themes set font-size 0 on switches, which collapses the
    icons inside them; Lares keeps its own size and hides those icons. */

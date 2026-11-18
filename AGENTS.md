@@ -19,12 +19,13 @@ Never describe something as working or complete unless a recorded check establis
 | `src/overview.c`, `src/hardware.c`, `src/hardware_view.c` | Overview, and the hardware readings with their section |
 | `src/devices.c`, `src/hidbattery.c`, `src/device_view.c` | Bluetooth, battery and USB input devices from BlueZ, UPower and sysfs, HyperX mouse batteries over hidraw, and the Headphones, Keyboard and Mouse sections |
 | `src/pad/` | The controller core, shared with the helper and free of GTK: detection, batteries, nicknames, evdev input, rumble and Find, the programs using a pad, pairing, settings and the background features |
-| `src/pad_view.c`, `src/pad_picture.c`, `src/pad_service.c` | The Controller section, Padlight's live controller picture, and switching the helper and the addon |
+| `src/pad_view.c`, `src/pad_picture.c`, `src/pad_map.c`, `src/pad_service.c` | The Controller section, its live pixel-art picture and the picture's map (`data/pad/controller.txt`), and switching the helper and the addon |
 | `src/remote_model.c`, `src/remote_view.c` | Remote play: the screen, Sunshine and Tailscale, the Home and Remote modes, and the setup guide |
 | `src/settings_view.c` | The Settings section: Run in the background and the top-bar icon |
 | `src/helper/lares-pad.c` | The background helper and its D-Bus interface for the addon |
 | `data/` | Stylesheet, artwork, the bundled Monocraft font, the desktop file, the helper's unit and the addon (`data/addon/`) |
 | `tests/unit.c` | Unit tests on plain data, run by `make check` |
+| `tools/pad-map.py` | Draws the controller picture's map from the artwork; needs Pillow and NumPy, building doesn't |
 | `.github/` | Issue form, PR template, the Checks and Project tracking workflows |
 
 ## Commands

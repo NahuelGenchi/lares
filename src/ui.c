@@ -9,6 +9,15 @@ GtkWidget *ui_label(const char *text, const char *css_class)
     return l;
 }
 
+/* A label that wraps: a paragraph, with room between its lines. */
+GtkWidget *ui_paragraph(const char *text, const char *css_class)
+{
+    GtkWidget *l = ui_label(text, css_class);
+    gtk_label_set_wrap(GTK_LABEL(l), TRUE);
+    gtk_widget_add_css_class(l, "para");
+    return l;
+}
+
 GtkWidget *ui_icon(const char *const *art, int pixel, const char *css_class)
 {
     GtkWidget *w = lares_pixel_icon_new(art, pixel);
@@ -25,7 +34,7 @@ void ui_class(GtkWidget *w, const char *css_class, gboolean on)
 /* Every section's page is a column with the same spacing. */
 GtkWidget *ui_page(void)
 {
-    return gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
+    return gtk_box_new(GTK_ORIENTATION_VERTICAL, 36);
 }
 
 /* A heading over a card of settings; hiding the card's parent hides both. */
@@ -54,17 +63,17 @@ void ui_subheading(GtkWidget *group, const char *const *art, const char *title)
 }
 
 /* A setting's row in a group: its title, an optional line under it, and
- * room on the right for its control. */
+ * room on the right for its control. The row's first child is the column of
+ * texts, where a note about the setting belongs. */
 GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub)
 {
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_widget_add_css_class(row, "setting");
-    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_hexpand(texts, TRUE);
     gtk_box_append(GTK_BOX(texts), ui_label(title, NULL));
     if (sub) {
-        GtkWidget *l = ui_label(sub, "muted");
-        gtk_label_set_wrap(GTK_LABEL(l), TRUE);
+        GtkWidget *l = ui_paragraph(sub, "muted");
         gtk_box_append(GTK_BOX(texts), l);
     }
     gtk_box_append(GTK_BOX(row), texts);
