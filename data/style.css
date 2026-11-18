@@ -326,6 +326,13 @@ modeswitch > button.selected:focus-visible {
   outline-offset: 2px;
 }
 
+/* A colour to pick: the chip around a square of it. */
+.chip.swatch,
+.chip.swatch:hover,
+.chip.swatch:checked {
+  padding: 9px;
+}
+
 /* --------------------------------------------------------------- notes */
 
 .note {
