@@ -39,7 +39,7 @@ struct RemoteView {
     Step steps[N_STEPS];
     char *guide_key;          /* what the guide shows; it's redrawn only when this changes */
     gboolean signing_in;
-    GtkWidget *title, *sub, *live_rev, *live_dot, *live_label, *sw;
+    GtkWidget *sub, *live_rev, *live_dot, *live_label, *sw;
     GtkWidget *note_rev, *note_icons, *note_text, *note_main, *note_alt;
     Row rows[N_ITEMS];
     gboolean ready, applying, restart;
@@ -93,7 +93,8 @@ static void update_row(Row *r)
     char *hint = NULL;
     if (r->state == RS_BUSY) hint = g_strdup(busy_text(r->item, v));
     else if (r->state == RS_DRIFT) hint = remote_describe_live(a->m, r->item);
-    else if (r->state == RS_ERROR) hint = g_strdup(r->error);
+    /* A permission error's own text is Tailscale's; the note explains it. */
+    else if (r->state == RS_ERROR) hint = g_strdup(r->perm ? "Needs your password" : r->error);
     if (hint) {
         gtk_label_set_text(GTK_LABEL(r->hint), hint);
         ui_class(r->hint, "warn", r->state == RS_DRIFT);
@@ -155,13 +156,13 @@ static void update_note(RemoteView *a)
 
     char *text = NULL;
     const char *main = NULL, *alt = NULL, *art = "warn";
-    const char *mode = mode_name(cfg(a)->mode);
+    /* Each note says only what the line above and the rows don't. */
     switch (n) {
     case NOTE_CONFIRM: {
         gboolean ts_off = g_str_equal(cfg(a)->values[MODE_HOME][ITEM_TAILSCALE], "off");
         text = g_strdup(ts_off
-            ? "Moonlight is streaming right now. Home ends the stream and turns off Tailscale, so this PC can't be reached from away."
-            : "Moonlight is streaming right now. Home ends the stream.");
+            ? "Home ends the stream and turns off Tailscale, so this PC can't be reached from away."
+            : "Home ends the stream.");
         main = "Switch to Home";
         alt = "Stay on Remote";
         break;
@@ -172,11 +173,11 @@ static void update_note(RemoteView *a)
         art = "key";
         break;
     case NOTE_ERROR:
-        text = g_strdup_printf("%s didn't change. Its row says why.", item_name(bad->item));
+        text = g_strdup_printf("%s didn't change.", item_name(bad->item));
         main = "Try again";
         break;
     case NOTE_DRIFT:
-        text = g_strdup_printf("Something changed since you picked %s.", mode);
+        text = g_strdup("Changed outside Lares.");
         main = "Set it again";
         break;
     case NOTE_NONE:
@@ -198,7 +199,6 @@ static void apply_theme(RemoteView *a)
     Mode m = cfg(a)->mode;
     const char *key = m == MODE_HOME ? "home" : "remote";
     lares_set_mode_colors(a->app);
-    gtk_stack_set_visible_child_name(GTK_STACK(a->title), key);
     gtk_stack_set_visible_child_name(GTK_STACK(a->sub), key);
     update_live_line(a);
 }
@@ -592,10 +592,15 @@ static void build_page(RemoteView *a)
 {
     a->mode_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
 
+    /* The switch names the mode; under it, what the mode is for and how
+     * the stream is doing. */
+    GtkWidget *top = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
+    a->sw = lares_mode_switch_new(ART_HOME, "Home", ART_LAPTOP, "Remote");
+    g_signal_connect(a->sw, "picked", G_CALLBACK(on_picked), a);
+    gtk_box_append(GTK_BOX(top), a->sw);
+
     GtkWidget *hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
-    a->title = two_texts("Home", "Remote", "title");
     a->sub = two_texts("Set for sitting at this PC.", "Set for playing from another device.", "sub");
-    gtk_box_append(GTK_BOX(hero), a->title);
     gtk_box_append(GTK_BOX(hero), a->sub);
 
     GtkWidget *live = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
@@ -611,11 +616,8 @@ static void build_page(RemoteView *a)
     a->address = ui_label("", "muted");
     gtk_label_set_selectable(GTK_LABEL(a->address), TRUE);
     gtk_box_append(GTK_BOX(hero), a->address);
-    gtk_box_append(GTK_BOX(a->mode_box), hero);
-
-    a->sw = lares_mode_switch_new(ART_HOME, "Home", ART_LAPTOP, "Remote");
-    g_signal_connect(a->sw, "picked", G_CALLBACK(on_picked), a);
-    gtk_box_append(GTK_BOX(a->mode_box), a->sw);
+    gtk_box_append(GTK_BOX(top), hero);
+    gtk_box_append(GTK_BOX(a->mode_box), top);
 
     GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(card, "card");
@@ -784,11 +786,8 @@ static void update_guide(RemoteView *a)
         set_step(a, STEP_TAILSCALE, FALSE, a->signing_in ? "Finish signing in in your browser…"
                                                          : "Installed. Sign in to link this PC with your devices.",
                  a->signing_in ? NULL : step_button(a, "Sign in", "primary", NULL, G_CALLBACK(on_sign_in)), NULL);
-    else {
-        char *text = l->tailscale_host ? g_strdup_printf("Linked as %s.", l->tailscale_host) : g_strdup("Linked.");
-        set_step(a, STEP_TAILSCALE, TRUE, text, NULL, NULL);
-        g_free(text);
-    }
+    else
+        set_step(a, STEP_TAILSCALE, TRUE, "Linked.", NULL, NULL); /* the address below names it */
 
     if (!l->sunshine_installed)
         set_step(a, STEP_SUNSHINE, FALSE, "Not installed yet.",
@@ -852,7 +851,7 @@ static void build_guide(RemoteView *a)
     GtkWidget *hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_box_append(GTK_BOX(hero), ui_label("Remote play", "title"));
     GtkWidget *sub = ui_paragraph("Play this PC's games and desktop from a laptop, tablet or phone, at home or away. "
-                                  "Three free apps do it, and each step ticks itself once it's done.", "sub");
+                                  "Three free apps do it.", "sub");
     gtk_box_append(GTK_BOX(hero), sub);
     gtk_box_append(GTK_BOX(a->guide), hero);
 
