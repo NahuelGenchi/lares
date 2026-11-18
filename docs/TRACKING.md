@@ -19,7 +19,7 @@ Track all meaningful work: features, bugs, enhancements, docs, research, release
 | :--- | :--- | :--- |
 | M0 | M0 — Project foundation | Repository, documentation, agent instructions, and traceable issue-to-PR delivery |
 | M1 | M1 — Overview and hardware | The window and its sidebar, the Overview and Hardware sections, plus defects and their fixes |
-| M2 | M2 — Controllers and devices | The Controller and Headphones sections, the background helper and the top-bar addon |
+| M2 | M2 — Controllers and devices | The Controller, Headphones, Keyboard and Mouse sections, the background helper and the top-bar addon |
 | M3 | M3 — Remote play | The Remote section, its setup guide, and Tailscale, Sunshine and Moonlight |
 | M4 | M4 — Release | Packaging, distribution packages and versioned releases |
 

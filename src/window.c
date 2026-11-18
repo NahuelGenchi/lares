@@ -10,6 +10,8 @@ static Section SECTIONS[] = {
     { "hardware",   "Hardware",   ART_CHIP,       0,              hardware_build, hardware_shown, NULL, NULL, FALSE },
     { "controller", "Controller", ART_GAMEPAD,    DEV_CONTROLLER, pad_view_build, pad_view_shown, NULL, NULL, FALSE },
     { "headphones", "Headphones", ART_HEADPHONES, DEV_AUDIO,      device_build,   device_shown,   NULL, NULL, FALSE },
+    { "keyboard",   "Keyboard",   ART_KEYBOARD,   DEV_KEYBOARD,   device_build,   device_shown,   NULL, NULL, FALSE },
+    { "mouse",      "Mouse",      ART_MOUSE,      DEV_MOUSE,      device_build,   device_shown,   NULL, NULL, FALSE },
     { "remote",     "Remote",     ART_LAPTOP,     0,              remote_build,   remote_shown,   NULL, NULL, FALSE },
     { "settings",   "Settings",   ART_GEAR,       0,              settings_build, NULL,           NULL, NULL, FALSE },
 };

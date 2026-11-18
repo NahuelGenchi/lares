@@ -462,10 +462,6 @@ button.tile:focus-visible {
   padding: 27px;
 }
 
-.row-static {
-  padding: 18px;
-}
-
 meter, graph {
   color: var(--accent);
 }
