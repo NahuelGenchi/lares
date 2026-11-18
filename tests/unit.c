@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* Unit tests for the parts of Lares that work on plain data: nickname keys,
- * battery stages and wording, and screen sizes. `make check` runs them. */
+ * battery stages and wording, screen sizes, and how keyboards and mice are
+ * told apart in sysfs. `make check` runs them. */
 #include <glib.h>
 #include <string.h>
+#include "../src/devices.h"
 #include "../src/pad/pads.h"
 #include "../src/remote_model.h"
 
@@ -95,6 +97,59 @@ static void test_screen(void)
     g_free(d);
 }
 
+/* Capability bitmaps as a 64-bit kernel shows them, from a wireless mouse
+ * whose receiver also has a keyboard node, a keyboard on a receiver, a
+ * wired gamepad and a power button. */
+#define MOUSE_KEYS   "1f0000 0 0 0 0"
+#define MOUSE_REL    "903"
+#define KEYBOARD_KEYS "733eff 0 0 483ffe317aff32d bfc4444600000000 1 130c730b17c007 ffa07bfad9415fff " \
+                      "febeffdff3cfffff fffffffffffffffe"
+#define GAMEPAD_KEYS "7cdb000000000000 0 8000000000 0 0"
+#define POWER_KEYS   "8000 10000000000000 0"
+
+static void test_input_kinds(void)
+{
+    g_assert_true(devices_bitmap_has(MOUSE_KEYS, 0x110));   /* left button */
+    g_assert_true(devices_bitmap_has(MOUSE_KEYS "\n", 0x114));
+    g_assert_false(devices_bitmap_has(MOUSE_KEYS, 0x115));
+    g_assert_false(devices_bitmap_has(MOUSE_KEYS, 0x400));  /* past the last word */
+    g_assert_true(devices_bitmap_has(MOUSE_REL, 1));
+    g_assert_false(devices_bitmap_has("0", 0));
+    g_assert_false(devices_bitmap_has(NULL, 0));
+
+    g_assert_cmpint(devices_input_kind(MOUSE_KEYS, MOUSE_REL), ==, DEV_MOUSE);
+    g_assert_cmpint(devices_input_kind(KEYBOARD_KEYS, "0"), ==, DEV_KEYBOARD);
+    /* A keyboard's sideways scroll wheel doesn't make it a mouse. */
+    g_assert_cmpint(devices_input_kind(KEYBOARD_KEYS, "1040"), ==, DEV_KEYBOARD);
+    g_assert_cmpint(devices_input_kind(GAMEPAD_KEYS, "0"), ==, DEV_CONTROLLER);
+    g_assert_cmpint(devices_input_kind(POWER_KEYS, "0"), ==, -1);
+    g_assert_cmpint(devices_input_kind(NULL, NULL), ==, -1);
+}
+
+#define HUB "/sys/devices/pci0000:00/0000:00:14.0/usb1"
+
+static void test_input_owner(void)
+{
+    /* Both nodes of a mouse on its own receiver belong to the receiver. */
+    char *a = devices_input_owner(HUB "/1-1/1-1:1.0/0003:03F0:0F98.0001");
+    char *b = devices_input_owner(HUB "/1-1/1-1:1.1/0003:03F0:0F98.0002");
+    g_assert_cmpstr(a, ==, HUB "/1-1");
+    g_assert_cmpstr(b, ==, HUB "/1-1");
+    g_free(a);
+    g_free(b);
+    /* A keyboard paired to a receiver behind a hub is its own device. */
+    a = devices_input_owner(HUB "/1-8/1-8.4/1-8.4:1.2/0003:046D:C547.0007/0003:046D:40A2.0009");
+    g_assert_cmpstr(a, ==, HUB "/1-8/1-8.4/1-8.4:1.2/0003:046D:C547.0007/0003:046D:40A2.0009");
+    g_free(a);
+    /* A device on a hub port belongs to that port, not the hub. */
+    a = devices_input_owner(HUB "/1-8/1-8.2/1-8.2:1.0");
+    g_assert_cmpstr(a, ==, HUB "/1-8/1-8.2");
+    g_free(a);
+    g_assert_null(devices_input_owner("/sys/devices/platform/i8042/serio0"));
+    g_assert_null(devices_input_owner("/sys/devices/virtual/misc/uinput"));
+    g_assert_null(devices_input_owner(NULL));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -102,5 +157,7 @@ int main(int argc, char **argv)
     g_test_add_func("/nicknames/clean", test_clean_nickname);
     g_test_add_func("/battery/stages-and-words", test_battery);
     g_test_add_func("/remote/screen-sizes", test_screen);
+    g_test_add_func("/devices/input-kinds", test_input_kinds);
+    g_test_add_func("/devices/input-owner", test_input_owner);
     return g_test_run();
 }

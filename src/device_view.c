@@ -1,7 +1,7 @@
 /* Headphones, Keyboard and Mouse: one card per paired device, with its
  * battery and, for Bluetooth ones, a button to connect or disconnect it.
- * AirPods show up in Headphones, and a keyboard or mouse on its own USB
- * receiver in its section, with no button. */
+ * AirPods show up in Headphones. A keyboard or mouse plugged in by USB,
+ * wired or on its own receiver, has no button. */
 #include "lares.h"
 
 typedef struct {

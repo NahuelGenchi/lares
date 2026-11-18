@@ -1,10 +1,14 @@
 #include "devices.h"
+#include <linux/input-event-codes.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define UPOWER       "org.freedesktop.UPower"
 #define UPOWER_PATH  "/org/freedesktop/UPower"
 #define UPOWER_DEV   "org.freedesktop.UPower.Device"
+#define SETTLE_MS    500    /* lets the burst of node changes from one plug settle */
+#define WORD_BITS    (8 * sizeof(unsigned long))
 
 typedef struct { DevNotify fn; gpointer user; } Watcher;
 
@@ -13,6 +17,9 @@ struct Devices {
     GDBusObjectManager *bluez;
     GDBusProxy *upower;
     GHashTable *batteries;     /* UPower path -> GDBusProxy */
+    GPtrArray *usb;            /* Device*, the keyboards and mice found in sysfs */
+    GFileMonitor *dev_monitor;
+    guint scan_timer;
     GPtrArray *list;
     GArray *watchers;
     guint rebuild_idle;
@@ -122,6 +129,37 @@ static Device *by_address(Devices *d, const char *serial)
     return NULL;
 }
 
+/* The USB keyboard or mouse a UPower battery belongs to: the battery's
+ * power supply sits under that device in sysfs. */
+static Device *by_power_supply(Devices *d, const char *native)
+{
+    if (!native || !*native || strchr(native, '/')) return NULL;
+    char *link = g_build_filename("/sys/class/power_supply", native, "device", NULL);
+    char *path = realpath(link, NULL);
+    g_free(link);
+    Device *found = NULL;
+    for (guint i = 0; path && !found && i < d->list->len; i++) {
+        Device *x = d->list->pdata[i];
+        size_t len = strlen(x->id);
+        if (g_str_has_prefix(x->id, "/sys/") && strncmp(path, x->id, len) == 0
+            && (path[len] == '\0' || path[len] == '/'))
+            found = x;
+    }
+    free(path);
+    return found;
+}
+
+static void add_usb(Devices *d)
+{
+    for (guint i = 0; i < d->usb->len; i++) {
+        Device *u = d->usb->pdata[i], *x = g_new0(Device, 1);
+        *x = *u;
+        x->id = g_strdup(u->id);
+        x->name = g_strdup(u->name);
+        g_ptr_array_add(d->list, x);
+    }
+}
+
 static void add_upower(Devices *d)
 {
     GHashTableIter it;
@@ -135,18 +173,23 @@ static void add_upower(Devices *d)
         char *native = prop_string(p, "NativePath");
         gboolean skip = kind < 0 || prop_bool(p, "PowerSupply") || !prop_bool(p, "IsPresent")
                      || (native && g_str_has_prefix(native, "/org/bluez"));
-        g_free(native);
-        if (skip) continue;
+        if (skip) {
+            g_free(native);
+            continue;
+        }
 
         GVariant *pct = g_dbus_proxy_get_cached_property(p, "Percentage");
         int battery = pct ? (int)lround(g_variant_get_double(pct)) : -1;
         if (pct) g_variant_unref(pct);
 
         /* A Bluetooth controller's battery also shows up here, under its
-         * address: give it to the BlueZ entry instead of listing it twice. */
+         * address, and a USB keyboard's or mouse's under its sysfs device:
+         * give it to that entry instead of listing the device twice. */
         char *serial = prop_string(p, "Serial");
         Device *same = by_address(d, serial);
+        if (!same) same = by_power_supply(d, native);
         g_free(serial);
+        g_free(native);
         if (same) {
             if (same->battery < 0) same->battery = battery;
             continue;
@@ -168,6 +211,7 @@ static gboolean rebuild(gpointer data)
     d->rebuild_idle = 0;
     g_ptr_array_set_size(d->list, 0);
     add_bluez(d);
+    add_usb(d);
     add_upower(d);
     g_ptr_array_sort(d->list, by_kind_then_name);
     for (guint i = 0; i < d->watchers->len; i++) {
@@ -259,6 +303,195 @@ static void upower_ready(GObject *src, GAsyncResult *res, gpointer data)
     g_signal_connect(d->upower, "g-signal", G_CALLBACK(on_upower_signal), d);
     g_dbus_proxy_call(d->upower, "EnumerateDevices", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL,
                       upower_enumerated, d);
+}
+
+/* ------------------------------------------------------------------- USB */
+
+/* Keyboards and mice plugged in by USB, wired or on their own receiver, are
+ * read from sysfs: many have no battery reading, so BlueZ and UPower never
+ * mention them. Bluetooth ones are left to BlueZ, which also knows the
+ * paired ones that aren't connected. */
+
+gboolean devices_bitmap_has(const char *bitmap, guint bit)
+{
+    if (!bitmap) return FALSE;
+    char *copy = g_strstrip(g_strdup(bitmap));
+    char **words = g_strsplit(copy, " ", -1);
+    guint n = g_strv_length(words), index = bit / WORD_BITS;
+    gboolean set = index < n && (g_ascii_strtoull(words[n - 1 - index], NULL, 16) >> (bit % WORD_BITS)) & 1;
+    g_strfreev(words);
+    g_free(copy);
+    return set;
+}
+
+int devices_input_kind(const char *keys, const char *rel)
+{
+    if (devices_bitmap_has(keys, BTN_GAMEPAD) || devices_bitmap_has(keys, BTN_JOYSTICK)) return DEV_CONTROLLER;
+    if (devices_bitmap_has(rel, REL_X) && devices_bitmap_has(rel, REL_Y) && devices_bitmap_has(keys, BTN_LEFT))
+        return DEV_MOUSE;
+    for (guint key = KEY_ESC; key <= KEY_S; key++)
+        if (!devices_bitmap_has(keys, key)) return -1;
+    return DEV_KEYBOARD;
+}
+
+static gboolean is_hid_id(const char *s)      /* such as 0003:046D:C547.0007 */
+{
+    if (strlen(s) != 19 || s[4] != ':' || s[9] != ':' || s[14] != '.') return FALSE;
+    for (int i = 0; i < 19; i++)
+        if (i != 4 && i != 9 && i != 14 && !g_ascii_isxdigit(s[i])) return FALSE;
+    return TRUE;
+}
+
+static gboolean is_usb_device(const char *s)  /* bus and ports, such as 1-2 or 1-2.4 */
+{
+    const char *dash = strchr(s, '-');
+    if (!dash || dash == s || !dash[1]) return FALSE;
+    for (const char *c = s; *c; c++)
+        if (c != dash && !g_ascii_isdigit(*c) && *c != '.') return FALSE;
+    return TRUE;
+}
+
+char *devices_input_owner(const char *device)
+{
+    if (!device) return NULL;
+    char **parts = g_strsplit(device, "/", -1);
+    guint n = g_strv_length(parts);
+    char *owner = NULL;
+    if (n >= 2 && is_hid_id(parts[n - 1]) && is_hid_id(parts[n - 2])) {
+        owner = g_strdup(device);
+    } else {
+        for (guint i = n; i-- > 0 && !owner;) {
+            if (!is_usb_device(parts[i])) continue;
+            char *rest = parts[i + 1];
+            parts[i + 1] = NULL;
+            owner = g_strjoinv("/", parts);
+            parts[i + 1] = rest;
+        }
+    }
+    g_strfreev(parts);
+    return owner;
+}
+
+static char *sys_text(const char *dir, const char *file)
+{
+    char *path = g_build_filename(dir, file, NULL), *text = NULL;
+    if (g_file_get_contents(path, &text, NULL, NULL)) g_strstrip(text);
+    g_free(path);
+    return text;
+}
+
+typedef struct { char *device, *owner, *name; int kind; } InputNode;
+
+static void input_node_free(gpointer p)
+{
+    InputNode *n = p;
+    g_free(n->device);
+    g_free(n->owner);
+    g_free(n->name);
+    g_free(n);
+}
+
+static int by_device_path(gconstpointer a, gconstpointer b)
+{
+    return strcmp((*(InputNode *const *)a)->device, (*(InputNode *const *)b)->device);
+}
+
+/* The keyboard and mouse nodes on USB, with the physical device each
+ * belongs to. */
+static GPtrArray *usb_input_nodes(void)
+{
+    GPtrArray *nodes = g_ptr_array_new_with_free_func(input_node_free);
+    GDir *dir = g_dir_open("/sys/class/input", 0, NULL);
+    const char *entry;
+    while (dir && (entry = g_dir_read_name(dir))) {
+        if (!g_str_has_prefix(entry, "input")) continue;
+        char *base = g_build_filename("/sys/class/input", entry, NULL);
+        char *bus = sys_text(base, "id/bustype");
+        if (g_strcmp0(bus, "0003") == 0) {
+            char *keys = sys_text(base, "capabilities/key"), *rel = sys_text(base, "capabilities/rel");
+            char *link = g_build_filename(base, "device", NULL);
+            char *device = realpath(link, NULL);
+            char *owner = devices_input_owner(device);
+            int kind = devices_input_kind(keys, rel);
+            if (owner && kind >= 0) {
+                InputNode *n = g_new0(InputNode, 1);
+                n->device = g_strdup(device);
+                n->owner = g_steal_pointer(&owner);
+                n->name = sys_text(base, "name");
+                n->kind = kind;
+                g_ptr_array_add(nodes, n);
+            }
+            g_free(owner);
+            free(device);
+            g_free(link);
+            g_free(keys);
+            g_free(rel);
+        }
+        g_free(bus);
+        g_free(base);
+    }
+    if (dir) g_dir_close(dir);
+    return nodes;
+}
+
+/* One entry per physical device. Its first node, in sysfs order, says what
+ * it is: a gaming mouse's extra keyboard node, for its programmable buttons,
+ * comes after the mouse's. A device with a gamepad node is a controller,
+ * which the Controller section lists. */
+static void scan_usb(Devices *d)
+{
+    GPtrArray *nodes = usb_input_nodes();
+    g_ptr_array_sort(nodes, by_device_path);
+    GHashTable *owners = g_hash_table_new(g_str_hash, g_str_equal);
+    GPtrArray *found = g_ptr_array_new();
+    for (guint i = 0; i < nodes->len; i++) {
+        InputNode *n = nodes->pdata[i];
+        Device *x = g_hash_table_lookup(owners, n->owner);
+        if (!x) {
+            x = g_new0(Device, 1);
+            x->id = g_strdup(n->owner);
+            x->kind = n->kind;
+            x->connected = TRUE;
+            x->battery = -1;
+            /* A USB device's own product name reads better than its node's,
+             * which starts with the maker's company. A device paired to a
+             * receiver has only its node's name. */
+            char *last = g_path_get_basename(n->owner);
+            char *product = is_usb_device(last) ? sys_text(n->owner, "product") : NULL;
+            x->name = product && *product ? g_steal_pointer(&product)
+                    : g_strdup(n->name && *n->name ? n->name : "USB device");
+            g_free(product);
+            g_free(last);
+            g_hash_table_insert(owners, x->id, x);
+            g_ptr_array_add(found, x);
+        }
+        if (n->kind == DEV_CONTROLLER) x->kind = DEV_CONTROLLER;
+    }
+    g_ptr_array_set_size(d->usb, 0);
+    for (guint i = 0; i < found->len; i++) {
+        Device *x = found->pdata[i];
+        if (x->kind == DEV_CONTROLLER) device_free(x);
+        else g_ptr_array_add(d->usb, x);
+    }
+    g_ptr_array_free(found, TRUE);
+    g_hash_table_destroy(owners);
+    g_ptr_array_free(nodes, TRUE);
+}
+
+static gboolean scan_later(gpointer data)
+{
+    Devices *d = data;
+    d->scan_timer = 0;
+    scan_usb(d);
+    schedule(d);
+    return G_SOURCE_REMOVE;
+}
+
+/* /dev/input changes as a keyboard or mouse comes or goes, a moment before
+ * sysfs has all of it. */
+static void on_input_changed(GFileMonitor *m, GFile *f, GFile *o, GFileMonitorEvent ev, Devices *d)
+{
+    if (!d->scan_timer) d->scan_timer = g_timeout_add(SETTLE_MS, scan_later, d);
 }
 
 /* --------------------------------------------------------------- actions */
@@ -353,7 +586,14 @@ Devices *devices_new(void)
     d->list = g_ptr_array_new_with_free_func(device_free);
     d->watchers = g_array_new(FALSE, FALSE, sizeof(Watcher));
     d->batteries = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
+    d->usb = g_ptr_array_new_with_free_func(device_free);
     d->dry = g_getenv("LARES_DRY_RUN") != NULL;
+    GFile *dev = g_file_new_for_path("/dev/input");
+    d->dev_monitor = g_file_monitor_directory(dev, G_FILE_MONITOR_NONE, NULL, NULL);
+    g_object_unref(dev);
+    if (d->dev_monitor) g_signal_connect(d->dev_monitor, "changed", G_CALLBACK(on_input_changed), d);
+    scan_usb(d);
+    schedule(d);
     d->system = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, NULL);
     if (!d->system) return d; /* no system bus: no devices, nothing breaks */
     g_dbus_object_manager_client_new(d->system, G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_DO_NOT_AUTO_START,
