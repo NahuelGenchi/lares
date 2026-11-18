@@ -74,13 +74,13 @@ GtkWidget *settings_build(Lares *app, Section *self)
     /* One sub-section per device that has a top-bar icon. */
     v->top = ui_group(page, "Top bar");
     ui_subheading(v->top, ART_GAMEPAD, "Xbox controller");
-    v->sw_topbar = toggle(v, v->top, "Show in the top bar", "Lit while a controller is connected. Its menu has the "
-                          "live picture, the battery and quick actions.", &p->topbar);
-    v->topbar_note = ui_label("It appears after you log out and back in, as GNOME loads new top-bar items only then.",
-                              "warn");
-    gtk_label_set_wrap(GTK_LABEL(v->topbar_note), TRUE);
+    GtkWidget *topbar = ui_setting(v->top, "Show in the top bar", "Lit while a controller is connected. Its menu has "
+                                   "the live picture, the battery and quick actions.");
+    v->sw_topbar = ui_setting_switch(topbar, "Show in the top bar", &p->topbar, G_CALLBACK(on_switch), v);
+    v->topbar_note = ui_paragraph("It appears after you log out and back in, as GNOME loads new top-bar items only then.",
+                                  "warn");
     gtk_widget_set_visible(v->topbar_note, FALSE);
-    gtk_box_append(GTK_BOX(v->top), v->topbar_note);
+    gtk_box_append(GTK_BOX(gtk_widget_get_first_child(topbar)), v->topbar_note);
     v->sw_level = toggle(v, v->top, "Battery level beside the icon", "With several controllers, the lowest charge.",
                          &p->topbar_level);
     v->sw_hide = toggle(v, v->top, "Hide the icon without a controller", NULL, &p->topbar_hide);
