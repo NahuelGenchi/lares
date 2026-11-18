@@ -106,20 +106,12 @@ window.lares .app-name {
   color: var(--text);
 }
 
-.sub,
-.live {
+.sub {
   color: var(--muted);
 }
 
-.live.on {
-  color: var(--text);
-}
-
+/* Shown only while Moonlight streams. */
 .live-dot {
-  color: var(--muted);
-}
-
-.live-dot.on {
   color: var(--accent);
   animation: pulse 1100ms ease-in-out infinite alternate;
 }
@@ -252,6 +244,11 @@ modeswitch > button.selected:focus-visible {
 
 .value.dim {
   color: var(--muted);
+}
+
+/* A field of Remote's connection card: as tall as a row, but not a button. */
+.field {
+  padding: 18px;
 }
 
 .status .busy {
@@ -484,7 +481,7 @@ meter.low, meter.hot {
   nav > .pill, nav button.nav-item, button.tile, .device-art {
     transition: none;
   }
-  .live-dot.on {
+  .live-dot {
     animation: none;
   }
 }
