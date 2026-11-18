@@ -264,18 +264,6 @@ modeswitch > button.selected:focus-visible {
   to { background-color: alpha(currentColor, 0.26); }
 }
 
-.status .busy {
-  color: var(--accent);
-}
-
-.status .queued {
-  color: var(--muted);
-  opacity: 0.6;
-}
-
-.status .warn { color: var(--warn); }
-.status .bad { color: var(--bad); }
-
 .chevron {
   color: var(--muted);
   transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), color 200ms ease-out;

@@ -5,9 +5,7 @@
 
 #define STEP_GAP_MS 140   /* a breath between steps, so each row's change reads */
 
-typedef enum { RS_QUEUED, RS_BUSY, RS_OK, RS_DRIFT, RS_ERROR, RS_LEAVE, N_RS } RowState;
-/* A row that matches, or is left as is, shows nothing: its value says it. */
-static const char *RS_PAGE[N_RS] = { "queued", "busy", "none", "drift", "error", "none" };
+typedef enum { RS_QUEUED, RS_BUSY, RS_OK, RS_DRIFT, RS_ERROR, RS_LEAVE } RowState;
 
 typedef enum { NOTE_NONE, NOTE_CONFIRM, NOTE_PERMISSION, NOTE_ERROR, NOTE_DRIFT } Note;
 
@@ -16,7 +14,7 @@ typedef struct RemoteView RemoteView;
 typedef struct {
     RemoteView *app;
     Item item;
-    GtkWidget *box, *head, *value, *hint, *hint_rev, *status, *chevron, *revealer, *chips;
+    GtkWidget *box, *head, *value, *hint, *hint_rev, *chevron, *revealer, *chips;
     GPtrArray *toggles;
     char *chips_key;
     RowState state;
@@ -91,7 +89,6 @@ static void update_row(Row *r)
     gtk_label_set_text(GTK_LABEL(r->value), d);
     g_free(d);
     ui_class(r->value, "dim", busy || leave(v));
-    gtk_stack_set_visible_child_name(GTK_STACK(r->status), RS_PAGE[r->state]);
 
     char *hint = NULL;
     if (r->state == RS_DRIFT) hint = remote_describe_live(a->m, r->item);
@@ -493,25 +490,6 @@ static void on_head(GtkButton *b, Row *r)
     a->open = open ? r : NULL;
 }
 
-static GtkWidget *status_stack(void)
-{
-    GtkWidget *s = gtk_stack_new();
-    gtk_stack_set_transition_type(GTK_STACK(s), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_stack_set_transition_duration(GTK_STACK(s), 160);
-    gtk_widget_add_css_class(s, "status");
-    gtk_widget_set_valign(s, GTK_ALIGN_CENTER);
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_DOT, 2, "queued"), "queued");
-    GtkWidget *spin = lares_pixel_spinner_new(2);
-    gtk_widget_add_css_class(spin, "busy");
-    gtk_stack_add_named(GTK_STACK(s), spin, "busy");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_BANG, 2, "warn"), "drift");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_BANG, 2, "bad"), "error");
-    /* The stack keeps the icons' width, so the values don't move. */
-    gtk_stack_add_named(GTK_STACK(s), gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0), "none");
-    gtk_stack_set_visible_child_name(GTK_STACK(s), "queued");
-    return s;
-}
-
 static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *card)
 {
     Row *r = &a->rows[i];
@@ -551,8 +529,8 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
     gtk_widget_set_valign(r->value, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(line), r->value);
 
-    r->status = status_stack();
-    gtk_box_append(GTK_BOX(line), r->status);
+    /* The value tells the state: what the mode sets, or what's happening;
+     * drift and errors get a line under the name and the note. */
     r->chevron = ui_icon(ART_CHEVRON, 2, "chevron");
     gtk_box_append(GTK_BOX(line), r->chevron);
     gtk_button_set_child(GTK_BUTTON(r->head), line);
@@ -569,7 +547,6 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
         gtk_box_append(GTK_BOX(r->chips), flow);
         add_chip(r, flow, "On", "on");
         add_chip(r, flow, "Off", "off");
-        add_chip(r, flow, "Leave as is", "leave");
     }
 
     gtk_box_append(GTK_BOX(r->box), r->head);
