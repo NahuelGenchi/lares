@@ -41,6 +41,18 @@ GtkWidget *ui_group(GtkWidget *page, const char *heading)
     return card;
 }
 
+/* A sub-section inside a group's card, for one device: its pixel icon and
+ * name over the settings that follow. */
+void ui_subheading(GtkWidget *group, const char *const *art, const char *title)
+{
+    GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_box_append(GTK_BOX(head), ui_icon(art, 2, "tile-icon"));
+    GtkWidget *l = ui_label(title, "card-title");
+    gtk_widget_set_valign(l, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(head), l);
+    gtk_box_append(GTK_BOX(group), head);
+}
+
 /* A setting's row in a group: its title, an optional line under it, and
  * room on the right for its control. */
 GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub)

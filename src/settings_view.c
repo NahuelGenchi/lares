@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The Settings section: what applies to Lares as a whole rather than to one
- * controller, so it's there with or without one. The background helper and
- * the top-bar icon. They live in ~/.config/lares/pad.ini with the controller
- * settings, which the helper also reads. Nothing here reads any hardware. */
+ * controller, so it's there with or without one. The background helper, and
+ * the top-bar icons with a sub-section for each device. They live in
+ * ~/.config/lares/pad.ini with the controller settings, which the helper also
+ * reads. Nothing here reads any hardware. */
 #include "lares.h"
 #include "pad_service.h"
 
@@ -70,9 +71,11 @@ GtkWidget *settings_build(Lares *app, Section *self)
         "while Lares is closed, through a small helper that needs under 8 MB. Off, all of those stop, and Lares "
         "shows your controllers only while its window is open.", &p->background);
 
+    /* One sub-section per device that has a top-bar icon. */
     v->top = ui_group(page, "Top bar");
-    v->sw_topbar = toggle(v, v->top, "Show in the top bar", "A controller icon in GNOME's top bar, lit while one is "
-                          "connected. Its menu has the live picture, the battery and quick actions.", &p->topbar);
+    ui_subheading(v->top, ART_GAMEPAD, "Xbox controller");
+    v->sw_topbar = toggle(v, v->top, "Show in the top bar", "Lit while a controller is connected. Its menu has the "
+                          "live picture, the battery and quick actions.", &p->topbar);
     v->topbar_note = ui_label("It appears after you log out and back in, as GNOME loads new top-bar items only then.",
                               "warn");
     gtk_label_set_wrap(GTK_LABEL(v->topbar_note), TRUE);
