@@ -18,6 +18,19 @@ static void set_text(GtkWidget *label, const char *text)
         gtk_label_set_text(GTK_LABEL(label), text);
 }
 
+/* A fact shows only when it has something to say, and the line of facts
+ * only with one of them: an empty one would still take its gap. */
+static void set_fact(GtkWidget *label, const char *text)
+{
+    set_text(label, text);
+    gtk_widget_set_visible(label, text[0] != 0);
+    GtkWidget *facts = gtk_widget_get_parent(label);
+    gboolean any = FALSE;
+    for (GtkWidget *c = gtk_widget_get_first_child(facts); c; c = gtk_widget_get_next_sibling(c))
+        any |= gtk_widget_get_visible(c);
+    gtk_widget_set_visible(facts, any);
+}
+
 /* A card: its name and a detail on top, a big number with a second one
  * beside it, then a graph or a meter and a line of small facts. */
 static GtkWidget *make_card(Card *c, const char *const *art, const char *name, const char *detail,
@@ -51,11 +64,15 @@ static GtkWidget *make_card(Card *c, const char *const *art, const char *name, c
         c->meter = lares_meter_new(34, 2);
         gtk_box_append(GTK_BOX(card), c->meter);
     }
+    /* Facts that wrap read as lines of one paragraph. */
     GtkWidget *facts = lares_wrap_new(27);
+    lares_wrap_set_row_spacing(LARES_WRAP(facts), 9);
     for (int i = 0; i < 3; i++) {
         c->facts[i] = ui_label("", "muted");
+        gtk_widget_set_visible(c->facts[i], FALSE);
         lares_wrap_append(LARES_WRAP(facts), c->facts[i]);
     }
+    gtk_widget_set_visible(facts, FALSE);
     gtk_box_append(GTK_BOX(card), facts);
     return card;
 }
@@ -77,7 +94,7 @@ static void set_space(Card *c, guint64 shown, guint64 used, guint64 total, const
     char *u = format_bytes(shown), *t = format_bytes(total);
     char *foot = g_strdup_printf("%s of %s", what, t);
     set_text(c->value, u);
-    set_text(c->facts[0], foot);
+    set_fact(c->facts[0], foot);
     lares_meter_set(LARES_METER(c->meter), total ? (double)used / total : -1);
     ui_class(c->meter, "hot", total && (double)used / total > 0.9);
     g_free(u); g_free(t); g_free(foot);
@@ -97,13 +114,13 @@ static void on_sample(gpointer user)
             snprintf(buf, sizeof buf, "Video memory %s of %s", u, t);
             g_free(u); g_free(t);
         }
-        set_text(v->gpu.facts[0], buf);
+        set_fact(v->gpu.facts[0], buf);
         buf[0] = 0;
         if (!isnan(s->gpu_fan_rpm)) snprintf(buf, sizeof buf, "Fan %d rpm", (int)s->gpu_fan_rpm);
-        set_text(v->gpu.facts[1], buf);
+        set_fact(v->gpu.facts[1], buf);
         buf[0] = 0;
         if (!isnan(s->gpu_watts)) snprintf(buf, sizeof buf, "%d W", (int)lround(s->gpu_watts));
-        set_text(v->gpu.facts[2], buf);
+        set_fact(v->gpu.facts[2], buf);
     }
 
     set_space(&v->mem, s->mem_used, s->mem_used, s->mem_total, "Used");
@@ -125,7 +142,7 @@ GtkWidget *hardware_build(Lares *app, Section *self)
     char *threads = g_strdup_printf("%d threads", info->threads);
     gtk_box_append(GTK_BOX(page), make_card(&v->cpu, ART_CHIP, info->cpu_name, threads, TRUE));
     g_free(threads);
-    set_text(v->cpu.facts[0], "Load over the last minutes");
+    set_fact(v->cpu.facts[0], "Load over the last minutes");
     if (info->gpu_name)
         gtk_box_append(GTK_BOX(page), make_card(&v->gpu, ART_SCREEN, info->gpu_name, NULL, TRUE));
     gtk_box_append(GTK_BOX(page), make_card(&v->mem, ART_MEMORY, "Memory", NULL, FALSE));

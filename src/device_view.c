@@ -114,6 +114,7 @@ static GtkWidget *action_button(DeviceView *v, Device *d, gboolean busy)
     gboolean allow = !d->bluetooth;
     GtkWidget *b = gtk_button_new();
     gtk_widget_add_css_class(b, allow || !d->connected ? "primary" : "quiet");
+    gtk_widget_add_css_class(b, "action"); /* one width, with a label or the spinner */
     gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
     gtk_widget_set_cursor_from_name(b, "pointer");
     gtk_button_set_child(GTK_BUTTON(b), ui_busy_child(allow ? "Allow" : d->connected ? "Disconnect" : "Connect", busy));

@@ -129,8 +129,10 @@ static void on_devices(gpointer user)
         Device *d = list->pdata[i];
         GtkButton *row = clickable(o->app, section_for(d->kind), "row-head");
         GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-        gtk_box_append(GTK_BOX(line), ui_icon(device_art(d->kind), 2, "row-icon"));
-        GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *icon = ui_icon(device_art(d->kind), 2, "row-icon");
+        gtk_widget_set_size_request(icon, 22, -1); /* icons of different widths line up their names */
+        gtk_box_append(GTK_BOX(line), icon);
+        GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
         gtk_widget_set_hexpand(texts, TRUE);
         GtkWidget *name = ui_label(d->name, NULL);
         gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
@@ -197,22 +199,25 @@ GtkWidget *overview_build(Lares *app, Section *self)
     self->view = o;
     GtkWidget *page = ui_page();
 
+    /* The tiles are one grid, as far apart down as across. */
+    GtkWidget *tiles = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_box_set_homogeneous(GTK_BOX(row), TRUE);
-    make_tile(o, &o->cpu, "hardware", ART_CHIP, "CPU", 15);
+    make_tile(o, &o->cpu, "hardware", ART_CHIP, "CPU", 14);
     gtk_box_append(GTK_BOX(row), o->cpu.button);
     if (hardware_info(app->hw)->gpu_name) {
-        make_tile(o, &o->gpu, "hardware", ART_SCREEN, "GPU", 15);
+        make_tile(o, &o->gpu, "hardware", ART_SCREEN, "GPU", 14);
         gtk_box_append(GTK_BOX(row), o->gpu.button);
     }
-    make_tile(o, &o->mem, "hardware", ART_MEMORY, "Memory", 15);
+    make_tile(o, &o->mem, "hardware", ART_MEMORY, "Memory", 14);
     gtk_box_append(GTK_BOX(row), o->mem.button);
-    gtk_box_append(GTK_BOX(page), row);
+    gtk_box_append(GTK_BOX(tiles), row);
 
     /* The system drive spans the width: a fourth tile in the row would
      * leave too little room for its number. */
     make_tile(o, &o->disk, "hardware", ART_DISK, "Storage", 34);
-    gtk_box_append(GTK_BOX(page), o->disk.button);
+    gtk_box_append(GTK_BOX(tiles), o->disk.button);
+    gtk_box_append(GTK_BOX(page), tiles);
 
     o->devices = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(o->devices, "card");

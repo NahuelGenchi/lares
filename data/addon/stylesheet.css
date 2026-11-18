@@ -12,14 +12,16 @@
   font-feature-settings: "liga" 0, "calt" 0;
 }
 
-.lares-level { font-size: 18px; padding-left: 6px; }
-.lares-open { font-size: 18px; }
+.lares-level { font-size: 18px; padding-left: 9px; }
+/* The shell's item padding is 12; 12 + 15 lines Open Lares up with the
+   card's text, 9 + 18 in. */
+.lares-open { font-size: 18px; padding-left: 15px; }
 .lares-icon.lares-active { color: #f09a5a; }
 .lares-level.lares-low,
 .lares-menu .lares-low { color: #f07a68; }
 
 .lares-item { padding: 9px; }
-.lares-menu { width: 400px; spacing: 9px; font-size: 18px; }
+.lares-menu { width: 405px; spacing: 9px; font-size: 18px; }
 
 .lares-card {
   spacing: 9px;

@@ -85,12 +85,6 @@ const char *const ART_BANG[] = {
     ".........",
     NULL };
 
-const char *const ART_DOT[] = {
-    ".........", ".........", ".........",
-    "...###...", "...###...", "...###...",
-    ".........", ".........", ".........",
-    NULL };
-
 const char *const ART_KEY[] = {
     "..###....",
     ".#...#...",
@@ -111,8 +105,6 @@ const char *const ART_CHEVRON[] = {
     "...###...",
     "....#....",
     NULL };
-
-const char *const ART_LIVE[] = { "####", "####", "####", "####", NULL };
 
 const char *const ART_OVERVIEW[] = {
     "####.####",

@@ -32,12 +32,12 @@ typedef struct {
     gboolean paired;       /* a Moonlight device is paired with Sunshine */
 } Live;
 
-/* ~/.config/lares/lares.ini. A screen value is "WxH@Hz"; a service is "on"
- * or "off"; "leave" means the mode doesn't touch it. */
+/* ~/.config/lares/lares.ini. A screen value is "WxH@Hz" ("leave" only
+ * until the first reading fills in the monitor's own size); a service is
+ * "on" or "off". */
 typedef struct {
     Mode mode;
     gboolean mode_known;
-    gboolean fresh;        /* no settings saved yet: the first reading fills them */
     gboolean ready;        /* the setup guide is done */
     char *values[N_MODES][N_ITEMS];
     char *sunshine_unit;   /* NULL: found among the usual names */
@@ -69,6 +69,12 @@ void remote_allow_tailscale(Remote *r, StepDone done, gpointer user);
 
 gboolean remote_matches(Remote *r, Item item, const char *value);
 char *remote_describe(Item item, const char *value);
+/* The value a mode uses for what was saved: a service is on or off, so a
+ * missing value or an old "leave" becomes the mode's own. */
+char *remote_saved_value(Mode mode, Item item, const char *saved);
+/* The main monitor's own size as a screen value: its preferred mode, else
+ * its current one; NULL before the screen is read. */
+char *remote_own_size(const Live *live);
 char *remote_describe_live(Remote *r, Item item);
 
 const Item *apply_order(Mode mode, int *n);
