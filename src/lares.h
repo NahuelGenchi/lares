@@ -62,6 +62,7 @@ GtkWidget *ui_icon(const char *const *art, int pixel, const char *css_class);
 void ui_class(GtkWidget *w, const char *css_class, gboolean on);
 GtkWidget *ui_page(void);
 GtkWidget *ui_group(GtkWidget *page, const char *heading);
+void ui_subheading(GtkWidget *group, const char *const *art, const char *title);
 GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub);
 GtkWidget *ui_setting_switch(GtkWidget *row, const char *title, gboolean *field, GCallback cb, gpointer data);
 const char *const *device_art(DevKind kind);

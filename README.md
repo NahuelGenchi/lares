@@ -12,7 +12,7 @@ Lares is one calm place to check and manage this PC and its devices. In Roman ho
 
 **Remote** is for playing this PC from another device, at home or away, with three free apps: Tailscale links the devices, Sunshine shares the screen, and Moonlight plays it on the other device. Until those are set up, the sidebar says *Set up remote* and the section is a three-step guide that ticks each step once Lares sees it done, and then shows the address to add in Moonlight. After that it switches between Home and Remote: Home puts the monitor back to its own size and turns Sunshine and Tailscale off; Remote turns them on and can set a screen size that fills the other device, so Moonlight shows no black bars. Click a row to change what a mode sets.
 
-**Settings** sits below Remote and is always there, with or without a controller. It holds what applies to Lares as a whole: Run in the background, and the top-bar icon with its battery level and whether it hides without a controller.
+**Settings** sits below Remote and is always there, with or without a controller. It holds what applies to Lares as a whole: Run in the background, and a Top bar group with a sub-section for each device that has an icon there. Today that is Xbox controller: show the icon, its battery level, and whether it hides without a controller.
 
 ## Light on the PC
 
