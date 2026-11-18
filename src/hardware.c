@@ -300,7 +300,7 @@ Hardware *hardware_new(void)
         char path[512], name[32] = "";
         snprintf(path, sizeof path, "%s/name", disk);
         read_small(path, name, sizeof name);
-        hw->info.disk_name = g_strdup(g_str_has_prefix(name, "nvme") ? "NVMe drive" : "Drive");
+        if (g_str_has_prefix(name, "nvme")) hw->info.disk_kind = g_strdup("NVMe");
     }
     g_free(disk);
 
