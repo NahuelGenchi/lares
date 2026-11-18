@@ -831,9 +831,7 @@ static void build_settings(PadView *v, GtkWidget *page)
     v->helper_off = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(v->helper_off, "card");
     gtk_widget_add_css_class(v->helper_off, "padded");
-    GtkWidget *off = setting(v, v->helper_off, "Background is off",
-                             "Alerts, notices, keeping the screen awake and idle disconnect need Run in the "
-                             "background, in Settings.", NULL, NULL);
+    GtkWidget *off = setting(v, v->helper_off, "Background is off", "Alerts and play features need it.", NULL, NULL);
     GtkWidget *open = button("Open Settings", "quiet", G_CALLBACK(on_open_settings), v);
     gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(off), open);
@@ -843,9 +841,8 @@ static void build_settings(PadView *v, GtkWidget *page)
     gtk_box_append(GTK_BOX(page), v->depends);
 
     GtkWidget *alerts = ui_group(v->depends, "Alerts");
-    setting(v, alerts, "Low battery alerts", "A notification when a controller's battery runs low, and one more at 10%.",
-            &p->alerts, &v->sw_alerts);
-    GtkWidget *level = setting(v, alerts, "Low battery level", "The battery turns orange from here.", NULL, NULL);
+    setting(v, alerts, "Low battery alerts", "Notifies when low, and again at 10%.", &p->alerts, &v->sw_alerts);
+    GtkWidget *level = setting(v, alerts, "Low battery level", "The battery turns orange at this level.", NULL, NULL);
     GtkWidget *minus = button("−", "quiet", G_CALLBACK(on_level), v), *plus = button("+", "quiet", G_CALLBACK(on_level), v);
     g_object_set_data(G_OBJECT(minus), "step", GINT_TO_POINTER(-5));
     g_object_set_data(G_OBJECT(plus), "step", GINT_TO_POINTER(5));
@@ -858,16 +855,12 @@ static void build_settings(PadView *v, GtkWidget *page)
         gtk_widget_set_valign(w, GTK_ALIGN_CENTER);
         gtk_box_append(GTK_BOX(level), w);
     }
-    setting(v, alerts, "Connection notices", "A short notification when a controller connects or leaves.",
-            &p->notices, &v->sw_notices);
+    setting(v, alerts, "Connection notices", "Notifies when a controller connects or leaves.", &p->notices,
+            &v->sw_notices);
 
     GtkWidget *play = ui_group(v->depends, "While you play");
-    setting(v, play, "Keep the screen awake",
-            "A button press, or a stick or trigger moved a quarter of its way, counts as activity, so the screen "
-            "doesn't dim or lock while you play with only a controller.", &p->keep_awake, &v->sw_awake);
-    setting(v, play, "Disconnect idle controllers",
-            "A Bluetooth controller with no input for this long disconnects to save its battery, as consoles do. "
-            "It stays paired. When the screen locks, those idle for a minute disconnect at once.",
+    setting(v, play, "Keep the screen awake", "No dimming or locking while you play.", &p->keep_awake, &v->sw_awake);
+    setting(v, play, "Disconnect idle controllers", "Saves controller battery. They stay paired.",
             &p->idle_disconnect, &v->sw_idle);
     v->idle_chips = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
     GtkWidget *first = NULL;

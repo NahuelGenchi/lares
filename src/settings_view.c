@@ -66,22 +66,22 @@ GtkWidget *settings_build(Lares *app, Section *self)
     GtkWidget *page = ui_page();
 
     GtkWidget *bg = ui_group(page, "Background");
-    v->sw_background = toggle(v, bg, "Run in the background",
-        "Lets controller alerts, notices, keeping the screen awake, idle disconnect and the top-bar icon work "
-        "while Lares is closed, through a small helper that needs under 8 MB. Off, all of those stop, and Lares "
-        "shows your controllers only while its window is open.", &p->background);
+    v->sw_background = toggle(v, bg, "Run in the background", "Keeps controller features on with Lares closed.",
+                              &p->background);
+    /* The helper's own memory, its PSS: what stopping it frees. */
+    ui_setting_saving(gtk_widget_get_parent(v->sw_background), "Off saves 1 MB RAM");
 
     /* One sub-section per device that has a top-bar icon. */
     v->top = ui_group(page, "Top bar");
     ui_subheading(v->top, ART_GAMEPAD, "Xbox controller");
-    GtkWidget *topbar = ui_setting(v->top, "Show in the top bar", "Lit while a controller is connected. Its menu has "
-                                   "the live picture, the battery and quick actions.");
+    GtkWidget *topbar = ui_setting(v->top, "Show in the top bar", "An icon with battery and quick actions.");
+    /* What the addon adds to GNOME Shell's own memory, menu closed. */
+    ui_setting_saving(topbar, "Off saves 2 MB RAM");
     v->sw_topbar = ui_setting_switch(topbar, "Show in the top bar", &p->topbar, G_CALLBACK(on_switch), v);
-    v->topbar_note = ui_paragraph("It appears after you log out and back in, as GNOME loads new top-bar items only then.",
-                                  "warn");
+    v->topbar_note = ui_paragraph("Appears after you log out and back in.", "warn");
     gtk_widget_set_visible(v->topbar_note, FALSE);
     gtk_box_append(GTK_BOX(gtk_widget_get_first_child(topbar)), v->topbar_note);
-    v->sw_level = toggle(v, v->top, "Battery level beside the icon", "With several controllers, the lowest charge.",
+    v->sw_level = toggle(v, v->top, "Battery level beside the icon", "Shows the lowest if several are connected.",
                          &p->topbar_level);
     v->sw_hide = toggle(v, v->top, "Hide the icon without a controller", NULL, &p->topbar_hide);
 
