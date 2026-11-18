@@ -180,15 +180,17 @@ const char *const ART_KEYBOARD[] = {
     "...........",
     NULL };
 
+/* Solid, like the keyboard and gamepad, with the split between the buttons:
+ * outlines with two hollow buttons read as a face at this size. */
 const char *const ART_MOUSE[] = {
+    "..###..",
     ".##.##.",
-    "#..#..#",
-    "#..#..#",
+    "###.###",
+    "###.###",
     "#######",
-    "#.....#",
-    "#.....#",
-    "#.....#",
-    ".#...#.",
+    "#######",
+    "#######",
+    ".#####.",
     "..###..",
     NULL };
 

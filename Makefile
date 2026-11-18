@@ -55,8 +55,8 @@ check: build/resources.c
 	@mkdir -p build/check
 	$(CC) $(CFLAGS) -Werror $(GTK) -o build/check/lares $(APP_SOURCES) $(GTK_LIBS)
 	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/lares-pad $(HELPER_SOURCES) $(GIO_LIBS)
-	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/unit tests/unit.c src/pad/pads.c src/pad/padconf.c \
-		src/pad_map.c src/remote_model.c $(GIO_LIBS)
+	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/unit tests/unit.c src/devices.c src/hidbattery.c \
+		src/pad/pads.c src/pad/padconf.c src/pad_map.c src/remote_model.c $(GIO_LIBS)
 	build/check/unit
 	@for f in data/addon/*.js; do node --check "$$f" || exit 1; done
 	@echo "make check: all passed"

@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* Unit tests for the parts of Lares that work on plain data: nickname keys,
- * battery stages and wording, screen sizes and the controller picture's map.
- * `make check` runs them from the repository's root. */
+ * battery stages and wording, screen sizes, the controller picture's map,
+ * how keyboards and mice are told apart in sysfs, and HyperX battery
+ * answers. `make check` runs them from the repository's root. */
 #include <glib.h>
 #include <string.h>
+#include "../src/devices.h"
+#include "../src/hidbattery.h"
 #include "../src/pad/pads.h"
 #include "../src/pad_map.h"
 #include "../src/remote_model.h"
@@ -95,6 +98,101 @@ static void test_screen(void)
     d = remote_describe(ITEM_TAILSCALE, "on");
     g_assert_cmpstr(d, ==, "On");
     g_free(d);
+}
+
+/* Capability bitmaps as a 64-bit kernel shows them, from a wireless mouse
+ * whose receiver also has a keyboard node, a keyboard on a receiver, a
+ * wired gamepad and a power button. */
+#define MOUSE_KEYS   "1f0000 0 0 0 0"
+#define MOUSE_REL    "903"
+#define KEYBOARD_KEYS "733eff 0 0 483ffe317aff32d bfc4444600000000 1 130c730b17c007 ffa07bfad9415fff " \
+                      "febeffdff3cfffff fffffffffffffffe"
+#define GAMEPAD_KEYS "7cdb000000000000 0 8000000000 0 0"
+#define POWER_KEYS   "8000 10000000000000 0"
+
+static void test_input_kinds(void)
+{
+    g_assert_true(devices_bitmap_has(MOUSE_KEYS, 0x110));   /* left button */
+    g_assert_true(devices_bitmap_has(MOUSE_KEYS "\n", 0x114));
+    g_assert_false(devices_bitmap_has(MOUSE_KEYS, 0x115));
+    g_assert_false(devices_bitmap_has(MOUSE_KEYS, 0x400));  /* past the last word */
+    g_assert_true(devices_bitmap_has(MOUSE_REL, 1));
+    g_assert_false(devices_bitmap_has("0", 0));
+    g_assert_false(devices_bitmap_has(NULL, 0));
+
+    g_assert_cmpint(devices_input_kind(MOUSE_KEYS, MOUSE_REL), ==, DEV_MOUSE);
+    g_assert_cmpint(devices_input_kind(KEYBOARD_KEYS, "0"), ==, DEV_KEYBOARD);
+    /* A keyboard's sideways scroll wheel doesn't make it a mouse. */
+    g_assert_cmpint(devices_input_kind(KEYBOARD_KEYS, "1040"), ==, DEV_KEYBOARD);
+    g_assert_cmpint(devices_input_kind(GAMEPAD_KEYS, "0"), ==, DEV_CONTROLLER);
+    g_assert_cmpint(devices_input_kind(POWER_KEYS, "0"), ==, -1);
+    g_assert_cmpint(devices_input_kind(NULL, NULL), ==, -1);
+}
+
+#define HUB "/sys/devices/pci0000:00/0000:00:14.0/usb1"
+
+static void test_input_owner(void)
+{
+    /* Both nodes of a mouse on its own receiver belong to the receiver. */
+    char *a = devices_input_owner(HUB "/1-1/1-1:1.0/0003:03F0:0F98.0001");
+    char *b = devices_input_owner(HUB "/1-1/1-1:1.1/0003:03F0:0F98.0002");
+    g_assert_cmpstr(a, ==, HUB "/1-1");
+    g_assert_cmpstr(b, ==, HUB "/1-1");
+    g_free(a);
+    g_free(b);
+    /* A keyboard paired to a receiver behind a hub is its own device. */
+    a = devices_input_owner(HUB "/1-8/1-8.4/1-8.4:1.2/0003:046D:C547.0007/0003:046D:40A2.0009");
+    g_assert_cmpstr(a, ==, HUB "/1-8/1-8.4/1-8.4:1.2/0003:046D:C547.0007/0003:046D:40A2.0009");
+    g_free(a);
+    /* A device on a hub port belongs to that port, not the hub. */
+    a = devices_input_owner(HUB "/1-8/1-8.2/1-8.2:1.0");
+    g_assert_cmpstr(a, ==, HUB "/1-8/1-8.2");
+    g_free(a);
+    g_assert_null(devices_input_owner("/sys/devices/platform/i8042/serio0"));
+    g_assert_null(devices_input_owner("/sys/devices/virtual/misc/uinput"));
+    g_assert_null(devices_input_owner(NULL));
+}
+
+/* Reports as the Pulsefire Haste 2 Wireless's receiver sends them. */
+static void test_hid_battery(void)
+{
+    int level = -1;
+    gboolean charging = TRUE;
+    /* 54 %, not charging, 26 °C, 3840 mV */
+    const guint8 answer[64] = { 0x51, 0x02, 0x36, 0x00, 0x1a, 0x00, 0x00, 0x0f };
+    g_assert_true(hidbattery_parse(answer, sizeof answer, &level, &charging));
+    g_assert_cmpint(level, ==, 54);
+    g_assert_false(charging);
+    const guint8 on_cable[64] = { 0x51, 0x02, 0x64, 0x01 };
+    g_assert_true(hidbattery_parse(on_cable, sizeof on_cable, &level, &charging));
+    g_assert_cmpint(level, ==, 100);
+    g_assert_true(charging);
+    const guint8 full[64] = { 0x51, 0x02, 0x64, 0x02 };
+    g_assert_true(hidbattery_parse(full, sizeof full, &level, &charging));
+    g_assert_false(charging);
+
+    /* The receiver's acknowledgement, a link event, a wrong level and a
+     * short read are not answers. */
+    const guint8 ack[64] = { 0xff, 0x01, 0xbf, 0xb4 };
+    const guint8 link[64] = { 0xfb, 0x0a, 0x01 };
+    const guint8 wrong[64] = { 0x51, 0x02, 0x65, 0x00 };
+    g_assert_false(hidbattery_parse(ack, sizeof ack, &level, &charging));
+    g_assert_false(hidbattery_parse(link, sizeof link, &level, &charging));
+    g_assert_false(hidbattery_parse(wrong, sizeof wrong, &level, &charging));
+    g_assert_false(hidbattery_parse(answer, 3, &level, &charging));
+
+    const HidBatteryModel *m = hidbattery_model(0x03f0, 0x0f98);
+    g_assert_nonnull(m);
+    g_assert_cmpint(m->interface, ==, 2);
+    g_assert_null(hidbattery_model(0x03f0, 0x0d97));
+
+    /* The rule opens the battery interface only, to the person at the screen. */
+    char *rules = hidbattery_udev_rules();
+    g_assert_nonnull(strstr(rules, "SUBSYSTEM==\"hidraw\", ENV{ID_USB_VENDOR_ID}==\"03f0\", "
+                                   "ENV{ID_USB_MODEL_ID}==\"0f98\", ENV{ID_USB_INTERFACE_NUM}==\"02\", "
+                                   "TAG+=\"uaccess\"\n"));
+    g_assert_null(strstr(rules, "MODE="));  /* no world-readable node */
+    g_free(rules);
 }
 
 static void test_map_parse(void)
@@ -190,6 +288,9 @@ int main(int argc, char **argv)
     g_test_add_func("/nicknames/clean", test_clean_nickname);
     g_test_add_func("/battery/stages-and-words", test_battery);
     g_test_add_func("/remote/screen-sizes", test_screen);
+    g_test_add_func("/devices/input-kinds", test_input_kinds);
+    g_test_add_func("/devices/input-owner", test_input_owner);
+    g_test_add_func("/devices/hid-battery", test_hid_battery);
     g_test_add_func("/picture/map-parse", test_map_parse);
     g_test_add_func("/picture/map-paint", test_map_paint);
     g_test_add_func("/picture/map-shipped", test_map_shipped);

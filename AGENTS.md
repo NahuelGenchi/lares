@@ -2,7 +2,7 @@
 
 ## The project
 
-Lares is a native GNOME app for Linux, in C with GTK 4, that checks and manages a PC and its devices: an Overview, live Hardware readings, Xbox controllers (the work of the retired Padlight extension), Bluetooth headphones, remote play with Tailscale, Sunshine and Moonlight, and Settings. A GLib-only helper, `lares-pad`, runs the controller features that work while the window is closed, and a thin JavaScript addon shows a controller icon in GNOME's top bar. `README.md` describes the features.
+Lares is a native GNOME app for Linux, in C with GTK 4, that checks and manages a PC and its devices: an Overview, live Hardware readings, Xbox controllers (the work of the retired Padlight extension), Bluetooth headphones, keyboards and mice, remote play with Tailscale, Sunshine and Moonlight, and Settings. A GLib-only helper, `lares-pad`, runs the controller features that work while the window is closed, and a thin JavaScript addon shows a controller icon in GNOME's top bar. `README.md` describes the features.
 
 Lightness is a requirement: the window stays around 30 MB of its own memory and the helper under 1 MB. Nothing reads hardware unless something on screen needs it; nothing polls what can be watched; nothing blocks the main thread (a slow sysfs file, such as amdgpu's `power1_average`, is read in a worker thread). Measure before and after a change that could cost memory, CPU or GPU.
 
@@ -17,7 +17,7 @@ Never describe something as working or complete unless a recorded check establis
 | `src/main.c`, `src/window.c` | Start-up, the command line (`lares home`, `remote`, `status`, `restore`, `--section`), the window, its sidebar and lazily built sections |
 | `src/widgets.c` | Lares' own widgets: pixel icons, the spring-driven switch and sidebar highlight, wrap, clamp, meters and graphs |
 | `src/overview.c`, `src/hardware.c`, `src/hardware_view.c` | Overview, and the hardware readings with their section |
-| `src/devices.c`, `src/device_view.c` | Bluetooth and battery devices from BlueZ and UPower, and the Headphones section |
+| `src/devices.c`, `src/hidbattery.c`, `src/device_view.c` | Bluetooth, battery and USB input devices from BlueZ, UPower and sysfs, HyperX mouse batteries over hidraw, and the Headphones, Keyboard and Mouse sections |
 | `src/pad/` | The controller core, shared with the helper and free of GTK: detection, batteries, nicknames, evdev input, rumble and Find, the programs using a pad, pairing, settings and the background features |
 | `src/pad_view.c`, `src/pad_picture.c`, `src/pad_map.c`, `src/pad_service.c` | The Controller section, its live pixel-art picture and the picture's map (`data/pad/controller.txt`), and switching the helper and the addon |
 | `src/remote_model.c`, `src/remote_view.c` | Remote play: the screen, Sunshine and Tailscale, the Home and Remote modes, and the setup guide |

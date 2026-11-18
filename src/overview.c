@@ -104,12 +104,19 @@ static void on_hardware(gpointer user)
     g_free(left); g_free(free_text); g_free(total); g_free(of);
 }
 
+/* Every kind of device has its own section. */
 static const char *section_for(DevKind kind)
 {
-    return kind == DEV_CONTROLLER ? "controller" : kind == DEV_AUDIO ? "headphones" : NULL;
+    switch (kind) {
+    case DEV_CONTROLLER: return "controller";
+    case DEV_AUDIO:      return "headphones";
+    case DEV_KEYBOARD:   return "keyboard";
+    default:             return "mouse";
+    }
 }
 
-/* One row per device: what it is, whether it's there, and its battery. */
+/* One row per device: what it is, whether it's there, and its battery.
+ * Clicking it opens the device's section. */
 static void on_devices(gpointer user)
 {
     Overview *o = user;
@@ -120,10 +127,7 @@ static void on_devices(gpointer user)
     GPtrArray *list = devices_list(o->app->devices);
     for (guint i = 0; i < list->len; i++) {
         Device *d = list->pdata[i];
-        const char *section = section_for(d->kind);
-        GtkWidget *row = section ? GTK_WIDGET(clickable(o->app, section, "row-head"))
-                                 : gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        if (!section) gtk_widget_add_css_class(row, "row-static");
+        GtkButton *row = clickable(o->app, section_for(d->kind), "row-head");
         GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
         gtk_box_append(GTK_BOX(line), ui_icon(device_art(d->kind), 2, "row-icon"));
         GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -142,14 +146,13 @@ static void on_devices(gpointer user)
             ui_class(meter, "low", d->battery <= 20);
             gtk_box_append(GTK_BOX(line), meter);
         }
-        if (section) gtk_button_set_child(GTK_BUTTON(row), line);
-        else gtk_box_append(GTK_BOX(row), line);
+        gtk_button_set_child(row, line);
         if (i > 0) {
             GtkWidget *sep = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
             gtk_widget_add_css_class(sep, "line");
             gtk_box_append(GTK_BOX(o->devices), sep);
         }
-        gtk_box_append(GTK_BOX(o->devices), row);
+        gtk_box_append(GTK_BOX(o->devices), GTK_WIDGET(row));
     }
     gtk_widget_set_visible(o->devices, list->len > 0);
 }
@@ -214,5 +217,6 @@ GtkWidget *overview_build(Lares *app, Section *self)
 void overview_shown(Lares *app, Section *self, gboolean on)
 {
     hardware_want(app->hw, on);
+    devices_want_batteries(app->devices, on);
     if (remote_config(app->remote)->ready) remote_want(app->remote, on);
 }
