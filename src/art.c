@@ -112,8 +112,6 @@ const char *const ART_CHEVRON[] = {
     "....#....",
     NULL };
 
-const char *const ART_LIVE[] = { "####", "####", "####", "####", NULL };
-
 const char *const ART_OVERVIEW[] = {
     "####.####",
     "####.####",

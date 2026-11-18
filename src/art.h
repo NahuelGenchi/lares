@@ -11,7 +11,6 @@ extern const char *const ART_BANG[];
 extern const char *const ART_DOT[];
 extern const char *const ART_KEY[];
 extern const char *const ART_CHEVRON[];
-extern const char *const ART_LIVE[];
 extern const char *const ART_OVERVIEW[];
 extern const char *const ART_CHIP[];
 extern const char *const ART_GAMEPAD[];
