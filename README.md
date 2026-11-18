@@ -44,6 +44,10 @@ Tailscale asks for your password once before Lares can switch it. The Remote sec
 
 `LARES_DRY_RUN=1 lares` pretends every change (screen, services, Bluetooth) and keeps its own settings file. `LARES_DRY_STREAM=1` adds a pretend Moonlight stream, `LARES_COLOR_SCHEME=dark` forces dark, `LARES_SECTION=hardware` opens on a section, and `LARES_CSS=data/style.css` loads the stylesheet from disk so it can be edited without rebuilding.
 
+## Contributing
+
+Work is tracked with issues, milestones and pull requests; see [CONTRIBUTING.md](CONTRIBUTING.md). `make check` runs what every pull request must pass.
+
 ## License
 
 GPL-2.0-or-later. The controller picture, its glow and `data/addon/controllerArt.js` come from Padlight, by the same author, under the same license. Xbox is a trademark of Microsoft; Lares is not affiliated with it.

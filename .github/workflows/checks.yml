@@ -1,0 +1,30 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Builds the code and runs it on made-up data; needs no other permission.
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Build and tests
+    runs-on: ubuntu-24.04
+    # Lares needs GTK 4.22, which Ubuntu 26.04 has.
+    container: ubuntu:26.04
+    timeout-minutes: 15
+    steps:
+      - name: Install the build tools
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            build-essential pkg-config libgtk-4-dev nodejs ca-certificates git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and test
+        run: make check
