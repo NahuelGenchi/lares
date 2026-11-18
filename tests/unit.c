@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* Unit tests for the parts of Lares that work on plain data: nickname keys,
- * battery stages and wording, screen sizes, and how keyboards and mice are
- * told apart in sysfs. `make check` runs them. */
+ * battery stages and wording, screen sizes, how keyboards and mice are told
+ * apart in sysfs, and HyperX battery answers. `make check` runs them. */
 #include <glib.h>
 #include <string.h>
 #include "../src/devices.h"
+#include "../src/hidbattery.h"
 #include "../src/pad/pads.h"
 #include "../src/remote_model.h"
 
@@ -150,6 +151,48 @@ static void test_input_owner(void)
     g_assert_null(devices_input_owner(NULL));
 }
 
+/* Reports as the Pulsefire Haste 2 Wireless's receiver sends them. */
+static void test_hid_battery(void)
+{
+    int level = -1;
+    gboolean charging = TRUE;
+    /* 54 %, not charging, 26 °C, 3840 mV */
+    const guint8 answer[64] = { 0x51, 0x02, 0x36, 0x00, 0x1a, 0x00, 0x00, 0x0f };
+    g_assert_true(hidbattery_parse(answer, sizeof answer, &level, &charging));
+    g_assert_cmpint(level, ==, 54);
+    g_assert_false(charging);
+    const guint8 on_cable[64] = { 0x51, 0x02, 0x64, 0x01 };
+    g_assert_true(hidbattery_parse(on_cable, sizeof on_cable, &level, &charging));
+    g_assert_cmpint(level, ==, 100);
+    g_assert_true(charging);
+    const guint8 full[64] = { 0x51, 0x02, 0x64, 0x02 };
+    g_assert_true(hidbattery_parse(full, sizeof full, &level, &charging));
+    g_assert_false(charging);
+
+    /* The receiver's acknowledgement, a link event, a wrong level and a
+     * short read are not answers. */
+    const guint8 ack[64] = { 0xff, 0x01, 0xbf, 0xb4 };
+    const guint8 link[64] = { 0xfb, 0x0a, 0x01 };
+    const guint8 wrong[64] = { 0x51, 0x02, 0x65, 0x00 };
+    g_assert_false(hidbattery_parse(ack, sizeof ack, &level, &charging));
+    g_assert_false(hidbattery_parse(link, sizeof link, &level, &charging));
+    g_assert_false(hidbattery_parse(wrong, sizeof wrong, &level, &charging));
+    g_assert_false(hidbattery_parse(answer, 3, &level, &charging));
+
+    const HidBatteryModel *m = hidbattery_model(0x03f0, 0x0f98);
+    g_assert_nonnull(m);
+    g_assert_cmpint(m->interface, ==, 2);
+    g_assert_null(hidbattery_model(0x03f0, 0x0d97));
+
+    /* The rule opens the battery interface only, to the person at the screen. */
+    char *rules = hidbattery_udev_rules();
+    g_assert_nonnull(strstr(rules, "SUBSYSTEM==\"hidraw\", ENV{ID_USB_VENDOR_ID}==\"03f0\", "
+                                   "ENV{ID_USB_MODEL_ID}==\"0f98\", ENV{ID_USB_INTERFACE_NUM}==\"02\", "
+                                   "TAG+=\"uaccess\"\n"));
+    g_assert_null(strstr(rules, "MODE="));  /* no world-readable node */
+    g_free(rules);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -159,5 +202,6 @@ int main(int argc, char **argv)
     g_test_add_func("/remote/screen-sizes", test_screen);
     g_test_add_func("/devices/input-kinds", test_input_kinds);
     g_test_add_func("/devices/input-owner", test_input_owner);
+    g_test_add_func("/devices/hid-battery", test_hid_battery);
     return g_test_run();
 }

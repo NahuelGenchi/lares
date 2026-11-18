@@ -15,6 +15,8 @@ typedef struct {
     DevKind kind;
     gboolean bluetooth, connected;
     int battery;       /* 0 to 100, or -1 when the device doesn't say */
+    gboolean charging;
+    gboolean battery_locked;  /* its battery can be read once the person allows it */
 } Device;
 
 typedef struct Devices Devices;
@@ -26,6 +28,13 @@ GPtrArray *devices_list(Devices *d);        /* Device*, sorted by kind, then nam
 gboolean devices_any(Devices *d, DevKind kind);
 void devices_watch(Devices *d, DevNotify fn, gpointer user);
 void devices_set_connected(Devices *d, const char *id, gboolean on, DevDone done, gpointer user);
+/* Batteries that only the device's own protocol reports (src/hidbattery.c)
+ * are asked for while something on screen wants them: now, then every few
+ * minutes. Calls nest; each `on` needs its `off`. */
+void devices_want_batteries(Devices *d, gboolean on);
+/* Lets the person at the screen read those batteries from now on: a udev
+ * rule installed through pkexec, which asks for the password once. */
+void devices_allow_batteries(Devices *d, DevDone done, gpointer user);
 
 /* How an input node in sysfs is read, kept apart for the unit tests. */
 /* Whether `bit` is set in a capability bitmap: words of hex, most

@@ -1,20 +1,21 @@
 /* Headphones, Keyboard and Mouse: one card per paired device, with its
  * battery and, for Bluetooth ones, a button to connect or disconnect it.
  * AirPods show up in Headphones. A keyboard or mouse plugged in by USB,
- * wired or on its own receiver, has no button. */
+ * wired or on its own receiver, has no button, unless its battery needs the
+ * person's permission once: then the button allows it. */
 #include "lares.h"
 
 typedef struct {
     Lares *app;
     DevKind kind;
     GtkWidget *page;
-    char *busy_id;       /* the device being connected or disconnected */
+    char *busy_id;       /* the device being connected, disconnected or allowed */
     char *error_id, *error;
 } DeviceView;
 
 static void rebuild(gpointer user);
 
-static void connect_done(gboolean ok, const char *message, gpointer user)
+static void action_done(gboolean ok, const char *message, gpointer user)
 {
     DeviceView *v = user;
     g_free(v->error_id);
@@ -29,11 +30,35 @@ static void on_button(GtkButton *b, DeviceView *v)
 {
     if (v->busy_id) return;
     const char *id = g_object_get_data(G_OBJECT(b), "device");
+    gboolean allow = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "allow"));
     gboolean on = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "connect"));
     v->busy_id = g_strdup(id);
     g_clear_pointer(&v->error_id, g_free);
     rebuild(v);
-    devices_set_connected(v->app->devices, id, on, connect_done, v);
+    if (allow) devices_allow_batteries(v->app->devices, action_done, v);
+    else devices_set_connected(v->app->devices, id, on, action_done, v);
+}
+
+/* Connect or Disconnect for a Bluetooth device, Allow for a battery that
+ * needs permission; a spinner while it works. */
+static GtkWidget *action_button(DeviceView *v, Device *d, gboolean busy)
+{
+    gboolean allow = !d->bluetooth;
+    GtkWidget *b = gtk_button_new();
+    gtk_widget_add_css_class(b, allow || !d->connected ? "primary" : "quiet");
+    gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
+    gtk_widget_set_cursor_from_name(b, "pointer");
+    if (busy) {
+        gtk_button_set_child(GTK_BUTTON(b), lares_pixel_spinner_new(2));
+        gtk_widget_set_sensitive(b, FALSE);
+    } else {
+        gtk_button_set_label(GTK_BUTTON(b), allow ? "Allow" : d->connected ? "Disconnect" : "Connect");
+    }
+    g_object_set_data_full(G_OBJECT(b), "device", g_strdup(d->id), g_free);
+    g_object_set_data(G_OBJECT(b), "allow", GINT_TO_POINTER(allow));
+    g_object_set_data(G_OBJECT(b), "connect", GINT_TO_POINTER(!d->connected));
+    g_signal_connect(b, "clicked", G_CALLBACK(on_button), v);
+    return b;
 }
 
 static GtkWidget *device_card(DeviceView *v, Device *d)
@@ -53,8 +78,10 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
     gtk_box_append(GTK_BOX(texts), name);
 
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
-    const char *status = busy ? (d->connected ? "Disconnecting…" : "Connecting…")
-                       : d->connected ? "Connected" : "Not connected";
+    const char *status = busy && d->battery_locked ? "Waiting for your password…"
+                       : busy ? (d->connected ? "Disconnecting…" : "Connecting…")
+                       : !d->connected ? "Not connected"
+                       : d->charging ? "Charging" : "Connected";
     gtk_box_append(GTK_BOX(texts), ui_label(status, "muted"));
 
     if (d->connected && d->battery >= 0) {
@@ -68,6 +95,16 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
         g_free(pct);
         gtk_box_append(GTK_BOX(texts), bat);
     }
+    /* Allow sits under what it allows, which leaves the name its room. */
+    if (d->connected && d->battery_locked) {
+        GtkWidget *hint = ui_label("Lares can show its battery once you allow it. That asks for your password, "
+                                   "one time.", "muted");
+        gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+        gtk_box_append(GTK_BOX(texts), hint);
+        GtkWidget *allow = action_button(v, d, busy);
+        gtk_widget_set_halign(allow, GTK_ALIGN_START);
+        gtk_box_append(GTK_BOX(texts), allow);
+    }
     if (v->error_id && g_str_equal(v->error_id, d->id)) {
         GtkWidget *err = ui_label(v->error, "bad");
         gtk_label_set_wrap(GTK_LABEL(err), TRUE);
@@ -75,23 +112,7 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
     }
     gtk_box_append(GTK_BOX(card), texts);
 
-    if (d->bluetooth) {
-        GtkWidget *b = gtk_button_new();
-        gtk_widget_add_css_class(b, d->connected ? "quiet" : "primary");
-        gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
-        gtk_widget_set_cursor_from_name(b, "pointer");
-        if (busy) {
-            GtkWidget *spin = lares_pixel_spinner_new(2);
-            gtk_button_set_child(GTK_BUTTON(b), spin);
-            gtk_widget_set_sensitive(b, FALSE);
-        } else {
-            gtk_button_set_label(GTK_BUTTON(b), d->connected ? "Disconnect" : "Connect");
-        }
-        g_object_set_data_full(G_OBJECT(b), "device", g_strdup(d->id), g_free);
-        g_object_set_data(G_OBJECT(b), "connect", GINT_TO_POINTER(!d->connected));
-        g_signal_connect(b, "clicked", G_CALLBACK(on_button), v);
-        gtk_box_append(GTK_BOX(card), b);
-    }
+    if (d->bluetooth) gtk_box_append(GTK_BOX(card), action_button(v, d, busy));
     return card;
 }
 
@@ -121,5 +142,9 @@ GtkWidget *device_build(Lares *app, Section *self)
     return v->page;
 }
 
-/* Devices report changes by themselves; nothing to start or stop. */
-void device_shown(Lares *app, Section *self, gboolean on) {}
+/* Devices report changes by themselves, except batteries that only their
+ * own protocol reports: those are asked for while the section shows. */
+void device_shown(Lares *app, Section *self, gboolean on)
+{
+    devices_want_batteries(app->devices, on);
+}

@@ -217,5 +217,6 @@ GtkWidget *overview_build(Lares *app, Section *self)
 void overview_shown(Lares *app, Section *self, gboolean on)
 {
     hardware_want(app->hw, on);
+    devices_want_batteries(app->devices, on);
     if (remote_config(app->remote)->ready) remote_want(app->remote, on);
 }
