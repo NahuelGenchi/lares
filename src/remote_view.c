@@ -411,11 +411,20 @@ static void build_screen_chips(Row *r)
 {
     Live *l = remote_live(r->app->m);
     if (!l->modes) return;
+    /* The monitor's own size is what a mode sets until another is picked, so
+     * it always has a chip, in its own group when it isn't a common shape. */
+    char *own = remote_own_size(l);
+    Res mine = { 0 };
+    double rate = 0;
+    if (own) parse_screen(own, &mine.w, &mine.h, &rate);
+    mine.hz = (int)lround(rate);
+    gboolean own_listed = !own;
     GArray *list = g_array_new(FALSE, FALSE, sizeof(Res));
     for (guint i = 0; i < l->modes->len; i++) {
         ScreenMode *m = l->modes->pdata[i];
         Res res = { m->w, m->h, (int)lround(m->rate), m->w * 10 == m->h * 16 };
         if (m->w < 1280 || res.hz < 59 || (!res.tall && m->w * 9 != m->h * 16)) continue;
+        own_listed |= res.w == mine.w && res.h == mine.h && res.hz == mine.hz;
         gboolean seen = FALSE;
         for (guint j = 0; j < list->len && !seen; j++) {
             Res *o = &g_array_index(list, Res, j);
@@ -430,9 +439,11 @@ static void build_screen_chips(Row *r)
         Res *o = &g_array_index(list, Res, j);
         g_string_append_printf(key, "%dx%d@%d;", o->w, o->h, o->hz);
     }
+    if (!own_listed) g_string_append_printf(key, "own %s", own);
     if (r->chips_key && g_str_equal(r->chips_key, key->str)) {
         g_string_free(key, TRUE);
         g_array_unref(list);
+        g_free(own);
         return;
     }
     g_free(r->chips_key);
@@ -443,14 +454,21 @@ static void build_screen_chips(Row *r)
         gtk_box_remove(GTK_BOX(r->chips), child);
     g_ptr_array_set_size(r->toggles, 0);
 
-    for (int group = 0; group < 2; group++) {
+    if (!own_listed) {
+        mine.tall = FALSE;
+        g_array_append_val(list, mine);
+    }
+    static const char *const GROUPS[] = {
+        "16:10, as on MacBooks and many laptops", "16:9, as on most TVs and monitors", "This monitor's own size",
+    };
+    for (int group = 0; group < 3; group++) {
         GtkWidget *flow = NULL;
         for (guint j = 0; j < list->len; j++) {
             Res *o = &g_array_index(list, Res, j);
-            if (o->tall != (group == 0)) continue;
+            gboolean is_own = !own_listed && j == list->len - 1;
+            if (group == 2 ? !is_own : is_own || o->tall != (group == 0)) continue;
             if (!flow) {
-                gtk_box_append(GTK_BOX(r->chips),
-                    ui_label(group == 0 ? "16:10, as on MacBooks and many laptops" : "16:9, as on most TVs and monitors", "group"));
+                gtk_box_append(GTK_BOX(r->chips), ui_label(GROUPS[group], "group"));
                 flow = new_flow();
                 gtk_box_append(GTK_BOX(r->chips), flow);
             }
@@ -462,11 +480,8 @@ static void build_screen_chips(Row *r)
             g_free(value);
         }
     }
-    GtkWidget *flow = new_flow();
-    gtk_widget_add_css_class(flow, "last");
-    gtk_box_append(GTK_BOX(r->chips), flow);
-    add_chip(r, flow, "Leave as is", "leave");
     g_array_unref(list);
+    g_free(own);
     sync_chips(r);
 }
 
