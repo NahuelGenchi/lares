@@ -1,255 +1,275 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-// Draws the controller picture with the live input state on top.
-// Every position below is in pixels of the full-size artwork (1444 x 1007).
+// Draws the controller picture with the live input state on top, from the
+// window's own pixel map, controller.txt (data/pad/controller.txt, installed
+// beside this file): one character per pixel, with the legend in its header.
+// The rules are those of src/pad_map.c and src/pad_picture.c, so the menu and
+// the Controller section show the same picture. It imports nothing, so the
+// tests can run it under Node.
 
-const ART_WIDTH = 1444;
-const ART_HEIGHT = 1007;
-// Room around the artwork for its glow and, above it, for the trigger gauges,
-// which the front view hides.
-const MARGIN_SIDE = 130;
-const MARGIN_TOP = 110;
-const MARGIN_BOTTOM = 100;
-// The glow picture is the artwork's outline, blurred, with this much around it.
-const GLOW_MARGIN = 130;
+// The helper's button bits, in the order of PadButton in src/pad/pads.h
+export const Button = {
+    A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, VIEW: 8, MENU: 9, XBOX: 10,
+    SHARE: 11, LS: 12, RS: 13, UP: 14, DOWN: 15, LEFT: 16, RIGHT: 17,
+};
+export const bit = button => 1 << button;
 
-const CENTER_X = 721.25;
-const TAU = 2 * Math.PI;
+// What a map pixel is
+export const Cell = {
+    EMPTY: 0,
+    LINE: 1,
+    FAINT: 2,     // a line drawn faint: the D-pad's middle
+    GAUGE: 3,     // a trigger gauge's outline
+    AREA: 4,      // lights when its button is pressed
+    GLYPH: 5,     // a button's letter, icon or logo
+    CAP_LINE: 6,  // a stick's cap, which moves with the stick
+    CAP_AREA: 7,  // the inside of a cap, lit when the stick is clicked
+};
 
-const GREEN = [0.2, 0.86, 0.2];
-const PRESSED_ALPHA = 0.82;
-// Buttons the checklist has seen pressed, while they are up again
+// How a map pixel shows
+export const Paint = {
+    NONE: 0,      // the background shows
+    LINE: 1,      // the text color
+    FAINT: 2,     // the text color, faint
+    LIT: 3,       // the accent color: held now
+    SEEN: 4,      // the accent color, soft: the checklist has seen it
+};
+
+// How far a stick's cap travels at full tilt, in map pixels. The map leaves
+// this much room between each cap and its rim.
+export const STICK_TRAVEL = 3;
+const FAINT_ALPHA = 0.4;
 const SEEN_ALPHA = 0.36;
+const PLACEHOLDER_ALPHA = 0.3;
 
-// Glow colour and strength on a dark menu and on a light one
-const GLOW_ON_DARK = [...GREEN, 0.55];
-const GLOW_ON_LIGHT = [0.06, 0.49, 0.06, 0.5];
-const PLACEHOLDER_ALPHA = 0.16;
+// The legend, as in the map's header
+const LEGEND = new Map([
+    ['.', [Cell.EMPTY, 0]], ['#', [Cell.LINE, 0]], ['+', [Cell.FAINT, 0]], ['=', [Cell.GAUGE, 0]],
+    ['a', [Cell.AREA, Button.A]], ['b', [Cell.AREA, Button.B]], ['x', [Cell.AREA, Button.X]],
+    ['y', [Cell.AREA, Button.Y]], ['v', [Cell.AREA, Button.VIEW]], ['m', [Cell.AREA, Button.MENU]],
+    ['s', [Cell.AREA, Button.SHARE]],
+    ['A', [Cell.GLYPH, Button.A]], ['B', [Cell.GLYPH, Button.B]], ['X', [Cell.GLYPH, Button.X]],
+    ['Y', [Cell.GLYPH, Button.Y]], ['V', [Cell.GLYPH, Button.VIEW]], ['M', [Cell.GLYPH, Button.MENU]],
+    ['S', [Cell.GLYPH, Button.SHARE]], ['H', [Cell.GLYPH, Button.XBOX]],
+    ['[', [Cell.AREA, Button.LB]], [']', [Cell.AREA, Button.RB]],
+    ['(', [Cell.AREA, Button.LT]], [')', [Cell.AREA, Button.RT]],
+    ['u', [Cell.AREA, Button.UP]], ['d', [Cell.AREA, Button.DOWN]],
+    ['l', [Cell.AREA, Button.LEFT]], ['r', [Cell.AREA, Button.RIGHT]],
+    ['<', [Cell.CAP_LINE, Button.LS]], ['>', [Cell.CAP_LINE, Button.RS]],
+    ['{', [Cell.CAP_AREA, Button.LS]], ['}', [Cell.CAP_AREA, Button.RS]],
+]);
 
-const ROUND_BUTTONS = {
-    a: [1086.5, 370, 45.5],
-    b: [1182.5, 277.5, 45.5],
-    x: [988.5, 275.5, 45.5],
-    y: [1082.5, 183, 44.5],
-    view: [618, 277.5, 33.5],
-    menu: [824.5, 277.5, 33.5],
-    xbox: [721.5, 134, 53],
-};
+// A cell packs its kind with the button it belongs to.
+export const kindOf = cell => cell >> 5;
+export const buttonOf = cell => cell & 31;
 
-// x, y, width, height, corner radius
-const BOX_BUTTONS = {
-    share: [680, 328, 80, 50, 20],
-    up: [499, 407, 71, 69, 12],
-    down: [499, 546, 71, 63, 12],
-    left: [433, 476, 66, 70, 12],
-    right: [570, 476, 70, 70, 12],
-};
+/**
+ * Reads the map. Lines starting with ';' are comments; every other line is a
+ * row of the picture, and all rows have the same length.
+ *
+ * @param {string} text - the map file's contents
+ * @returns {object} {width, height, cells: Uint8Array, gauges: [[x0, x1], [x0, x1]]}
+ * @throws {Error} when a row is ragged or has a character the legend doesn't know
+ */
+export function parseMap(text) {
+    const rows = text.split('\n').map(row => row.replace(/\r$/, ''))
+        .filter(row => row && !row.startsWith(';'));
+    if (!rows.length)
+        throw new Error('the map has no rows');
+    const width = rows[0].length;
+    const height = rows.length;
+    const cells = new Uint8Array(width * height);
+    rows.forEach((row, y) => {
+        if (row.length !== width)
+            throw new Error(`row ${y + 1} is ${row.length} pixels long, not ${width}`);
+        for (let x = 0; x < width; x++) {
+            const entry = LEGEND.get(row[x]);
+            if (!entry)
+                throw new Error(`row ${y + 1} has '${row[x]}', which the legend doesn't know`);
+            cells[y * width + x] = entry[0] << 5 | entry[1];
+        }
+    });
 
-const STICKS = {
-    ls: {x: 358, y: 277.5, axes: ['lx', 'ly']},
-    rs: {x: 906.5, y: 490.5, axes: ['rx', 'ry']},
-};
-const STICK_CAP_RADIUS = 80;
-const STICK_WELL_RADIUS = 92.5;
-const STICK_TRAVEL = 30;
-
-// Left bumper: the lower edge follows the seam with the faceplate, the rest
-// overshoots the outline and is trimmed by the artwork's own transparency.
-const LEFT_BUMPER = [
-    [200, 150], [212, 140], [228, 121], [260, 98], [300, 78], [340, 63], [380, 52],
-    [420, 44], [460, 39], [500, 37], [506, 30], [506, -10], [200, -10],
-];
-
-const LEFT_TRIGGER = [300, -56, 170, 44, 14];
-
-const mirror = x => 2 * CENTER_X - x;
-
-function roundedBox(cr, x, y, w, h, r) {
-    cr.newSubPath();
-    cr.arc(x + w - r, y + r, r, -TAU / 4, 0);
-    cr.arc(x + w - r, y + h - r, r, 0, TAU / 4);
-    cr.arc(x + r, y + h - r, r, TAU / 4, TAU / 2);
-    cr.arc(x + r, y + r, r, TAU / 2, TAU * 3 / 4);
-    cr.closePath();
+    // Each trigger gauge's inside, in map pixels; LT's fills from the left,
+    // RT's from the right, so the two mirror each other.
+    const gauges = [[width, -1], [width, -1]];
+    for (let i = 0; i < cells.length; i++) {
+        const button = buttonOf(cells[i]);
+        if (kindOf(cells[i]) !== Cell.AREA || (button !== Button.LT && button !== Button.RT))
+            continue;
+        const gauge = gauges[button === Button.RT ? 1 : 0];
+        gauge[0] = Math.min(gauge[0], i % width);
+        gauge[1] = Math.max(gauge[1], i % width);
+    }
+    return {width, height, cells, gauges};
 }
 
-function paintArt(cr, image) {
-    const fit = ART_WIDTH / image.getWidth();
-    cr.save();
-    cr.scale(fit, fit);
-    cr.setSourceSurface(image, 0, 0);
-    cr.paint();
-    cr.restore();
+/**
+ * How a pixel shows, given the buttons held and the ones the checklist has
+ * seen, as bits. A trigger gauge counts as held as far as it is pulled.
+ *
+ * @param {number} cell - a map cell
+ * @param {number} held - bit(button) of each button held
+ * @param {number} seen - bit(button) of each button seen
+ * @returns {number} a Paint
+ */
+export function cellPaint(cell, held, seen) {
+    const mask = bit(buttonOf(cell));
+    switch (kindOf(cell)) {
+    case Cell.LINE:
+    case Cell.GAUGE:
+    case Cell.CAP_LINE:
+        return Paint.LINE;
+    case Cell.FAINT:
+        return Paint.FAINT;
+    case Cell.AREA:
+    case Cell.CAP_AREA:
+        if (held & mask)
+            return Paint.LIT;
+        return seen & mask ? Paint.SEEN : Paint.NONE;
+    case Cell.GLYPH:
+        // The Xbox logo is its own button and lights itself; a letter or icon
+        // is cut out of its lit button instead.
+        if (buttonOf(cell) === Button.XBOX) {
+            if (held & mask)
+                return Paint.LIT;
+            return seen & mask ? Paint.SEEN : Paint.LINE;
+        }
+        return held & mask ? Paint.NONE : Paint.LINE;
+    default:
+        return Paint.NONE;
+    }
 }
 
-// Flat shape of the controller in one colour
-function paintSilhouette(cr, image, colour, alpha) {
-    const fit = ART_WIDTH / image.getWidth();
-    cr.save();
-    cr.scale(fit, fit);
-    cr.setSourceRGBA(...colour, alpha);
-    cr.maskSurface(image, 0, 0);
-    cr.restore();
-}
+// Halves away from zero, as C's lround(), so both pictures agree.
+const round = value => Math.sign(value) * Math.round(Math.abs(value));
+const clamp01 = value => Math.min(Math.max(value ?? 0, 0), 1);
 
-function drawGlow(cr, glow, [r, g, b, alpha]) {
-    const fit = (ART_WIDTH + 2 * GLOW_MARGIN) / glow.getWidth();
-    cr.save();
-    cr.translate(-GLOW_MARGIN, -GLOW_MARGIN);
-    cr.scale(fit, fit);
-    cr.setSourceRGBA(r, g, b, alpha);
-    cr.maskSurface(glow, 0, 0);
-    cr.restore();
-}
-
-function drawStick(cr, image, stick, state, alpha) {
-    let dx = state[stick.axes[0]] ?? 0;
-    let dy = state[stick.axes[1]] ?? 0;
-    // A real stick moves in a circle; the raw corners reach past it.
+// A stick moves in a circle; the raw corners reach past it.
+function capOffset(dx = 0, dy = 0) {
     const reach = Math.hypot(dx, dy);
     if (reach > 1) {
         dx /= reach;
         dy /= reach;
     }
-
-    // Empty well where the cap sits in the artwork
-    cr.arc(stick.x, stick.y, STICK_WELL_RADIUS, 0, TAU);
-    cr.setSourceRGB(0.03, 0.03, 0.03);
-    cr.fill();
-
-    // The cap itself, cut from the artwork and slid to where the stick is
-    cr.save();
-    cr.translate(dx * STICK_TRAVEL, dy * STICK_TRAVEL);
-    cr.arc(stick.x, stick.y, STICK_CAP_RADIUS, 0, TAU);
-    cr.clip();
-    paintArt(cr, image);
-    if (alpha) {
-        cr.setSourceRGBA(...GREEN, alpha);
-        cr.paint();
-    }
-    cr.restore();
-}
-
-function drawBumper(cr, image, right, alpha) {
-    cr.save();
-    LEFT_BUMPER.forEach(([x, y], i) => {
-        if (i === 0)
-            cr.moveTo(right ? mirror(x) : x, y);
-        else
-            cr.lineTo(right ? mirror(x) : x, y);
-    });
-    cr.closePath();
-    cr.clip();
-    paintSilhouette(cr, image, GREEN, alpha);
-    cr.restore();
-}
-
-function drawTrigger(cr, value, right, foreground, seen) {
-    const [x, y, w, h, r] = LEFT_TRIGGER;
-    const left = right ? mirror(x + w) : x;
-
-    roundedBox(cr, left, y, w, h, r);
-    if (seen)
-        cr.setSourceRGBA(...GREEN, SEEN_ALPHA);
-    else
-        cr.setSourceRGBA(...foreground, 0.18);
-    cr.fill();
-
-    const pulled = Math.min(Math.max(value ?? 0, 0), 1);
-    if (pulled <= 0)
-        return;
-    // Fills from the outside in, so the two gauges mirror each other.
-    cr.save();
-    cr.rectangle(right ? left + w * (1 - pulled) : left, y, w * pulled, h);
-    cr.clip();
-    roundedBox(cr, left, y, w, h, r);
-    cr.setSourceRGB(...GREEN);
-    cr.fill();
-    cr.restore();
+    return [round(dx * STICK_TRAVEL), round(dy * STICK_TRAVEL)];
 }
 
 /**
- * Draws a connected controller, as large as fits and centred.
+ * What a frame shows, worked out from the controller's state: a new state
+ * that looks the same needs no repaint (see sameLook).
  *
- * @param {object} cr - cairo context
- * @param {number} width - space to draw in
- * @param {number} height
- * @param {object} images - cairo surfaces: {art, glow}
- * @param {object} state - {buttons: string[], lx, ly, rx, ry, lt, rt}
- * @param {number[]} foreground - text colour of the surrounding UI, as [r, g, b]
- * @param {Set<string>} [seen] - buttons to keep lit, more faintly, while up
+ * @param {object} map - from parseMap
+ * @param {object} [state] - {buttons: bits, lx, ly, rx, ry, lt, rt}, as the helper sends them
+ * @param {number} [seen] - bit(button) of each button the checklist has seen
+ * @returns {object} the look
  */
-export function drawController(cr, width, height, images, state, foreground, seen = new Set()) {
-    const pressed = new Set(state.buttons ?? []);
-    const image = images.art;
-    // How strongly a button is lit: pressed, seen by the checklist, or not
-    const alpha = (name, pressedAlpha = PRESSED_ALPHA) => {
-        if (pressed.has(name))
-            return pressedAlpha;
-        return seen.has(name) ? SEEN_ALPHA : 0;
+export function lookOf(map, state = {}, seen = 0) {
+    const [lx, ly] = capOffset(state.lx, state.ly);
+    const [rx, ry] = capOffset(state.rx, state.ry);
+    // The gauges stand for the triggers, lit as far as they are pulled.
+    const pulled = (value, [x0, x1]) => round(clamp01(value) * (x1 - x0 + 1));
+    return {
+        held: (state.buttons ?? 0) & ~(bit(Button.LT) | bit(Button.RT)),
+        seen,
+        lx, ly, rx, ry,
+        lt: pulled(state.lt, map.gauges[0]),
+        rt: pulled(state.rt, map.gauges[1]),
     };
+}
 
-    const fullWidth = ART_WIDTH + 2 * MARGIN_SIDE;
-    const fullHeight = MARGIN_TOP + ART_HEIGHT + MARGIN_BOTTOM;
-    const fit = Math.min(width / fullWidth, height / fullHeight);
+export const sameLook = (a, b) => Object.keys(a).every(key => a[key] === b[key]);
 
-    cr.save();
-    cr.translate((width - fullWidth * fit) / 2, (height - fullHeight * fit) / 2);
-    cr.scale(fit, fit);
-    cr.translate(MARGIN_SIDE, MARGIN_TOP);
+function gaugeLit(map, look, button, x) {
+    if (button === Button.RT)
+        return x > map.gauges[1][1] - look.rt;
+    return x < map.gauges[0][0] + look.lt;
+}
 
-    // Light text means a dark menu.
-    const [r, g, b] = foreground;
-    const onDark = 0.299 * r + 0.587 * g + 0.114 * b > 0.5;
-    drawGlow(cr, images.glow, onDark ? GLOW_ON_DARK : GLOW_ON_LIGHT);
-
-    drawTrigger(cr, state.lt, false, foreground, seen.has('lt'));
-    drawTrigger(cr, state.rt, true, foreground, seen.has('rt'));
-
-    paintArt(cr, image);
-
-    for (const [name, right] of [['lb', false], ['rb', true]]) {
-        if (alpha(name))
-            drawBumper(cr, image, right, alpha(name));
+// Every map pixel's Paint: everything that stays put, then the caps where the
+// sticks have them, over it.
+function paintPixels(map, look, placeholder) {
+    const {width, height, cells} = map;
+    const pixels = new Uint8Array(width * height);
+    for (const caps of [false, true]) {
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const cell = cells[y * width + x];
+                const kind = kindOf(cell);
+                const button = buttonOf(cell);
+                if ((kind === Cell.CAP_LINE || kind === Cell.CAP_AREA) !== caps)
+                    continue;
+                if (placeholder && kind === Cell.GAUGE)
+                    continue;
+                let held = look.held;
+                if (kind === Cell.AREA && (button === Button.LT || button === Button.RT) &&
+                    gaugeLit(map, look, button, x))
+                    held |= bit(button);
+                const paint = cellPaint(cell, held, look.seen);
+                if (paint === Paint.NONE)
+                    continue;
+                let px = x, py = y;
+                if (caps) {
+                    const right = button === Button.RS;
+                    px += right ? look.rx : look.lx;
+                    py += right ? look.ry : look.ly;
+                }
+                if (px >= 0 && py >= 0 && px < width && py < height)
+                    pixels[py * width + px] = paint;
+            }
+        }
     }
-
-    for (const [name, [x, y, radius]] of Object.entries(ROUND_BUTTONS)) {
-        if (!alpha(name))
-            continue;
-        cr.setSourceRGBA(...GREEN, alpha(name));
-        cr.arc(x, y, radius, 0, TAU);
-        cr.fill();
-    }
-    for (const [name, box] of Object.entries(BOX_BUTTONS)) {
-        if (!alpha(name))
-            continue;
-        cr.setSourceRGBA(...GREEN, alpha(name));
-        roundedBox(cr, ...box);
-        cr.fill();
-    }
-
-    for (const [name, stick] of Object.entries(STICKS))
-        drawStick(cr, image, stick, state, alpha(name, 0.6));
-
-    cr.restore();
+    return pixels;
 }
 
 /**
- * Draws the outline of a controller that is not there, as large as fits and
- * centred.
+ * Draws the controller, centred, with as many whole screen pixels per map
+ * pixel as fit, so every map pixel lands on the screen's grid and stays crisp.
  *
  * @param {object} cr - cairo context
  * @param {number} width - space to draw in
  * @param {number} height
- * @param {object} image - cairo surface holding the controller artwork
- * @param {number[]} foreground - text colour of the surrounding UI, as [r, g, b]
+ * @param {object} map - from parseMap
+ * @param {object} look - from lookOf
+ * @param {object} colors - {line, accent}, each [r, g, b, a] from 0 to 1
+ * @param {boolean} [placeholder] - a controller that is not there: dimmed, without gauges
  */
-export function drawPlaceholder(cr, width, height, image, foreground) {
-    const fit = Math.min(width / ART_WIDTH, height / ART_HEIGHT);
-    cr.save();
-    cr.translate((width - ART_WIDTH * fit) / 2, (height - ART_HEIGHT * fit) / 2);
-    cr.scale(fit, fit);
-    paintSilhouette(cr, image, foreground, PLACEHOLDER_ALPHA);
-    cr.restore();
+export function drawController(cr, width, height, map, look, colors, placeholder = false) {
+    const scale = Math.max(1, Math.floor(Math.min(width / map.width, height / map.height)));
+    const left = Math.floor((width - map.width * scale) / 2);
+    const top = Math.floor((height - map.height * scale) / 2);
+    const pixels = paintPixels(map, look, placeholder);
+
+    // Runs of one Paint along each row, so each color is one fill.
+    const runs = [[], [], [], [], []];
+    for (let y = 0; y < map.height; y++) {
+        const row = y * map.width;
+        for (let x = 0; x < map.width;) {
+            const paint = pixels[row + x];
+            let end = x + 1;
+            while (end < map.width && pixels[row + end] === paint)
+                end++;
+            if (paint !== Paint.NONE)
+                runs[paint].push(x, y, end - x);
+            x = end;
+        }
+    }
+
+    const strength = placeholder ? PLACEHOLDER_ALPHA : 1;
+    const shades = {
+        [Paint.LINE]: [colors.line, 1],
+        [Paint.FAINT]: [colors.line, FAINT_ALPHA],
+        [Paint.LIT]: [colors.accent, 1],
+        [Paint.SEEN]: [colors.accent, SEEN_ALPHA],
+    };
+    for (const [paint, [[r, g, b, a], alpha]] of Object.entries(shades)) {
+        const run = runs[paint];
+        if (!run.length)
+            continue;
+        for (let i = 0; i < run.length; i += 3)
+            cr.rectangle(left + run[i] * scale, top + run[i + 1] * scale, run[i + 2] * scale, scale);
+        cr.setSourceRGBA(r, g, b, a * alpha * strength);
+        cr.fill();
+    }
 }

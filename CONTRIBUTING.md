@@ -24,7 +24,7 @@ For non-file operations (repository settings, releases), put sanitized commands 
 
 ## Checks
 
-`make check` builds Lares and its helper with warnings as errors, runs the unit tests in `tests/`, and parses the top-bar addon's JavaScript. The Checks workflow runs the same on every PR, on Ubuntu 26.04 with GTK 4.22, and `main` requires it to pass. It shows that the code builds and that the plain-data parts work, not that the window behaves. A change to those parts comes with a test.
+`make check` builds Lares and its helper with warnings as errors, runs the unit tests in `tests/`, and parses the top-bar addon's JavaScript and tests its controller picture under Node. The Checks workflow runs the same on every PR, on Ubuntu 26.04 with GTK 4.22, and `main` requires it to pass. It shows that the code builds and that the plain-data parts work, not that the window behaves. A change to those parts comes with a test.
 
 Window checks run Lares in a dry run (`LARES_DRY_RUN=1`), which pretends every change to the screen, services and Bluetooth and keeps its own settings, or in a separate, hidden GNOME Shell with its own settings; they never change your running session. Hardware checks name the device, its connection and its driver, and say whether it was real or simulated. Report each separately in the PR's delivery record, and say what was not run.
 

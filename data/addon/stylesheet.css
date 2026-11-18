@@ -28,6 +28,10 @@
   background-color: rgba(240, 154, 90, 0.08);
 }
 
+/* The controller picture: lines in the menu's text color, what's held in the
+   accent. Read by extension.js. */
+.lares-picture { -lares-accent: #f09a5a; }
+
 .lares-name { font-size: 18px; }
 .lares-muted { color: rgba(255, 255, 255, 0.55); }
 .lares-note { padding: 9px 0; }
@@ -53,6 +57,7 @@
 /* On a light menu */
 .lares-on-light .lares-muted { color: rgba(0, 0, 0, 0.55); }
 .lares-on-light .lares-card { background-color: rgba(196, 96, 42, 0.08); }
+.lares-on-light .lares-picture { -lares-accent: #c4602a; }
 .lares-on-light .lares-block { background-color: rgba(196, 96, 42, 0.18); }
 .lares-on-light .lares-block.lares-on { background-color: #c4602a; }
 .lares-on-light .lares-button { background-color: rgba(196, 96, 42, 0.12); }
