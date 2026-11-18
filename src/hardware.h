@@ -29,8 +29,8 @@ const HwInfo *hardware_info(Hardware *hw);
 const HwSample *hardware_sample(Hardware *hw);
 void hardware_watch(Hardware *hw, HwNotify fn, gpointer user);
 void hardware_want(Hardware *hw, gboolean on);
-/* Also read the power, fan, video memory and drive, which some sections
- * don't show. */
+/* Also read the power, fan, video memory and drive temperature, which
+ * some sections don't show. */
 void hardware_want_details(Hardware *hw, gboolean on);
 
 char *format_bytes(guint64 bytes);

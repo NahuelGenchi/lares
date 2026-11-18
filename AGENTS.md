@@ -2,7 +2,7 @@
 
 ## The project
 
-Lares is a native GNOME app for Linux, in C with GTK 4, that checks and manages a PC and its devices: an Overview, live Hardware readings, Xbox controllers (the work of the retired Padlight extension), Bluetooth headphones, and remote play with Tailscale, Sunshine and Moonlight. A GLib-only helper, `lares-pad`, runs the controller features that work while the window is closed, and a thin JavaScript addon shows a controller icon in GNOME's top bar. `README.md` describes the features.
+Lares is a native GNOME app for Linux, in C with GTK 4, that checks and manages a PC and its devices: an Overview, live Hardware readings, Xbox controllers (the work of the retired Padlight extension), Bluetooth headphones, remote play with Tailscale, Sunshine and Moonlight, and Settings. A GLib-only helper, `lares-pad`, runs the controller features that work while the window is closed, and a thin JavaScript addon shows a controller icon in GNOME's top bar. `README.md` describes the features.
 
 Lightness is a requirement: the window stays around 30 MB of its own memory and the helper under 1 MB. Nothing reads hardware unless something on screen needs it; nothing polls what can be watched; nothing blocks the main thread (a slow sysfs file, such as amdgpu's `power1_average`, is read in a worker thread). Measure before and after a change that could cost memory, CPU or GPU.
 
@@ -21,6 +21,7 @@ Never describe something as working or complete unless a recorded check establis
 | `src/pad/` | The controller core, shared with the helper and free of GTK: detection, batteries, nicknames, evdev input, rumble and Find, the programs using a pad, pairing, settings and the background features |
 | `src/pad_view.c`, `src/pad_picture.c`, `src/pad_service.c` | The Controller section, Padlight's live controller picture, and switching the helper and the addon |
 | `src/remote_model.c`, `src/remote_view.c` | Remote play: the screen, Sunshine and Tailscale, the Home and Remote modes, and the setup guide |
+| `src/settings_view.c` | The Settings section: Run in the background and the top-bar icon |
 | `src/helper/lares-pad.c` | The background helper and its D-Bus interface for the addon |
 | `data/` | Stylesheet, artwork, the bundled Monocraft font, the desktop file, the helper's unit and the addon (`data/addon/`) |
 | `tests/unit.c` | Unit tests on plain data, run by `make check` |

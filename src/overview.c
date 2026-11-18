@@ -8,7 +8,7 @@ typedef struct {
 
 typedef struct {
     Lares *app;
-    Tile cpu, gpu, mem, remote;
+    Tile cpu, gpu, mem, disk, remote;
     GtkWidget *devices;      /* the card holding one row per device */
 } Overview;
 
@@ -28,9 +28,9 @@ static GtkButton *clickable(Lares *app, const char *section, const char *css)
 }
 
 /* A tile: a small heading with its icon, one big number, a line under it
- * and, for loads, a meter. */
+ * and, for loads and space, a meter of that many blocks. */
 static void make_tile(Overview *o, Tile *t, const char *section, const char *const *art,
-                      const char *heading, gboolean with_meter)
+                      const char *heading, int meter_blocks)
 {
     t->button = GTK_WIDGET(clickable(o->app, section, "tile"));
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
@@ -43,8 +43,8 @@ static void make_tile(Overview *o, Tile *t, const char *section, const char *con
     t->sub = ui_label("", "muted");
     gtk_label_set_ellipsize(GTK_LABEL(t->sub), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(box), t->sub);
-    if (with_meter) {
-        t->meter = lares_meter_new(15, 2);
+    if (meter_blocks) {
+        t->meter = lares_meter_new(meter_blocks, 2);
         gtk_box_append(GTK_BOX(box), t->meter);
     }
     gtk_button_set_child(GTK_BUTTON(t->button), box);
@@ -89,6 +89,19 @@ static void on_hardware(gpointer user)
     set_text(o->mem.sub, of);
     lares_meter_set(LARES_METER(o->mem.meter), s->mem_total ? (double)s->mem_used / s->mem_total : -1);
     g_free(used); g_free(total); g_free(of);
+
+    /* The room left, with the meter still filling as the drive does. Space
+     * only: the drive's temperature costs a command to the drive. */
+    double full = s->disk_total ? (double)s->disk_used / s->disk_total : -1;
+    char *left = format_bytes(s->disk_total - s->disk_used);
+    char *free_text = g_strdup_printf("%s free", left);
+    total = format_bytes(s->disk_total);
+    of = g_strdup_printf("of %s", total);
+    set_text(o->disk.value, s->disk_total ? free_text : "…");
+    set_text(o->disk.sub, s->disk_total ? of : "");
+    lares_meter_set(LARES_METER(o->disk.meter), full);
+    ui_class(o->disk.meter, "hot", full > 0.9);
+    g_free(left); g_free(free_text); g_free(total); g_free(of);
 }
 
 static const char *section_for(DevKind kind)
@@ -166,22 +179,27 @@ GtkWidget *overview_build(Lares *app, Section *self)
 
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_box_set_homogeneous(GTK_BOX(row), TRUE);
-    make_tile(o, &o->cpu, "hardware", ART_CHIP, "CPU", TRUE);
+    make_tile(o, &o->cpu, "hardware", ART_CHIP, "CPU", 15);
     gtk_box_append(GTK_BOX(row), o->cpu.button);
     if (hardware_info(app->hw)->gpu_name) {
-        make_tile(o, &o->gpu, "hardware", ART_SCREEN, "GPU", TRUE);
+        make_tile(o, &o->gpu, "hardware", ART_SCREEN, "GPU", 15);
         gtk_box_append(GTK_BOX(row), o->gpu.button);
     }
-    make_tile(o, &o->mem, "hardware", ART_MEMORY, "Memory", TRUE);
+    make_tile(o, &o->mem, "hardware", ART_MEMORY, "Memory", 15);
     gtk_box_append(GTK_BOX(row), o->mem.button);
     gtk_box_append(GTK_BOX(page), row);
+
+    /* The system drive spans the width: a fourth tile in the row would
+     * leave too little room for its number. */
+    make_tile(o, &o->disk, "hardware", ART_DISK, "Storage", 34);
+    gtk_box_append(GTK_BOX(page), o->disk.button);
 
     o->devices = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(o->devices, "card");
     gtk_box_append(GTK_BOX(page), o->devices);
 
     /* The Remote tile shows once remote play is set up. */
-    make_tile(o, &o->remote, "remote", ART_LAPTOP, "Remote", FALSE);
+    make_tile(o, &o->remote, "remote", ART_LAPTOP, "Remote", 0);
     gtk_box_append(GTK_BOX(page), o->remote.button);
     remote_watch(app->remote, on_remote, o);
     on_remote(o);

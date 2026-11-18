@@ -54,11 +54,15 @@ GtkWidget *pad_view_build(Lares *app, Section *self);
 void pad_view_shown(Lares *app, Section *self, gboolean on);
 GtkWidget *remote_build(Lares *app, Section *self);
 void remote_shown(Lares *app, Section *self, gboolean on);
+GtkWidget *settings_build(Lares *app, Section *self);
 
 /* Small helpers shared by the sections */
 GtkWidget *ui_label(const char *text, const char *css_class);
 GtkWidget *ui_icon(const char *const *art, int pixel, const char *css_class);
 void ui_class(GtkWidget *w, const char *css_class, gboolean on);
 GtkWidget *ui_page(void);
+GtkWidget *ui_group(GtkWidget *page, const char *heading);
+GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub);
+GtkWidget *ui_setting_switch(GtkWidget *row, const char *title, gboolean *field, GCallback cb, gpointer data);
 const char *const *device_art(DevKind kind);
 char *battery_text(int battery);

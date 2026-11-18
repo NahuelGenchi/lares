@@ -4,7 +4,8 @@
  * live picture on its Buttons tab, next to Sticks and Vibration, the battery,
  * connection, model and firmware, who has it open, and Test vibration, Find
  * and Disconnect. Under the cards: paired controllers that are away, Pair a
- * controller, and the settings. Ported from Padlight's controllerCard.js,
+ * controller, and the controller settings (the background helper and the
+ * top-bar icon are in Settings). Ported from Padlight's controllerCard.js,
  * controllerCheck.js, buttonCheck.js, checklist.js, vibrationLab.js and
  * prefs.js. Nothing reads a controller unless its card is on screen. */
 #include <math.h>
@@ -64,15 +65,14 @@ typedef struct {
 struct PadView {
     Lares *app;
     GtkWidget *page, *cards, *away, *pair_card, *pair_status, *pair_action, *pair_found;
-    GtkWidget *settings, *level_text, *idle_chips, *topbar_note, *depends, *nicknames;
-    GtkWidget *sw_alerts, *sw_notices, *sw_awake, *sw_idle, *sw_topbar, *sw_level, *sw_hide, *sw_background;
+    GtkWidget *level_text, *idle_chips, *depends, *helper_off, *nicknames;
+    GtkWidget *sw_alerts, *sw_notices, *sw_awake, *sw_idle;
     GPtrArray *card_list;     /* Card* */
     GHashTable *memory;       /* pad path -> Memory */
     GHashTable *users;        /* pad path -> "In use by …" */
     PadPair *pair;
     char *shape;              /* what the cards were built for */
     gboolean on_screen, syncing;
-    PadAddonState addon;
 };
 
 static void update_readers(PadView *v);
@@ -776,48 +776,14 @@ static void on_forget(GtkButton *b, PadView *v)
 static GtkWidget *setting(PadView *v, GtkWidget *box, const char *title, const char *sub, gboolean *field,
                           GtkWidget **sw)
 {
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-    gtk_widget_add_css_class(row, "setting");
-    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_widget_set_hexpand(texts, TRUE);
-    gtk_box_append(GTK_BOX(texts), ui_label(title, NULL));
-    if (sub) {
-        GtkWidget *l = ui_label(sub, "muted");
-        gtk_label_set_wrap(GTK_LABEL(l), TRUE);
-        gtk_box_append(GTK_BOX(texts), l);
-    }
-    gtk_box_append(GTK_BOX(row), texts);
-    if (field) {
-        *sw = gtk_switch_new();
-        gtk_widget_set_valign(*sw, GTK_ALIGN_CENTER);
-        g_object_set_data(G_OBJECT(*sw), "field", field);
-        g_signal_connect(*sw, "notify::active", G_CALLBACK(on_switch), v);
-        gtk_accessible_update_property(GTK_ACCESSIBLE(*sw), GTK_ACCESSIBLE_PROPERTY_LABEL, title, -1);
-        gtk_box_append(GTK_BOX(row), *sw);
-    }
-    gtk_box_append(GTK_BOX(box), row);
+    GtkWidget *row = ui_setting(box, title, sub);
+    if (field) *sw = ui_setting_switch(row, title, field, G_CALLBACK(on_switch), v);
     return row;
 }
 
-/* A heading over a card of settings; hiding the card's parent hides both. */
-static GtkWidget *group(GtkWidget *page, const char *heading)
+static void on_open_settings(GtkButton *b, PadView *v)
 {
-    GtkWidget *section = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
-    gtk_box_append(GTK_BOX(section), ui_label(heading, "group-heading"));
-    GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
-    gtk_widget_add_css_class(card, "card");
-    gtk_widget_add_css_class(card, "padded");
-    gtk_box_append(GTK_BOX(section), card);
-    gtk_box_append(GTK_BOX(page), section);
-    return card;
-}
-
-static void on_addon_state(PadAddonState state, gpointer data)
-{
-    PadView *v = data;
-    v->addon = state;
-    gboolean later = prefs(v)->topbar && state == PAD_ADDON_NEEDS_LOGIN;
-    gtk_widget_set_visible(v->topbar_note, later);
+    lares_show(v->app, "settings");
 }
 
 static void show_settings(PadView *v)
@@ -828,10 +794,6 @@ static void show_settings(PadView *v)
     gtk_switch_set_active(GTK_SWITCH(v->sw_notices), p->notices);
     gtk_switch_set_active(GTK_SWITCH(v->sw_awake), p->keep_awake);
     gtk_switch_set_active(GTK_SWITCH(v->sw_idle), p->idle_disconnect);
-    gtk_switch_set_active(GTK_SWITCH(v->sw_topbar), p->topbar);
-    gtk_switch_set_active(GTK_SWITCH(v->sw_level), p->topbar_level);
-    gtk_switch_set_active(GTK_SWITCH(v->sw_hide), p->topbar_hide);
-    gtk_switch_set_active(GTK_SWITCH(v->sw_background), p->background);
     char buf[16];
     snprintf(buf, sizeof buf, "%d%%", p->low_level);
     gtk_label_set_text(GTK_LABEL(v->level_text), buf);
@@ -844,8 +806,8 @@ static void show_settings(PadView *v)
     gtk_widget_set_visible(v->idle_chips, p->idle_disconnect);
     /* Without the helper, these can't work; they wait until it's back. */
     gtk_widget_set_sensitive(v->depends, p->background);
+    gtk_widget_set_visible(v->helper_off, !p->background);
     v->syncing = FALSE;
-    pad_service_addon_state(on_addon_state, v);
 
     GtkWidget *c;
     while ((c = gtk_widget_get_first_child(v->nicknames))) gtk_box_remove(GTK_BOX(v->nicknames), c);
@@ -870,10 +832,22 @@ static void show_settings(PadView *v)
 static void build_settings(PadView *v, GtkWidget *page)
 {
     PadPrefs *p = prefs(v);
+    /* Says why the settings below are greyed out, and where to change it. */
+    v->helper_off = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(v->helper_off, "card");
+    gtk_widget_add_css_class(v->helper_off, "padded");
+    GtkWidget *off = setting(v, v->helper_off, "Background is off",
+                             "Alerts, notices, keeping the screen awake and idle disconnect need Run in the "
+                             "background, in Settings.", NULL, NULL);
+    GtkWidget *open = button("Open Settings", "quiet", G_CALLBACK(on_open_settings), v);
+    gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(off), open);
+    gtk_box_append(GTK_BOX(page), v->helper_off);
+
     v->depends = gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
     gtk_box_append(GTK_BOX(page), v->depends);
 
-    GtkWidget *alerts = group(v->depends, "Alerts");
+    GtkWidget *alerts = ui_group(v->depends, "Alerts");
     setting(v, alerts, "Low battery alerts", "A notification when a controller's battery runs low, and one more at 10%.",
             &p->alerts, &v->sw_alerts);
     GtkWidget *level = setting(v, alerts, "Low battery level", "The battery turns orange from here.", NULL, NULL);
@@ -892,7 +866,7 @@ static void build_settings(PadView *v, GtkWidget *page)
     setting(v, alerts, "Connection notices", "A short notification when a controller connects or leaves.",
             &p->notices, &v->sw_notices);
 
-    GtkWidget *play = group(v->depends, "While you play");
+    GtkWidget *play = ui_group(v->depends, "While you play");
     setting(v, play, "Keep the screen awake",
             "A button press, or a stick or trigger moved a quarter of its way, counts as activity, so the screen "
             "doesn't dim or lock while you play with only a controller.", &p->keep_awake, &v->sw_awake);
@@ -916,26 +890,9 @@ static void build_settings(PadView *v, GtkWidget *page)
     }
     gtk_box_append(GTK_BOX(play), v->idle_chips);
 
-    GtkWidget *top = group(v->depends, "Top bar");
-    setting(v, top, "Show in the top bar", "A controller icon in GNOME's top bar, lit while one is connected. "
-            "Its menu has the live picture, the battery and quick actions.", &p->topbar, &v->sw_topbar);
-    v->topbar_note = ui_label("It appears after you log out and back in, as GNOME loads new top-bar items only then.", "warn");
-    gtk_label_set_wrap(GTK_LABEL(v->topbar_note), TRUE);
-    gtk_widget_set_visible(v->topbar_note, FALSE);
-    gtk_box_append(GTK_BOX(top), v->topbar_note);
-    setting(v, top, "Battery level beside the icon", "With several controllers, the lowest charge.",
-            &p->topbar_level, &v->sw_level);
-    setting(v, top, "Hide the icon without a controller", NULL, &p->topbar_hide, &v->sw_hide);
-
-    GtkWidget *names = group(page, "Nicknames");
+    GtkWidget *names = ui_group(page, "Nicknames");
     v->nicknames = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_box_append(GTK_BOX(names), v->nicknames);
-
-    GtkWidget *bg = group(page, "Background");
-    setting(v, bg, "Run in the background",
-            "Lets alerts, notices, keeping the screen awake, idle disconnect and the top-bar icon work while Lares "
-            "is closed, through a small helper that needs under 8 MB. Off, all of those stop, and Lares shows your "
-            "controllers only while its window is open.", &p->background, &v->sw_background);
 }
 
 /* ---------------------------------------------------------------- build */

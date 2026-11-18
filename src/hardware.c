@@ -18,7 +18,7 @@ struct Hardware {
     guint64 last_busy, last_total;   /* only the sampling thread touches these */
     GArray *watchers;
     int wanted;
-    gint details;                    /* sections showing power, fan, video memory and the drive */
+    gint details;                    /* sections showing power, fan, video memory and drive temperature */
     gint fresh_load;                 /* the next load reading starts over */
     gboolean sampling;               /* a sample is being read */
     guint timer;
@@ -192,6 +192,11 @@ static void sample_thread(GTask *task, gpointer src, gpointer data, GCancellable
     sample_memory(s);
     if (hw->gpu_dir) s->gpu = read_number(hw->gpu_dir, "gpu_busy_percent", &v) ? v / 100 : -1;
     if (hw->gpu_hwmon) s->gpu_temp = read_number(hw->gpu_hwmon, "temp1_input", &v) ? v / 1000 : NAN;
+    struct statvfs fs;
+    if (statvfs("/", &fs) == 0) {
+        s->disk_total = (guint64)fs.f_blocks * fs.f_frsize;
+        s->disk_used = s->disk_total - (guint64)fs.f_bavail * fs.f_frsize;
+    }
 
     if (g_atomic_int_get(&hw->details) > 0) {
         if (hw->gpu_dir) {
@@ -202,11 +207,8 @@ static void sample_thread(GTask *task, gpointer src, gpointer data, GCancellable
             s->gpu_fan_rpm = read_number(hw->gpu_hwmon, "fan1_input", &v) ? v : NAN;
             s->gpu_watts = read_number(hw->gpu_hwmon, "power1_average", &v) ? v / 1e6 : NAN;
         }
-        struct statvfs fs;
-        if (statvfs("/", &fs) == 0) {
-            s->disk_total = (guint64)fs.f_blocks * fs.f_frsize;
-            s->disk_used = s->disk_total - (guint64)fs.f_bavail * fs.f_frsize;
-        }
+        /* An NVMe drive answers its temperature with a command of its own,
+         * a few milliseconds that also keep it awake. */
         s->disk_temp = hw->disk_temp_path && read_number(NULL, hw->disk_temp_path, &v) ? v / 1000 : NAN;
     }
     g_task_return_boolean(task, TRUE);
