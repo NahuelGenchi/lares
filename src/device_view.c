@@ -10,13 +10,29 @@
 #define DPI_STEP  100   /* each − or + */
 #define SETTLE_MS 700   /* a stepped DPI or a dragged brightness is written once it stops */
 
+typedef enum { PICK_STAGE, PICK_RATE, PICK_LIFT, PICK_LIGHT, PICK_COLOUR } Pick;
+
+/* A card's widgets, kept so news from the device updates them in place:
+ * making the card again would lose the keyboard focus and the scroll
+ * position. It's made again only when its layout changes (its `shape`). */
+typedef struct {
+    char *id, *shape;
+    GtkWidget *root, *status, *battery, *battery_text, *error;
+    GtkWidget *waiting;            /* until the mouse's settings are known */
+    GtkWidget *asleep, *dpi, *minus, *plus, *light_note, *colours, *bright_row, *bright, *bright_text;
+    GPtrArray *rows;               /* the settings, greyed out while the mouse sleeps */
+    GPtrArray *chips;              /* every choice, with its Pick and value */
+} Card;
+
 typedef struct {
     Lares *app;
     DevKind kind;
     GtkWidget *page;
+    GPtrArray *cards;
     char *busy_id;       /* the device being connected, disconnected or allowed */
     char *error_id, *error;
-    guint rebuild_idle;
+    guint update_idle;
+    gboolean syncing;    /* the view sets its own controls; their handlers stay out */
     /* A mouse's settings as the person sets them: shown at once, and
      * written one change at a time, the latest last. */
     char *want_id;
@@ -26,21 +42,31 @@ typedef struct {
     guint settle;
 } DeviceView;
 
-static void rebuild(gpointer user);
+static void update(gpointer user);
 static void commit(DeviceView *v);
 
-static gboolean rebuild_now(gpointer user)
+static void card_free(gpointer p)
+{
+    Card *c = p;
+    g_free(c->id);
+    g_free(c->shape);
+    g_ptr_array_unref(c->rows);
+    g_ptr_array_unref(c->chips);
+    g_free(c);
+}
+
+static gboolean update_now(gpointer user)
 {
     DeviceView *v = user;
-    v->rebuild_idle = 0;
-    rebuild(v);
+    v->update_idle = 0;
+    update(v);
     return G_SOURCE_REMOVE;
 }
 
-/* From a control's own handler, the cards are made again once it returns. */
-static void rebuild_soon(DeviceView *v)
+/* From a control's own handler, the cards follow once it returns. */
+static void update_soon(DeviceView *v)
 {
-    if (!v->rebuild_idle) v->rebuild_idle = g_idle_add(rebuild_now, v);
+    if (!v->update_idle) v->update_idle = g_idle_add(update_now, v);
 }
 
 static Device *find(DeviceView *v, const char *id)
@@ -64,7 +90,7 @@ static void action_done(gboolean ok, const char *message, gpointer user)
     DeviceView *v = user;
     set_error(v, ok ? NULL : v->busy_id, message);
     g_clear_pointer(&v->busy_id, g_free);
-    rebuild(v);
+    update(v);
 }
 
 static void on_button(GtkButton *b, DeviceView *v)
@@ -75,37 +101,9 @@ static void on_button(GtkButton *b, DeviceView *v)
     gboolean on = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "connect"));
     v->busy_id = g_strdup(id);
     set_error(v, NULL, NULL);
-    rebuild_soon(v);
+    update_soon(v);
     if (allow) devices_allow_batteries(v->app->devices, action_done, v);
     else devices_set_connected(v->app->devices, id, on, action_done, v);
-}
-
-/* A control keeps its keyboard focus when the cards are made again: it
- * carries a key, and the new one with the same key takes the focus. */
-static void set_key(GtkWidget *w, Device *d, const char *what, int value)
-{
-    g_object_set_data_full(G_OBJECT(w), "focus-key", g_strdup_printf("%s %s %d", d->id, what, value), g_free);
-}
-
-static char *focused_key(DeviceView *v)
-{
-    GtkRoot *root = gtk_widget_get_root(v->page);
-    for (GtkWidget *f = root ? gtk_root_get_focus(root) : NULL; f && f != v->page; f = gtk_widget_get_parent(f)) {
-        const char *key = g_object_get_data(G_OBJECT(f), "focus-key");
-        if (key) return gtk_widget_is_ancestor(f, v->page) ? g_strdup(key) : NULL;
-    }
-    return NULL;
-}
-
-static GtkWidget *find_key(GtkWidget *w, const char *key)
-{
-    const char *k = g_object_get_data(G_OBJECT(w), "focus-key");
-    if (k && g_str_equal(k, key)) return w;
-    for (GtkWidget *c = gtk_widget_get_first_child(w); c; c = gtk_widget_get_next_sibling(c)) {
-        GtkWidget *found = find_key(c, key);
-        if (found) return found;
-    }
-    return NULL;
 }
 
 /* Connect or Disconnect for a Bluetooth device, Allow for a battery that
@@ -126,7 +124,6 @@ static GtkWidget *action_button(DeviceView *v, Device *d, gboolean busy)
     g_object_set_data_full(G_OBJECT(b), "device", g_strdup(d->id), g_free);
     g_object_set_data(G_OBJECT(b), "allow", GINT_TO_POINTER(allow));
     g_object_set_data(G_OBJECT(b), "connect", GINT_TO_POINTER(!d->connected));
-    set_key(b, d, "action", 0);
     g_signal_connect(b, "clicked", G_CALLBACK(on_button), v);
     return b;
 }
@@ -163,6 +160,11 @@ static void detail(GtkWidget *card, const char *title, const char *value)
 
 /* ---------------------------------------------------------- settings */
 
+static gboolean has_colour(LightEffect light)
+{
+    return light == LIGHT_SOLID || light == LIGHT_BREATHING;
+}
+
 /* The settings to show: the person's while they're on their way to the
  * mouse, else what the mouse last said. */
 static const MouseSettings *shown(DeviceView *v, Device *d)
@@ -175,12 +177,10 @@ static void written(gboolean ok, const char *message, gpointer user)
 {
     DeviceView *v = user;
     v->writing = FALSE;
-    if (!ok) {
-        set_error(v, v->want_id, message);
-        rebuild_soon(v);
-    }
+    if (!ok) set_error(v, v->want_id, message);
     if (v->pending) commit(v);
-    /* Devices tells the view when the mouse's answer is in its list. */
+    /* What the mouse holds now comes with Devices' next update. */
+    update_soon(v);
 }
 
 static void commit(DeviceView *v)
@@ -207,7 +207,7 @@ static gboolean settled(gpointer user)
 static MouseSettings *wanting(DeviceView *v, GtkWidget *control)
 {
     Device *d = find(v, g_object_get_data(G_OBJECT(control), "device"));
-    if (!d || !shown(v, d)) return NULL;
+    if (v->syncing || !d || !shown(v, d)) return NULL;
     if (!v->want_id || !g_str_equal(v->want_id, d->id) || !(v->pending || v->writing)) {
         if (v->want_id && !g_str_equal(v->want_id, d->id)) commit(v);  /* another mouse's change goes first */
         g_free(v->want_id);
@@ -228,61 +228,34 @@ static void changed(DeviceView *v, gboolean at_once)
         if (v->settle) g_source_remove(v->settle);
         v->settle = g_timeout_add(SETTLE_MS, settled, v);
     }
+    update_soon(v);
 }
 
-static int chip_value(GtkToggleButton *t)
+static guint32 rgb_of(const MouseSettings *m)
 {
-    return GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"));
+    return (guint32)m->rgb[0] << 16 | m->rgb[1] << 8 | m->rgb[2];
 }
 
-static void on_stage(GtkToggleButton *t, DeviceView *v)
-{
-    MouseSettings *m = gtk_toggle_button_get_active(t) ? wanting(v, GTK_WIDGET(t)) : NULL;
-    if (!m) return;
-    m->active = chip_value(t);
-    changed(v, TRUE);
-    rebuild_soon(v);
-}
-
-static void on_rate(GtkToggleButton *t, DeviceView *v)
+static void on_chip(GtkToggleButton *t, DeviceView *v)
 {
     MouseSettings *m = gtk_toggle_button_get_active(t) ? wanting(v, GTK_WIDGET(t)) : NULL;
     if (!m) return;
-    m->rate = chip_value(t);
-    changed(v, TRUE);
-}
-
-static void on_lift(GtkToggleButton *t, DeviceView *v)
-{
-    MouseSettings *m = gtk_toggle_button_get_active(t) ? wanting(v, GTK_WIDGET(t)) : NULL;
-    if (!m) return;
-    m->lift_mm = chip_value(t);
-    changed(v, TRUE);
-}
-
-static void on_light(GtkToggleButton *t, DeviceView *v)
-{
-    MouseSettings *m = gtk_toggle_button_get_active(t) ? wanting(v, GTK_WIDGET(t)) : NULL;
-    if (!m) return;
-    m->light = chip_value(t);
-    /* A colour that's off, or the previous effect's unknown one, would
-     * show nothing: start from red. */
-    if ((m->light == LIGHT_SOLID || m->light == LIGHT_BREATHING) && !(m->rgb[0] | m->rgb[1] | m->rgb[2])) {
-        m->rgb[0] = 0xff;
-        m->rgb[1] = m->rgb[2] = 0;
+    int value = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"));
+    switch ((Pick)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick"))) {
+    case PICK_STAGE: m->active = value; break;
+    case PICK_RATE:  m->rate = value; break;
+    case PICK_LIFT:  m->lift_mm = value; break;
+    case PICK_LIGHT:
+        m->light = value;
+        /* A colour that's off would show nothing: start from red. */
+        if (has_colour(m->light) && !rgb_of(m)) m->rgb[0] = 0xff;
+        break;
+    case PICK_COLOUR:
+        m->rgb[0] = (guint32)value >> 16 & 0xff;
+        m->rgb[1] = (guint32)value >> 8 & 0xff;
+        m->rgb[2] = (guint32)value & 0xff;
+        break;
     }
-    changed(v, TRUE);
-    rebuild_soon(v);
-}
-
-static void on_colour(GtkToggleButton *t, DeviceView *v)
-{
-    MouseSettings *m = gtk_toggle_button_get_active(t) ? wanting(v, GTK_WIDGET(t)) : NULL;
-    if (!m) return;
-    guint32 rgb = (guint32)chip_value(t);
-    m->rgb[0] = rgb >> 16 & 0xff;
-    m->rgb[1] = rgb >> 8 & 0xff;
-    m->rgb[2] = rgb & 0xff;
     changed(v, TRUE);
 }
 
@@ -294,30 +267,24 @@ static void on_dpi_step(GtkButton *b, DeviceView *v)
     int dpi = (m->dpi[m->active] + step) / 50 * 50;
     m->dpi[m->active] = CLAMP(dpi, m->dpi_min, m->dpi_max);
     changed(v, FALSE);
-    rebuild_soon(v);
 }
 
-/* Dragging rebuilds nothing, so the drag goes on: only its number moves. */
 static void on_brightness(LaresMeter *meter, double fraction, gpointer user)
 {
     DeviceView *v = user;
     MouseSettings *m = wanting(v, GTK_WIDGET(meter));
     if (!m) return;
     m->brightness = (int)lround(fraction * 100);
-    char *text = g_strdup_printf("%d%%", m->brightness);
-    gtk_label_set_text(GTK_LABEL(g_object_get_data(G_OBJECT(meter), "label")), text);
-    g_free(text);
     changed(v, FALSE);
 }
 
 /* A setting of the mouse: its title and line, a small control on their
  * right when it has one (`head`), and its choices under them, across the
  * card. */
-static GtkWidget *setting_row(GtkWidget *card, const char *title, const char *sub, gboolean active, GtkWidget **head)
+static GtkWidget *setting_row(Card *c, GtkWidget *card, const char *title, const char *sub, GtkWidget **head)
 {
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(row, "setting");
-    gtk_widget_set_sensitive(row, active);
     GtkWidget *top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_hexpand(texts, TRUE);
@@ -327,11 +294,11 @@ static GtkWidget *setting_row(GtkWidget *card, const char *title, const char *su
     gtk_box_append(GTK_BOX(top), texts);
     gtk_box_append(GTK_BOX(row), top);
     gtk_box_append(GTK_BOX(card), row);
+    g_ptr_array_add(c->rows, row);
     if (head) *head = top;
     return row;
 }
 
-/* A row of chips under a setting, for one choice among them. */
 static GtkWidget *chips(GtkWidget *row)
 {
     GtkWidget *wrap = lares_wrap_new(9);
@@ -339,8 +306,7 @@ static GtkWidget *chips(GtkWidget *row)
     return wrap;
 }
 
-static GtkWidget *chip(DeviceView *v, Device *d, GtkWidget *wrap, const char *label, const char *what, int value,
-                       gboolean on, GCallback cb)
+static GtkWidget *chip(DeviceView *v, Card *c, GtkWidget *wrap, const char *label, Pick pick, int value)
 {
     GtkWidget *first = g_object_get_data(G_OBJECT(wrap), "first");
     GtkWidget *t = gtk_toggle_button_new();
@@ -349,12 +315,12 @@ static GtkWidget *chip(DeviceView *v, Device *d, GtkWidget *wrap, const char *la
     gtk_widget_set_cursor_from_name(t, "pointer");
     if (first) gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(t), GTK_TOGGLE_BUTTON(first));
     else g_object_set_data(G_OBJECT(wrap), "first", t);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(t), on);
-    g_object_set_data_full(G_OBJECT(t), "device", g_strdup(d->id), g_free);
+    g_object_set_data_full(G_OBJECT(t), "device", g_strdup(c->id), g_free);
+    g_object_set_data(G_OBJECT(t), "pick", GINT_TO_POINTER(pick));
     g_object_set_data(G_OBJECT(t), "value", GINT_TO_POINTER(value));
-    set_key(t, d, what, value);
-    g_signal_connect(t, "toggled", cb, v);
+    g_signal_connect(t, "toggled", G_CALLBACK(on_chip), v);
     lares_wrap_append(LARES_WRAP(wrap), t);
+    g_ptr_array_add(c->chips, t);
     return t;
 }
 
@@ -379,12 +345,65 @@ static void draw_swatch(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointe
     cairo_fill(cr);
 }
 
-static void colours(DeviceView *v, Device *d, GtkWidget *row, const MouseSettings *m)
+static GtkWidget *step_button(DeviceView *v, Card *c, const char *text, int step, const char *name)
 {
+    GtkWidget *b = gtk_button_new_with_label(text);
+    gtk_widget_add_css_class(b, "quiet");
+    gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
+    gtk_widget_set_cursor_from_name(b, "pointer");
+    g_object_set_data_full(G_OBJECT(b), "device", g_strdup(c->id), g_free);
+    g_object_set_data(G_OBJECT(b), "step", GINT_TO_POINTER(step));
+    gtk_accessible_update_property(GTK_ACCESSIBLE(b), GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
+    g_signal_connect(b, "clicked", G_CALLBACK(on_dpi_step), v);
+    return b;
+}
+
+static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseSettings *m)
+{
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(row, "setting");
+    c->asleep = ui_paragraph("It's asleep. Move it to wake it, then change these.", "muted");
+    gtk_box_append(GTK_BOX(row), c->asleep);
+    gtk_box_append(GTK_BOX(card), row);
+    g_object_bind_property(c->asleep, "visible", row, "visible", G_BINDING_SYNC_CREATE);
+
+    GtkWidget *head;
+    row = setting_row(c, card, "DPI", "Its DPI button steps through these.", &head);
+    c->minus = step_button(v, c, "−", -DPI_STEP, "Lower DPI");
+    c->plus = step_button(v, c, "+", DPI_STEP, "Higher DPI");
+    c->dpi = ui_label("", "value");
+    gtk_widget_set_size_request(c->dpi, 72, -1);
+    gtk_label_set_xalign(GTK_LABEL(c->dpi), 0.5);
+    gtk_widget_set_valign(c->dpi, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(head), c->minus);
+    gtk_box_append(GTK_BOX(head), c->dpi);
+    gtk_box_append(GTK_BOX(head), c->plus);
     GtkWidget *wrap = chips(row);
-    guint32 now = (guint32)m->rgb[0] << 16 | m->rgb[1] << 8 | m->rgb[2];
+    for (int i = 0; i < m->stages; i++) chip(v, c, wrap, "", PICK_STAGE, i);
+
+    row = setting_row(c, card, "Polling rate", "How often it reports a move. Higher is smoother, and uses more battery.",
+                      NULL);
+    wrap = chips(row);
+    for (int hz = 125; hz <= m->rate_max; hz *= 2) {
+        char label[16];
+        snprintf(label, sizeof label, "%d Hz", hz);
+        chip(v, c, wrap, label, PICK_RATE, hz);
+    }
+
+    row = setting_row(c, card, "Lift-off distance", "How high it can be lifted before it stops following.", NULL);
+    wrap = chips(row);
+    chip(v, c, wrap, "1 mm", PICK_LIFT, 1);
+    chip(v, c, wrap, "2 mm", PICK_LIFT, 2);
+
+    row = setting_row(c, card, "Lighting", NULL, &head);
+    c->light_note = ui_paragraph("Now an effect another app saved to it.", "muted");
+    gtk_box_append(GTK_BOX(gtk_widget_get_first_child(head)), c->light_note);
+    wrap = chips(row);
+    static const char *const EFFECTS[] = { "Off", "Solid", "Breathing", "Colour cycle" };
+    for (int e = LIGHT_OFF; e < LIGHT_OTHER; e++) chip(v, c, wrap, EFFECTS[e], PICK_LIGHT, e);
+    c->colours = chips(row);
     for (guint i = 0; i < G_N_ELEMENTS(COLOURS); i++) {
-        GtkWidget *t = chip(v, d, wrap, NULL, "colour", (int)COLOURS[i].rgb, COLOURS[i].rgb == now, G_CALLBACK(on_colour));
+        GtkWidget *t = chip(v, c, c->colours, NULL, PICK_COLOUR, (int)COLOURS[i].rgb);
         GtkWidget *square = gtk_drawing_area_new();
         gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(square), 18);
         gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(square), 18);
@@ -394,110 +413,46 @@ static void colours(DeviceView *v, Device *d, GtkWidget *row, const MouseSetting
         gtk_widget_set_tooltip_text(t, COLOURS[i].name);
         gtk_accessible_update_property(GTK_ACCESSIBLE(t), GTK_ACCESSIBLE_PROPERTY_LABEL, COLOURS[i].name, -1);
     }
-}
 
-static GtkWidget *step_button(DeviceView *v, Device *d, const char *text, int step, const char *name)
-{
-    GtkWidget *b = gtk_button_new_with_label(text);
-    gtk_widget_add_css_class(b, "quiet");
-    gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
-    gtk_widget_set_cursor_from_name(b, "pointer");
-    g_object_set_data_full(G_OBJECT(b), "device", g_strdup(d->id), g_free);
-    g_object_set_data(G_OBJECT(b), "step", GINT_TO_POINTER(step));
-    gtk_accessible_update_property(GTK_ACCESSIBLE(b), GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
-    set_key(b, d, "dpi-step", step);
-    g_signal_connect(b, "clicked", G_CALLBACK(on_dpi_step), v);
-    return b;
-}
-
-static void mouse_settings(DeviceView *v, Device *d, GtkWidget *card)
-{
-    const MouseSettings *m = shown(v, d);
-    if (!m) {
-        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        gtk_widget_add_css_class(row, "setting");
-        gtk_box_append(GTK_BOX(row), ui_paragraph(d->asleep ? "Move the mouse to wake it, and its settings show here."
-                                                            : "Reading its settings…", "muted"));
-        gtk_box_append(GTK_BOX(card), row);
-        return;
-    }
-    gboolean active = !d->asleep;
-    if (d->asleep) {
-        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        gtk_widget_add_css_class(row, "setting");
-        gtk_box_append(GTK_BOX(row), ui_paragraph("It's asleep. Move it to wake it, then change these.", "muted"));
-        gtk_box_append(GTK_BOX(card), row);
-    }
-
-    GtkWidget *head;
-    GtkWidget *row = setting_row(card, "DPI", "Its DPI button steps through these.", active, &head);
-    GtkWidget *minus = step_button(v, d, "−", -DPI_STEP, "Lower DPI");
-    GtkWidget *plus = step_button(v, d, "+", DPI_STEP, "Higher DPI");
-    char *text = g_strdup_printf("%d", m->dpi[m->active]);
-    GtkWidget *value = ui_label(text, "value");
-    g_free(text);
-    gtk_widget_set_size_request(value, 72, -1);
-    gtk_label_set_xalign(GTK_LABEL(value), 0.5);
-    gtk_widget_set_valign(value, GTK_ALIGN_CENTER);
-    gtk_widget_set_sensitive(minus, m->dpi[m->active] > m->dpi_min);
-    gtk_widget_set_sensitive(plus, m->dpi[m->active] < m->dpi_max);
-    gtk_box_append(GTK_BOX(head), minus);
-    gtk_box_append(GTK_BOX(head), value);
-    gtk_box_append(GTK_BOX(head), plus);
-    GtkWidget *wrap = chips(row);
-    for (int i = 0; i < m->stages; i++) {
-        char label[16];
-        snprintf(label, sizeof label, "%d", m->dpi[i]);
-        chip(v, d, wrap, label, "stage", i, i == m->active, G_CALLBACK(on_stage));
-    }
-
-    row = setting_row(card, "Polling rate", "How often it reports a move. Higher is smoother, and uses more battery.",
-                      active, NULL);
-    wrap = chips(row);
-    for (int hz = 125; hz <= m->rate_max; hz *= 2) {
-        char label[16];
-        snprintf(label, sizeof label, "%d Hz", hz);
-        chip(v, d, wrap, label, "rate", hz, hz == m->rate, G_CALLBACK(on_rate));
-    }
-
-    row = setting_row(card, "Lift-off distance", "How high it can be lifted before it stops following.", active, NULL);
-    wrap = chips(row);
-    chip(v, d, wrap, "1 mm", "lift", 1, m->lift_mm == 1, G_CALLBACK(on_lift));
-    chip(v, d, wrap, "2 mm", "lift", 2, m->lift_mm == 2, G_CALLBACK(on_lift));
-
-    row = setting_row(card, "Lighting", m->light == LIGHT_OTHER ? "Now an effect another app saved to it." : NULL,
-                      active, NULL);
-    wrap = chips(row);
-    static const char *const EFFECTS[] = { "Off", "Solid", "Breathing", "Colour cycle" };
-    for (int e = LIGHT_OFF; e < LIGHT_OTHER; e++)
-        chip(v, d, wrap, EFFECTS[e], "light", e, (int)m->light == e, G_CALLBACK(on_light));
-    if (m->light == LIGHT_SOLID || m->light == LIGHT_BREATHING) colours(v, d, row, m);
-
-    if (m->light != LIGHT_OFF) {
-        row = setting_row(card, "Brightness", NULL, active, &head);
-        GtkWidget *meter = lares_meter_new(10, 3);
-        lares_meter_set(LARES_METER(meter), m->brightness / 100.0);
-        lares_meter_set_interactive(LARES_METER(meter), on_brightness, v);
-        gtk_accessible_update_property(GTK_ACCESSIBLE(meter), GTK_ACCESSIBLE_PROPERTY_LABEL, "Brightness", -1);
-        g_object_set_data_full(G_OBJECT(meter), "device", g_strdup(d->id), g_free);
-        set_key(meter, d, "brightness", 0);
-        char *pct = g_strdup_printf("%d%%", m->brightness);
-        GtkWidget *label = ui_label(pct, "value");
-        g_free(pct);
-        gtk_widget_set_size_request(label, 54, -1);
-        gtk_label_set_xalign(GTK_LABEL(label), 1);
-        gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
-        g_object_set_data(G_OBJECT(meter), "label", label);
-        gtk_box_append(GTK_BOX(head), meter);
-        gtk_box_append(GTK_BOX(head), label);
-    }
+    c->bright_row = setting_row(c, card, "Brightness", NULL, &head);
+    c->bright = lares_meter_new(10, 3);
+    lares_meter_set_interactive(LARES_METER(c->bright), on_brightness, v);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(c->bright), GTK_ACCESSIBLE_PROPERTY_LABEL, "Brightness", -1);
+    g_object_set_data_full(G_OBJECT(c->bright), "device", g_strdup(c->id), g_free);
+    c->bright_text = ui_label("", "value");
+    gtk_widget_set_size_request(c->bright_text, 54, -1);
+    gtk_label_set_xalign(GTK_LABEL(c->bright_text), 1);
+    gtk_widget_set_valign(c->bright_text, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(head), c->bright);
+    gtk_box_append(GTK_BOX(head), c->bright_text);
 }
 
 /* -------------------------------------------------------------- cards */
 
-static GtkWidget *device_card(DeviceView *v, Device *d)
+static gboolean settings_shown(Device *d)
 {
-    GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
+    return d->connected && d->has_settings && !d->battery_locked;
+}
+
+/* What a card's widgets are made for. Everything else is updated in place. */
+static char *shape_of(DeviceView *v, Device *d)
+{
+    gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
+    const MouseSettings *m = settings_shown(d) ? shown(v, d) : NULL;
+    return g_strdup_printf("%s\n%s\n%s\n%s\n%d %d %d %d %d %d %d %d %d", d->id, d->name, d->maker ? d->maker : "",
+                           d->model ? d->model : "", d->link, d->bluetooth, d->connected,
+                           d->connected && d->battery >= 0, d->battery_locked, busy, d->has_settings,
+                           m ? m->stages : -1, m ? m->rate_max : 0);
+}
+
+static Card *build_card(DeviceView *v, Device *d)
+{
+    Card *c = g_new0(Card, 1);
+    c->id = g_strdup(d->id);
+    c->shape = shape_of(v, d);
+    c->rows = g_ptr_array_new();
+    c->chips = g_ptr_array_new();
+    GtkWidget *card = c->root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(card, "card");
     gtk_widget_add_css_class(card, "padded");
     GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
@@ -513,27 +468,18 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
     GtkWidget *name = ui_label(d->name, NULL);
     gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(texts), name);
-
-    gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
-    gboolean saving = d->settings_busy || (v->want_id && g_str_equal(v->want_id, d->id) && v->pending);
-    const char *status = busy && d->battery_locked ? "Waiting for your password…"
-                       : busy ? (d->connected ? "Disconnecting…" : "Connecting…")
-                       : !d->connected ? "Not connected"
-                       : saving ? "Saving to the mouse…"
-                       : d->charging ? "Charging" : "Connected";
-    gtk_box_append(GTK_BOX(texts), ui_label(status, "muted"));
+    c->status = ui_label("", "muted");
+    gtk_box_append(GTK_BOX(texts), c->status);
 
     if (d->connected && d->battery >= 0) {
         GtkWidget *bat = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
-        GtkWidget *meter = lares_meter_new(10, 2);
-        lares_meter_set(LARES_METER(meter), d->battery / 100.0);
-        ui_class(meter, "low", d->battery <= 20);
-        gtk_box_append(GTK_BOX(bat), meter);
-        char *pct = battery_text(d->battery);
-        gtk_box_append(GTK_BOX(bat), ui_label(pct, d->battery <= 20 ? "low" : "value"));
-        g_free(pct);
+        c->battery = lares_meter_new(10, 2);
+        gtk_box_append(GTK_BOX(bat), c->battery);
+        c->battery_text = ui_label("", NULL);
+        gtk_box_append(GTK_BOX(bat), c->battery_text);
         gtk_box_append(GTK_BOX(texts), bat);
     }
+    gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     /* Allow sits under what it allows, which leaves the name its room. */
     if (d->connected && d->battery_locked) {
         GtkWidget *hint = ui_label(d->has_settings ? "Lares can show its battery and settings once you allow it. "
@@ -552,29 +498,137 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
     detail(card, "Maker", d->maker);
     detail(card, "Model", d->model);
     detail(card, "Connection", link_text(d->link));
-    if (d->connected && d->has_settings && !d->battery_locked) mouse_settings(v, d, card);
-
-    if (v->error_id && g_str_equal(v->error_id, d->id))
-        gtk_box_append(GTK_BOX(card), ui_paragraph(v->error, "bad"));
-    return card;
+    if (settings_shown(d)) {
+        const MouseSettings *m = shown(v, d);
+        if (m) {
+            build_settings(v, c, card, m);
+        } else {
+            GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+            gtk_widget_add_css_class(row, "setting");
+            c->waiting = ui_paragraph("", "muted");
+            gtk_box_append(GTK_BOX(row), c->waiting);
+            gtk_box_append(GTK_BOX(card), row);
+        }
+    }
+    c->error = ui_paragraph("", "bad");
+    gtk_box_append(GTK_BOX(card), c->error);
+    return c;
 }
 
-/* Devices change rarely, so the cards are simply made again. */
-static void rebuild(gpointer user)
+static void set_text(GtkWidget *label, const char *text)
+{
+    if (g_strcmp0(gtk_label_get_text(GTK_LABEL(label)), text) != 0) gtk_label_set_text(GTK_LABEL(label), text);
+}
+
+static void set_number(GtkWidget *label, const char *format, int n)
+{
+    char text[32];
+    snprintf(text, sizeof text, format, n);
+    set_text(label, text);
+}
+
+static gboolean chip_on(GtkWidget *t, const MouseSettings *m)
+{
+    int value = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"));
+    switch ((Pick)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick"))) {
+    case PICK_STAGE:  return value == m->active;
+    case PICK_RATE:   return value == m->rate;
+    case PICK_LIFT:   return value == m->lift_mm;
+    case PICK_LIGHT:  return value == (int)m->light;
+    case PICK_COLOUR: return has_colour(m->light) && (guint32)value == rgb_of(m);
+    }
+    return FALSE;
+}
+
+static void update_settings(Card *c, Device *d, const MouseSettings *m)
+{
+    gtk_widget_set_visible(c->asleep, d->asleep);
+    for (guint i = 0; i < c->rows->len; i++) gtk_widget_set_sensitive(c->rows->pdata[i], !d->asleep);
+    set_number(c->dpi, "%d", m->dpi[m->active]);
+    gtk_widget_set_sensitive(c->minus, m->dpi[m->active] > m->dpi_min);
+    gtk_widget_set_sensitive(c->plus, m->dpi[m->active] < m->dpi_max);
+    gtk_widget_set_visible(c->light_note, m->light == LIGHT_OTHER);
+    gtk_widget_set_visible(c->colours, has_colour(m->light));
+    gtk_widget_set_visible(c->bright_row, m->light != LIGHT_OFF);
+    lares_meter_set(LARES_METER(c->bright), m->brightness / 100.0);
+    set_number(c->bright_text, "%d%%", m->brightness);
+    /* The chips that are on first, which turns the others in their groups
+     * off; then any still on, for a group with none on. */
+    for (int pass = 0; pass < 2; pass++) {
+        for (guint i = 0; i < c->chips->len; i++) {
+            GtkWidget *t = c->chips->pdata[i];
+            gboolean on = chip_on(t, m);
+            if (pass == 0 && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick")) == PICK_STAGE) {
+                char label[16];
+                snprintf(label, sizeof label, "%d", m->dpi[GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"))]);
+                if (g_strcmp0(gtk_button_get_label(GTK_BUTTON(t)), label) != 0) gtk_button_set_label(GTK_BUTTON(t), label);
+            }
+            if (on == (pass == 0) && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(t)) != on)
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(t), on);
+        }
+    }
+}
+
+static void update_card(DeviceView *v, Card *c, Device *d)
+{
+    v->syncing = TRUE;
+    gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
+    gboolean saving = d->settings_busy || (v->want_id && g_str_equal(v->want_id, d->id) && (v->pending || v->writing));
+    set_text(c->status, busy && d->battery_locked ? "Waiting for your password…"
+                      : busy ? (d->connected ? "Disconnecting…" : "Connecting…")
+                      : !d->connected ? "Not connected"
+                      : saving ? "Saving to the mouse…"
+                      : d->charging ? "Charging" : "Connected");
+    if (c->battery) {
+        lares_meter_set(LARES_METER(c->battery), d->battery / 100.0);
+        ui_class(c->battery, "low", d->battery <= 20);
+        char *pct = battery_text(d->battery);
+        set_text(c->battery_text, pct);
+        g_free(pct);
+        ui_class(c->battery_text, "low", d->battery <= 20);
+        ui_class(c->battery_text, "value", d->battery > 20);
+    }
+    if (c->waiting)
+        set_text(c->waiting, d->asleep ? "Move the mouse to wake it, and its settings show here." : "Reading its settings…");
+    const MouseSettings *m = settings_shown(d) ? shown(v, d) : NULL;
+    if (m && c->dpi) update_settings(c, d, m);
+    gboolean failed = v->error_id && g_str_equal(v->error_id, d->id);
+    set_text(c->error, failed ? v->error : "");
+    gtk_widget_set_visible(c->error, failed);
+    v->syncing = FALSE;
+}
+
+/* Devices tell the view of every change. Cards whose layout still fits are
+ * updated; otherwise they're all made again, at the same scroll position. */
+static void update(gpointer user)
 {
     DeviceView *v = user;
-    char *focus = focused_key(v);
-    GtkWidget *c;
-    while ((c = gtk_widget_get_first_child(v->page)))
-        gtk_box_remove(GTK_BOX(v->page), c);
-    GPtrArray *list = devices_list(v->app->devices);
-    for (guint i = 0; i < list->len; i++) {
-        Device *d = list->pdata[i];
-        if (d->kind == v->kind) gtk_box_append(GTK_BOX(v->page), device_card(v, d));
+    GPtrArray *list = devices_list(v->app->devices), *mine = g_ptr_array_new();
+    for (guint i = 0; i < list->len; i++)
+        if (((Device *)list->pdata[i])->kind == v->kind) g_ptr_array_add(mine, list->pdata[i]);
+
+    gboolean fits = mine->len == v->cards->len;
+    for (guint i = 0; fits && i < mine->len; i++) {
+        char *shape = shape_of(v, mine->pdata[i]);
+        fits = g_str_equal(shape, ((Card *)v->cards->pdata[i])->shape);
+        g_free(shape);
     }
-    GtkWidget *again = focus ? find_key(v->page, focus) : NULL;
-    if (again) gtk_widget_grab_focus(again);
-    g_free(focus);
+    if (!fits) {
+        GtkWidget *scroll = gtk_widget_get_ancestor(v->page, GTK_TYPE_SCROLLED_WINDOW);
+        GtkAdjustment *adj = scroll ? gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll)) : NULL;
+        double y = adj ? gtk_adjustment_get_value(adj) : 0;
+        g_ptr_array_set_size(v->cards, 0);
+        GtkWidget *c;
+        while ((c = gtk_widget_get_first_child(v->page))) gtk_box_remove(GTK_BOX(v->page), c);
+        for (guint i = 0; i < mine->len; i++) {
+            Card *card = build_card(v, mine->pdata[i]);
+            g_ptr_array_add(v->cards, card);
+            gtk_box_append(GTK_BOX(v->page), card->root);
+        }
+        if (adj) gtk_adjustment_set_value(adj, y);
+    }
+    for (guint i = 0; i < mine->len; i++) update_card(v, v->cards->pdata[i], mine->pdata[i]);
+    g_ptr_array_free(mine, TRUE);
 }
 
 GtkWidget *device_build(Lares *app, Section *self)
@@ -583,9 +637,10 @@ GtkWidget *device_build(Lares *app, Section *self)
     v->app = app;
     v->kind = self->kind;
     v->page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
+    v->cards = g_ptr_array_new_with_free_func(card_free);
     self->view = v;
-    devices_watch(app->devices, rebuild, v);
-    rebuild(v);
+    devices_watch(app->devices, update, v);
+    update(v);
     return v->page;
 }
 

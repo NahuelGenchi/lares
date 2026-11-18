@@ -39,7 +39,7 @@
 
 static const HyperxModel MODELS[] = {
     /* Pulsefire Haste 2 Wireless, its 2.4 GHz receiver */
-    { 0x03f0, 0x0f98, 2, TRUE, 200, 26000, 1000 },
+    { 0x03f0, 0x0f98, "HyperX", 2, TRUE, 200, 26000, 1000 },
 };
 
 /* Polling rates, and their codes in the DPI table. */

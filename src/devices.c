@@ -633,7 +633,7 @@ static void scan_usb(Devices *d)
                     : g_strdup(n->name && *n->name ? n->name : "USB device");
             char *usb = direct ? g_strdup(n->owner) : devices_usb_parent(n->owner);
             const HyperxModel *m = direct ? usb_model(usb) : NULL;
-            x->maker = usb_maker(n->owner, usb);
+            x->maker = m ? g_strdup(m->brand) : usb_maker(n->owner, usb);
             x->link = !direct || (m && m->receiver) ? LINK_RECEIVER : LINK_USB;
             g_free(usb);
             g_free(product);
