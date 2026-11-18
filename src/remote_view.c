@@ -6,7 +6,8 @@
 #define STEP_GAP_MS 140   /* a breath between steps, so each row's change reads */
 
 typedef enum { RS_QUEUED, RS_BUSY, RS_OK, RS_DRIFT, RS_ERROR, RS_LEAVE, N_RS } RowState;
-static const char *RS_PAGE[N_RS] = { "queued", "busy", "ok", "drift", "error", "leave" };
+/* A row that matches, or is left as is, shows nothing: its value says it. */
+static const char *RS_PAGE[N_RS] = { "queued", "busy", "none", "drift", "error", "none" };
 
 typedef enum { NOTE_NONE, NOTE_CONFIRM, NOTE_PERMISSION, NOTE_ERROR, NOTE_DRIFT } Note;
 
@@ -498,10 +499,10 @@ static GtkWidget *status_stack(void)
     GtkWidget *spin = lares_pixel_spinner_new(2);
     gtk_widget_add_css_class(spin, "busy");
     gtk_stack_add_named(GTK_STACK(s), spin, "busy");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_CHECK, 2, "ok"), "ok");
     gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_BANG, 2, "warn"), "drift");
     gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_BANG, 2, "bad"), "error");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_DASH, 2, "queued"), "leave");
+    /* The stack keeps the icons' width, so the values don't move. */
+    gtk_stack_add_named(GTK_STACK(s), gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0), "none");
     gtk_stack_set_visible_child_name(GTK_STACK(s), "queued");
     return s;
 }
@@ -593,7 +594,7 @@ static void build_page(RemoteView *a)
 
     GtkWidget *hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     a->title = two_texts("Home", "Remote", "title");
-    a->sub = two_texts("Set for sitting at this PC.", "Ready for Moonlight on your other device.", "sub");
+    a->sub = two_texts("Set for sitting at this PC.", "Set for playing from another device.", "sub");
     gtk_box_append(GTK_BOX(hero), a->title);
     gtk_box_append(GTK_BOX(hero), a->sub);
 
@@ -808,11 +809,9 @@ static void update_guide(RemoteView *a)
                                  : NULL;
     gtk_label_set_text(GTK_LABEL(a->guide_address), addr ? addr : "");
     gtk_widget_set_visible(a->guide_address, addr != NULL);
-    char *moonlight = l->tailscale_ip ? g_strdup_printf("In Moonlight: %s", l->tailscale_ip) : NULL;
-    gtk_label_set_text(GTK_LABEL(a->address), moonlight ? moonlight : "");
-    gtk_widget_set_visible(a->address, moonlight != NULL);
+    gtk_label_set_text(GTK_LABEL(a->address), addr ? addr : "");
+    gtk_widget_set_visible(a->address, addr != NULL);
     g_free(addr);
-    g_free(moonlight);
 }
 
 static void build_step(RemoteView *a, GtkWidget *card, int i, const char *number, const char *name, const char *what)
