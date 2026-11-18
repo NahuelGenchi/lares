@@ -100,6 +100,27 @@ static void test_screen(void)
     g_free(d);
 }
 
+/* Services are on or off: an old "leave" loads as the mode's own value;
+ * the screen keeps it. */
+static void test_saved_values(void)
+{
+    char *v = remote_saved_value(MODE_HOME, ITEM_SUNSHINE, "leave");
+    g_assert_cmpstr(v, ==, "off");
+    g_free(v);
+    v = remote_saved_value(MODE_REMOTE, ITEM_TAILSCALE, "leave");
+    g_assert_cmpstr(v, ==, "on");
+    g_free(v);
+    v = remote_saved_value(MODE_HOME, ITEM_TAILSCALE, "on");
+    g_assert_cmpstr(v, ==, "on");
+    g_free(v);
+    v = remote_saved_value(MODE_REMOTE, ITEM_SCREEN, "leave");
+    g_assert_cmpstr(v, ==, "leave");
+    g_free(v);
+    v = remote_saved_value(MODE_REMOTE, ITEM_SUNSHINE, NULL);
+    g_assert_cmpstr(v, ==, "on");
+    g_free(v);
+}
+
 /* Capability bitmaps as a 64-bit kernel shows them, from a wireless mouse
  * whose receiver also has a keyboard node, a keyboard on a receiver, a
  * wired gamepad and a power button. */
@@ -288,6 +309,7 @@ int main(int argc, char **argv)
     g_test_add_func("/nicknames/clean", test_clean_nickname);
     g_test_add_func("/battery/stages-and-words", test_battery);
     g_test_add_func("/remote/screen-sizes", test_screen);
+    g_test_add_func("/remote/saved-values", test_saved_values);
     g_test_add_func("/devices/input-kinds", test_input_kinds);
     g_test_add_func("/devices/input-owner", test_input_owner);
     g_test_add_func("/devices/hid-battery", test_hid_battery);

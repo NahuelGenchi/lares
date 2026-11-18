@@ -72,6 +72,12 @@ static char *describe_screen(int w, int h, double r)
     return g_strdup_printf("%d × %d · %d Hz", w, h, (int)lround(r));
 }
 
+char *remote_saved_value(Mode m, Item i, const char *saved)
+{
+    if (!saved || (i != ITEM_SCREEN && is_leave(saved))) return g_strdup(DEFAULTS[m][i]);
+    return g_strdup(saved);
+}
+
 char *remote_describe(Item i, const char *v)
 {
     if (is_leave(v)) return g_strdup("Not changed");
@@ -121,7 +127,8 @@ static void config_load(Config *c, gboolean dry)
     for (int m = 0; m < N_MODES; m++)
         for (int i = 0; i < N_ITEMS; i++) {
             char *v = have ? g_key_file_get_string(kf, mode_key(m), ITEM_KEYS[i], NULL) : NULL;
-            c->values[m][i] = v ? v : g_strdup(DEFAULTS[m][i]);
+            c->values[m][i] = remote_saved_value(m, i, v);
+            g_free(v);
         }
     char *mode = have ? g_key_file_get_string(kf, "state", "mode", NULL) : NULL;
     c->mode_known = mode != NULL;
