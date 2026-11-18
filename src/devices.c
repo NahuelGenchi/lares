@@ -789,10 +789,10 @@ static void connected_done(GObject *src, GAsyncResult *res, gpointer data)
     GVariant *v = g_dbus_connection_call_finish(G_DBUS_CONNECTION(src), res, &e);
     if (v) {
         g_variant_unref(v);
-        c->done(TRUE, NULL, c->user);
+        if (c->done) c->done(TRUE, NULL, c->user);
     } else {
         g_dbus_error_strip_remote_error(e);
-        c->done(FALSE, plain_error(e->message), c->user);
+        if (c->done) c->done(FALSE, plain_error(e->message), c->user);
         g_error_free(e);
     }
     conn_free(c);
@@ -808,7 +808,7 @@ static gboolean dry_connected(gpointer data)
             if (c->on && x->battery < 0) x->battery = 70;
         }
     }
-    c->done(TRUE, NULL, c->user);
+    if (c->done) c->done(TRUE, NULL, c->user);
     for (guint i = 0; i < c->d->watchers->len; i++) {
         Watcher *w = &g_array_index(c->d->watchers, Watcher, i);
         w->fn(w->user);
