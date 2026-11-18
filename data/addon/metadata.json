@@ -1,0 +1,8 @@
+{
+  "uuid": "lares@nahuelgenchi.github.io",
+  "name": "Lares",
+  "description": "Your Xbox controller in the top bar, from Lares: an icon lit while one is connected, and a menu with its live picture, battery and quick actions. Lares' helper does the reading; Lares turns this on.",
+  "shell-version": ["46", "47", "48", "49", "50"],
+  "url": "https://github.com/NahuelGenchi/lares",
+  "version": 1
+}

@@ -1,0 +1,579 @@
+/* How Lares looks.
+   Monocraft draws one pixel per ninth of its size, so every font size is a
+   multiple of 9 px (18, 27, 36) and spacing follows the same grid. Home is
+   warm, Remote is blue; every color eases between the two. No container is
+   pure white or pure black. */
+
+window.lares {
+  --bg: #f3e9da;
+  --card: #fbf3e7;
+  --track: #e8d9c3;
+  --line: rgba(84, 58, 32, 0.10);
+  --text: #3b2c1e;
+  --muted: #8a735c;
+  --accent: #c4602a;
+  --on-accent: #fff5ea;
+  --hover: rgba(196, 96, 42, 0.08);
+  --chip: rgba(84, 58, 32, 0.07);
+  --note: rgba(196, 96, 42, 0.10);
+  --warn: #a96d07;
+  --bad: #bb3a2b;
+
+  font-family: "Monocraft";
+  font-size: 18px;
+  font-weight: normal;
+  font-feature-settings: "liga" 0, "calt" 0;
+  background-color: var(--bg);
+  color: var(--text);
+  transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+              color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+window.lares.remote {
+  --bg: #e1eaf6;
+  --card: #eef4fb;
+  --track: #d1deef;
+  --line: rgba(29, 52, 92, 0.10);
+  --text: #1c2a3d;
+  --muted: #62768e;
+  --accent: #2b6bd6;
+  --on-accent: #eef4ff;
+  --hover: rgba(43, 107, 214, 0.08);
+  --chip: rgba(29, 52, 92, 0.07);
+  --note: rgba(43, 107, 214, 0.10);
+}
+
+@media (prefers-color-scheme: dark) {
+  window.lares {
+    --bg: #1d1712;
+    --card: #282019;
+    --track: #2f261e;
+    --line: rgba(255, 228, 196, 0.07);
+    --text: #f1e4d3;
+    --muted: #a8917a;
+    --accent: #f09a5a;
+    --on-accent: #2a1a0e;
+    --hover: rgba(240, 154, 90, 0.09);
+    --chip: rgba(255, 228, 196, 0.06);
+    --note: rgba(240, 154, 90, 0.12);
+    --warn: #e7b24a;
+    --bad: #f07a68;
+  }
+  window.lares.remote {
+    --bg: #111a27;
+    --card: #182335;
+    --track: #1c2a3f;
+    --line: rgba(190, 215, 255, 0.07);
+    --text: #dce7f6;
+    --muted: #8296b2;
+    --accent: #5f9dff;
+    --on-accent: #0d1a2e;
+    --hover: rgba(95, 157, 255, 0.09);
+    --chip: rgba(190, 215, 255, 0.06);
+    --note: rgba(95, 157, 255, 0.12);
+  }
+}
+
+/* ------------------------------------------------------------ title bar */
+
+window.lares headerbar,
+window.lares headerbar:backdrop {
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  border: none;
+  min-height: 54px;
+  color: var(--muted);
+}
+
+window.lares .app-name {
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ page */
+
+.page {
+  padding: 9px 36px 36px 18px;
+}
+
+.muted { color: var(--muted); }
+.big { font-size: 27px; color: var(--text); }
+.big-muted { font-size: 27px; color: var(--muted); }
+.low, .bad { color: var(--bad); }
+
+.title {
+  font-size: 36px;
+  color: var(--text);
+}
+
+.sub,
+.live {
+  color: var(--muted);
+}
+
+.live.on {
+  color: var(--text);
+}
+
+.live-dot {
+  color: var(--muted);
+}
+
+.live-dot.on {
+  color: var(--accent);
+  animation: pulse 1100ms ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 1; }
+  to { opacity: 0.25; }
+}
+
+/* ----------------------------------------------------------- the switch */
+
+modeswitch {
+  background-color: var(--track);
+  border-radius: 18px;
+  padding: 6px;
+  transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+modeswitch > .pill {
+  background-color: var(--accent);
+  border-radius: 13px;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.10);
+  transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+modeswitch > button,
+modeswitch > button:hover,
+modeswitch > button:active,
+modeswitch > button:checked {
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 18px;
+  border-radius: 13px;
+  font-size: 27px;
+  font-weight: normal;
+  color: var(--muted);
+  transition: color 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+modeswitch > button:hover {
+  color: var(--text);
+}
+
+modeswitch > button.selected,
+modeswitch > button.selected:hover {
+  color: var(--on-accent);
+}
+
+modeswitch > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+modeswitch > button.selected:focus-visible {
+  outline-color: var(--on-accent);
+  outline-offset: -6px;
+}
+
+/* ------------------------------------------------------------- the card */
+
+.card {
+  background-color: var(--card);
+  color: var(--text);
+  border-radius: 18px;
+  padding: 9px;
+  transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.card > .line {
+  min-height: 2px;
+  margin: 0 18px;
+  background-color: var(--line);
+}
+
+.row-head,
+.row-head:hover,
+.row-head:active {
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 18px;
+  border-radius: 12px;
+  font-weight: normal;
+  color: var(--text);
+  background-color: transparent;
+  transition: background-color 180ms ease-out;
+}
+
+.row-head:hover,
+.row.open > .row-head {
+  background-color: var(--hover);
+}
+
+.row-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.row-icon {
+  color: var(--muted);
+  transition: color 320ms ease-out;
+}
+
+.row.open .row-icon,
+.row-head:hover .row-icon {
+  color: var(--accent);
+}
+
+.hint {
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.note-text {
+  line-height: 1.5;
+}
+
+.hint.warn { color: var(--warn); }
+.hint.bad { color: var(--bad); }
+
+.value {
+  color: var(--accent);
+  transition: color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.value.dim {
+  color: var(--muted);
+}
+
+.status .ok,
+.status .busy {
+  color: var(--accent);
+}
+
+.status .queued {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.status .warn { color: var(--warn); }
+.status .bad { color: var(--bad); }
+
+.chevron {
+  color: var(--muted);
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), color 200ms ease-out;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+/* --------------------------------------------------------------- chips */
+
+.chips {
+  padding: 9px 18px 18px 54px;
+}
+
+.chips > .group {
+  color: var(--muted);
+}
+
+.chips > .group:not(:first-child) {
+  margin-top: 9px;
+}
+
+.chips > wrap.last {
+  margin-top: 9px;
+}
+
+.chip,
+.chip:hover,
+.chip:active,
+.chip:checked {
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 9px 18px;
+  border-radius: 9px;
+  font-weight: normal;
+  color: var(--text);
+  background-color: var(--chip);
+  transition: background-color 180ms ease-out, color 180ms ease-out;
+}
+
+.chip:hover {
+  background-color: var(--hover);
+}
+
+.chip:checked,
+.chip:checked:hover {
+  background-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------- notes */
+
+.note {
+  background-color: var(--note);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.note-icon .warn { color: var(--warn); }
+.note-icon .key { color: var(--accent); }
+
+button.primary,
+button.primary:hover,
+button.primary:active,
+button.quiet,
+button.quiet:hover,
+button.quiet:active {
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 9px 18px;
+  border-radius: 9px;
+  font-weight: normal;
+  transition: background-color 180ms ease-out, opacity 180ms ease-out;
+}
+
+button.primary {
+  background-color: var(--accent);
+  color: var(--on-accent);
+}
+
+button.primary:hover {
+  opacity: 0.9;
+}
+
+button.quiet {
+  background-color: var(--chip);
+  color: var(--text);
+}
+
+.note button.quiet {
+  background-color: transparent;
+  color: var(--accent);
+}
+
+button.quiet:hover,
+.note button.quiet:hover {
+  background-color: var(--hover);
+}
+
+button.primary:disabled,
+button.quiet:disabled {
+  opacity: 0.6;
+}
+
+/* ------------------------------------------------------------- sidebar */
+
+nav {
+  padding: 9px 9px 18px 18px;
+  min-width: 216px;
+}
+
+nav > .pill {
+  background-color: var(--card);
+  border-radius: 12px;
+  transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+nav button.nav-item,
+nav button.nav-item:hover,
+nav button.nav-item:active {
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 12px 18px;
+  border-radius: 12px;
+  font-weight: normal;
+  color: var(--muted);
+  transition: color 240ms ease-out, background-color 180ms ease-out;
+}
+
+nav button.nav-item:hover {
+  color: var(--text);
+  background-color: var(--hover);
+}
+
+nav button.nav-item.selected,
+nav button.nav-item.selected:hover {
+  color: var(--text);
+  background-color: transparent;
+}
+
+nav button.nav-item.selected pixelicon {
+  color: var(--accent);
+}
+
+nav button.nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ------------------------------------------------- tiles, cards, meters */
+
+button.tile,
+button.tile:hover,
+button.tile:active {
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 18px;
+  border-radius: 18px;
+  font-weight: normal;
+  color: var(--text);
+  background-color: var(--card);
+  transition: background-color 180ms ease-out;
+}
+
+button.tile:hover {
+  background-color: color-mix(in srgb, var(--card), var(--accent) 6%);
+}
+
+button.tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tile-icon { color: var(--accent); }
+
+.card.padded {
+  padding: 27px;
+}
+
+.row-static {
+  padding: 18px;
+}
+
+meter, graph {
+  color: var(--accent);
+}
+
+meter.low, meter.hot {
+  color: var(--bad);
+}
+
+.device-art {
+  color: var(--muted);
+  transition: color 320ms ease-out;
+}
+
+.device-art.on {
+  color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  window.lares, modeswitch, modeswitch > .pill, modeswitch > button, .card,
+  .row-head, .row-icon, .value, .chevron, .chip, button.primary, button.quiet,
+  nav > .pill, nav button.nav-item, button.tile, .device-art {
+    transition: none;
+  }
+  .live-dot.on {
+    animation: none;
+  }
+}
+
+/* Pages scroll inside the window with no frame and no scroll bar. */
+window.lares scrolledwindow,
+window.lares viewport {
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+/* ---------------------------------------------------------- controllers */
+
+.card-title { color: var(--text); }
+.group-heading { color: var(--muted); padding: 0 9px; }
+.warn { color: var(--warn); }
+.value { color: var(--accent); }
+
+padpicture, .gauge { color: var(--text); }
+
+meter.interactive:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.setting { min-height: 36px; }
+
+/* Some desktop themes set font-size 0 on switches, which collapses the
+   icons inside them; Lares keeps its own size and hides those icons. */
+window.lares switch {
+  font-size: 18px;
+  color: transparent;
+  background-color: var(--track);
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 9px;
+  min-width: 54px;
+  min-height: 27px;
+  transition: background-color 200ms ease-out;
+}
+
+window.lares switch:checked { background-color: var(--accent); }
+
+window.lares switch slider {
+  background-color: var(--card);
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  min-width: 21px;
+  min-height: 21px;
+  margin: 3px;
+}
+
+window.lares switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+window.lares switch:disabled { opacity: 0.5; }
+
+window.lares entry {
+  background-color: var(--chip);
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 9px;
+  padding: 4px 9px;
+  color: var(--text);
+  caret-color: var(--accent);
+}
+
+window.lares entry:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Four tabs fit one line of a card. */
+.tabs > .chip, .tabs > .chip:hover, .tabs > .chip:checked { padding: 9px 12px; }
+
+/* ---------------------------------------------------------- setup guide */
+
+.steps { padding: 9px; }
+.step { padding: 18px; }
+.step-number {
+  min-width: 27px;
+  min-height: 27px;
+  border-radius: 9px;
+  background-color: var(--chip);
+  color: var(--text);
+}
+.step .ok { color: var(--accent); }

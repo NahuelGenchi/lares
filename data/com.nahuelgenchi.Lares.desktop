@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lares
+Comment=Switch this PC between Home and Remote
+Exec=lares
+Icon=com.nahuelgenchi.Lares
+Terminal=false
+Categories=Settings;Utility;GTK;
+Keywords=sunshine;moonlight;tailscale;resolution;remote;
+StartupNotify=true

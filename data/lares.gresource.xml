@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/nahuelgenchi/Lares">
+    <file>style.css</file>
+    <file>pad/controller.png</file>
+    <file>pad/glow.png</file>
+  </gresource>
+</gresources>

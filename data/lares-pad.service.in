@@ -1,0 +1,11 @@
+[Unit]
+Description=Lares background helper for game controllers
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@BINDIR@/lares-pad
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
