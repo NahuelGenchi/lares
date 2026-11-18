@@ -67,8 +67,7 @@ static GtkWidget *device_card(DeviceView *v, Device *d)
         gtk_box_append(GTK_BOX(texts), bat);
     }
     if (v->error_id && g_str_equal(v->error_id, d->id)) {
-        GtkWidget *err = ui_label(v->error, "bad");
-        gtk_label_set_wrap(GTK_LABEL(err), TRUE);
+        GtkWidget *err = ui_paragraph(v->error, "bad");
         gtk_box_append(GTK_BOX(texts), err);
     }
     gtk_box_append(GTK_BOX(card), texts);

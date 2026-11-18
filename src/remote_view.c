@@ -530,8 +530,7 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
     gtk_widget_set_hexpand(texts, TRUE);
     gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(texts), ui_label(item_name(i), "name"));
-    r->hint = ui_label("", "hint");
-    gtk_label_set_wrap(GTK_LABEL(r->hint), TRUE);
+    r->hint = ui_paragraph("", "hint");
     gtk_label_set_wrap_mode(GTK_LABEL(r->hint), PANGO_WRAP_WORD_CHAR);
     gtk_label_set_max_width_chars(GTK_LABEL(r->hint), 24);
     r->hint_rev = gtk_revealer_new();
@@ -631,8 +630,7 @@ static void build_page(RemoteView *a)
     gtk_stack_add_named(GTK_STACK(a->note_icons), ui_icon(ART_KEY, 2, "key"), "key");
     gtk_widget_set_valign(a->note_icons, GTK_ALIGN_START);
     gtk_widget_add_css_class(a->note_icons, "note-icon");
-    a->note_text = ui_label("", "note-text");
-    gtk_label_set_wrap(GTK_LABEL(a->note_text), TRUE);
+    a->note_text = ui_paragraph("", "note-text");
     gtk_label_set_wrap_mode(GTK_LABEL(a->note_text), PANGO_WRAP_WORD_CHAR);
     gtk_widget_set_hexpand(a->note_text, TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(a->note_text), 30);
@@ -839,11 +837,9 @@ static void build_step(RemoteView *a, GtkWidget *card, int i, const char *number
     GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_hexpand(texts, TRUE);
     gtk_box_append(GTK_BOX(texts), ui_label(name, NULL));
-    GtkWidget *w = ui_label(what, "muted");
-    gtk_label_set_wrap(GTK_LABEL(w), TRUE);
+    GtkWidget *w = ui_paragraph(what, "muted");
     gtk_box_append(GTK_BOX(texts), w);
-    st->status = ui_label("", NULL);
-    gtk_label_set_wrap(GTK_LABEL(st->status), TRUE);
+    st->status = ui_paragraph("", NULL);
     gtk_box_append(GTK_BOX(texts), st->status);
     st->actions = lares_wrap_new(9);
     gtk_box_append(GTK_BOX(texts), st->actions);
@@ -856,9 +852,8 @@ static void build_guide(RemoteView *a)
     a->guide = gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
     GtkWidget *hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_box_append(GTK_BOX(hero), ui_label("Remote play", "title"));
-    GtkWidget *sub = ui_label("Play this PC's games and desktop from a laptop, tablet or phone, at home or away. "
-                              "Three free apps do it, and each step ticks itself once it's done.", "sub");
-    gtk_label_set_wrap(GTK_LABEL(sub), TRUE);
+    GtkWidget *sub = ui_paragraph("Play this PC's games and desktop from a laptop, tablet or phone, at home or away. "
+                                  "Three free apps do it, and each step ticks itself once it's done.", "sub");
     gtk_box_append(GTK_BOX(hero), sub);
     gtk_box_append(GTK_BOX(a->guide), hero);
 
@@ -870,9 +865,8 @@ static void build_guide(RemoteView *a)
     build_step(a, card, STEP_MOONLIGHT, "3", "Moonlight", "Plays it on your other device.");
     gtk_box_append(GTK_BOX(a->guide), card);
 
-    a->guide_address = ui_label("", "value");
+    a->guide_address = ui_paragraph("", "value");
     gtk_label_set_selectable(GTK_LABEL(a->guide_address), TRUE);
-    gtk_label_set_wrap(GTK_LABEL(a->guide_address), TRUE);
     gtk_box_append(GTK_BOX(a->guide), a->guide_address);
 }
 
