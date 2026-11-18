@@ -70,10 +70,12 @@ static void set_load(Card *c, double fraction, double celsius)
     if (fraction >= 0) lares_graph_push(LARES_GRAPH(c->graph), fraction);
 }
 
-static void set_used(Card *c, guint64 used, guint64 total, const char *what)
+/* Shows an amount, "<what> of <total>" under it, and a meter filling with
+ * what is used. */
+static void set_space(Card *c, guint64 shown, guint64 used, guint64 total, const char *what)
 {
-    char *u = format_bytes(used), *t = format_bytes(total);
-    char *foot = g_strdup_printf("%s used of %s", what, t);
+    char *u = format_bytes(shown), *t = format_bytes(total);
+    char *foot = g_strdup_printf("%s of %s", what, t);
     set_text(c->value, u);
     set_text(c->facts[0], foot);
     lares_meter_set(LARES_METER(c->meter), total ? (double)used / total : -1);
@@ -104,8 +106,9 @@ static void on_sample(gpointer user)
         set_text(v->gpu.facts[2], buf);
     }
 
-    set_used(&v->mem, s->mem_used, s->mem_total, "Memory");
-    set_used(&v->disk, s->disk_used, s->disk_total, "Space");
+    set_space(&v->mem, s->mem_used, s->mem_used, s->mem_total, "Memory used");
+    /* The drive shows the room left. */
+    set_space(&v->disk, s->disk_total - s->disk_used, s->disk_used, s->disk_total, "Free");
     char buf[32] = "";
     if (!isnan(s->disk_temp)) snprintf(buf, sizeof buf, "%d °C", (int)lround(s->disk_temp));
     set_text(v->disk.side, buf);

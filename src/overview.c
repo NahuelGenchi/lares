@@ -90,16 +90,18 @@ static void on_hardware(gpointer user)
     lares_meter_set(LARES_METER(o->mem.meter), s->mem_total ? (double)s->mem_used / s->mem_total : -1);
     g_free(used); g_free(total); g_free(of);
 
-    /* Space only: the drive's temperature costs a command to the drive. */
+    /* The room left, with the meter still filling as the drive does. Space
+     * only: the drive's temperature costs a command to the drive. */
     double full = s->disk_total ? (double)s->disk_used / s->disk_total : -1;
-    used = format_bytes(s->disk_used);
+    char *left = format_bytes(s->disk_total - s->disk_used);
+    char *free_text = g_strdup_printf("%s free", left);
     total = format_bytes(s->disk_total);
     of = g_strdup_printf("of %s", total);
-    set_text(o->disk.value, s->disk_total ? used : "…");
+    set_text(o->disk.value, s->disk_total ? free_text : "…");
     set_text(o->disk.sub, s->disk_total ? of : "");
     lares_meter_set(LARES_METER(o->disk.meter), full);
     ui_class(o->disk.meter, "hot", full > 0.9);
-    g_free(used); g_free(total); g_free(of);
+    g_free(left); g_free(free_text); g_free(total); g_free(of);
 }
 
 static const char *section_for(DevKind kind)
