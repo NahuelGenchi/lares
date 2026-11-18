@@ -32,9 +32,9 @@ struct Remote {
 
 static const char *ITEM_KEYS[N_ITEMS]  = { "screen", "sunshine", "tailscale" };
 static const char *ITEM_NAMES[N_ITEMS] = { "Screen", "Sunshine", "Tailscale" };
-/* Home: nothing listening, and the screen at the monitor's own size, filled
- * in at the first reading. Remote: ready to stream; the screen stays as it
- * is until a size that fits the other device is picked. */
+/* Home: nothing listening. Remote: ready to stream. Both put the screen at
+ * the monitor's own size, filled in at the first reading, until a size that
+ * fits the other device is picked. */
 static const char *DEFAULTS[N_MODES][N_ITEMS] = {
     { "leave", "off", "off" },
     { "leave", "on",  "on"  },
@@ -76,6 +76,17 @@ char *remote_saved_value(Mode m, Item i, const char *saved)
 {
     if (!saved || (i != ITEM_SCREEN && is_leave(saved))) return g_strdup(DEFAULTS[m][i]);
     return g_strdup(saved);
+}
+
+char *remote_own_size(const Live *l)
+{
+    ScreenMode *own = NULL;
+    for (guint i = 0; l->modes && i < l->modes->len; i++) {
+        ScreenMode *m = l->modes->pdata[i];
+        if (m->preferred || (!own && m->current)) own = m;
+        if (m->preferred) break;
+    }
+    return own ? g_strdup_printf("%dx%d@%d", own->w, own->h, (int)lround(own->rate)) : NULL;
 }
 
 char *remote_describe(Item i, const char *v)
@@ -133,7 +144,6 @@ static void config_load(Config *c, gboolean dry)
     char *mode = have ? g_key_file_get_string(kf, "state", "mode", NULL) : NULL;
     c->mode_known = mode != NULL;
     c->mode = mode && g_str_equal(mode, "remote") ? MODE_REMOTE : MODE_HOME;
-    c->fresh = !have;
     c->ready = have && g_key_file_get_boolean(kf, "state", "ready", NULL);
     c->sunshine_unit = have ? g_key_file_get_string(kf, "services", "sunshine_unit", NULL) : NULL;
     g_free(mode);
@@ -580,18 +590,6 @@ static void live_part(LiveCtx *c)
     r->reading = FALSE;
     if (r->dry) r->dry_seeded = TRUE;
     Live *live = &r->live;
-    if (r->cfg.fresh && live->screen_known && live->modes) {
-        /* First run: Home puts the monitor back to its own size. */
-        for (guint i = 0; i < live->modes->len; i++) {
-            ScreenMode *m = live->modes->pdata[i];
-            if (!m->preferred) continue;
-            g_free(r->cfg.values[MODE_HOME][ITEM_SCREEN]);
-            r->cfg.values[MODE_HOME][ITEM_SCREEN] = g_strdup_printf("%dx%d@%d", m->w, m->h, (int)lround(m->rate));
-            break;
-        }
-        r->cfg.fresh = FALSE;
-        remote_save(r);
-    }
     if (!r->cfg.ready && remote_setup_done(r)) {
         r->cfg.ready = TRUE;
         remote_save(r);
@@ -604,6 +602,18 @@ static void live_part(LiveCtx *c)
         r->cfg.mode_known = TRUE;
         remote_save(r);
     }
+    /* Each mode sets a size: until one is picked, the monitor's own. Comes
+     * after the first run's guess, which counts an unset screen as a match. */
+    char *own = live->screen_known ? remote_own_size(live) : NULL;
+    gboolean filled = FALSE;
+    for (int m = 0; own && m < N_MODES; m++) {
+        if (!is_leave(r->cfg.values[m][ITEM_SCREEN])) continue;
+        g_free(r->cfg.values[m][ITEM_SCREEN]);
+        r->cfg.values[m][ITEM_SCREEN] = g_strdup(own);
+        filled = TRUE;
+    }
+    g_free(own);
+    if (filled) remote_save(r);
     if (c->done) c->done(c->user);
     notify_watchers(r);
     g_free(c);

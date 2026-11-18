@@ -290,10 +290,6 @@ modeswitch > button.selected:focus-visible {
   margin-top: 9px;
 }
 
-.chips > wrap.last {
-  margin-top: 9px;
-}
-
 .chip,
 .chip:hover,
 .chip:active,
