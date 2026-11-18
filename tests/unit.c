@@ -185,7 +185,6 @@ static void test_hid_battery(void)
     g_assert_nonnull(m);
     g_assert_cmpint(m->interface, ==, 2);
     g_assert_true(m->receiver);
-    g_assert_cmpstr(m->brand, ==, "HyperX");
     g_assert_null(hyperx_model(0x03f0, 0x0d97));
 
     /* The rule opens the battery interface only, to the person at the screen. */

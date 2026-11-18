@@ -13,7 +13,6 @@
 
 typedef struct {
     guint16 vendor, product;
-    const char *brand;        /* the name on the device: its USB maker is HP, which owns HyperX */
     int interface;            /* the USB interface that answers */
     gboolean receiver;        /* the device is a wireless receiver */
     int dpi_min, dpi_max, rate_max;

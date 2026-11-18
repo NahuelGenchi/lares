@@ -34,7 +34,6 @@ typedef struct {
     char *id;          /* the BlueZ or UPower object path */
     char *name;
     char *address;     /* Bluetooth address, only to match a battery to its device */
-    char *maker;       /* the company, when the device says; NULL otherwise */
     char *model;       /* only when it differs from the name, as after a rename */
     DevLink link;
     DevKind kind;
@@ -45,7 +44,6 @@ typedef struct {
     gboolean has_settings;    /* its own protocol reports its settings (src/hyperx.c) */
     MouseSettings *mouse;     /* what they were last time, or NULL until it answers */
     gboolean asleep;          /* its receiver says it's asleep or off */
-    gboolean settings_busy;   /* a change is on its way to it */
 } Device;
 
 typedef struct Devices Devices;

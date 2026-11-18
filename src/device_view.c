@@ -17,9 +17,9 @@ typedef enum { PICK_STAGE, PICK_RATE, PICK_LIFT, PICK_LIGHT, PICK_COLOUR } Pick;
  * position. It's made again only when its layout changes (its `shape`). */
 typedef struct {
     char *id, *shape;
-    GtkWidget *root, *status, *battery, *battery_text, *error;
+    GtkWidget *root, *status, *battery, *battery_text, *connection, *error;
     GtkWidget *waiting;            /* until the mouse's settings are known */
-    GtkWidget *asleep, *dpi, *minus, *plus, *light_note, *colours, *bright_row, *bright, *bright_text;
+    GtkWidget *dpi, *minus, *plus, *light_slot, *light_note, *colours, *bright, *bright_text;
     GPtrArray *rows;               /* the settings, greyed out while the mouse sleeps */
     GPtrArray *chips;              /* every choice, with its Pick and value */
 } Card;
@@ -108,7 +108,7 @@ static void on_button(GtkButton *b, DeviceView *v)
 }
 
 /* Connect or Disconnect for a Bluetooth device, Allow for a battery that
- * needs permission; a spinner while it works. */
+ * needs permission; a spinner while it works, in the same space. */
 static GtkWidget *action_button(DeviceView *v, Device *d, gboolean busy)
 {
     gboolean allow = !d->bluetooth;
@@ -116,12 +116,8 @@ static GtkWidget *action_button(DeviceView *v, Device *d, gboolean busy)
     gtk_widget_add_css_class(b, allow || !d->connected ? "primary" : "quiet");
     gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
     gtk_widget_set_cursor_from_name(b, "pointer");
-    if (busy) {
-        gtk_button_set_child(GTK_BUTTON(b), lares_pixel_spinner_new(2));
-        gtk_widget_set_sensitive(b, FALSE);
-    } else {
-        gtk_button_set_label(GTK_BUTTON(b), allow ? "Allow" : d->connected ? "Disconnect" : "Connect");
-    }
+    gtk_button_set_child(GTK_BUTTON(b), ui_busy_child(allow ? "Allow" : d->connected ? "Disconnect" : "Connect", busy));
+    gtk_widget_set_sensitive(b, !busy);
     g_object_set_data_full(G_OBJECT(b), "device", g_strdup(d->id), g_free);
     g_object_set_data(G_OBJECT(b), "allow", GINT_TO_POINTER(allow));
     g_object_set_data(G_OBJECT(b), "connect", GINT_TO_POINTER(!d->connected));
@@ -141,10 +137,11 @@ static const char *link_text(DevLink link)
     }
 }
 
-/* A row of the card: a muted title, and its value on the right. */
-static void detail(GtkWidget *card, const char *title, const char *value)
+/* A row of the card: a muted title, and its value on the right, which it
+ * returns; NULL without a value. */
+static GtkWidget *detail(GtkWidget *card, const char *title, const char *value)
 {
-    if (!value) return;
+    if (!value) return NULL;
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_widget_add_css_class(row, "setting");
     GtkWidget *t = ui_label(title, "muted");
@@ -157,6 +154,7 @@ static void detail(GtkWidget *card, const char *title, const char *value)
     gtk_widget_set_valign(l, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(row), l);
     gtk_box_append(GTK_BOX(card), row);
+    return l;
 }
 
 /* ---------------------------------------------------------- settings */
@@ -252,6 +250,7 @@ static void on_chip(GtkToggleButton *t, DeviceView *v)
         if (has_colour(m->light) && !rgb_of(m)) m->rgb[0] = 0xff;
         break;
     case PICK_COLOUR:
+        if (!has_colour(m->light)) m->light = LIGHT_SOLID;
         m->rgb[0] = (guint32)value >> 16 & 0xff;
         m->rgb[1] = (guint32)value >> 8 & 0xff;
         m->rgb[2] = (guint32)value & 0xff;
@@ -361,15 +360,8 @@ static GtkWidget *step_button(DeviceView *v, Card *c, const char *text, int step
 
 static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseSettings *m)
 {
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_add_css_class(row, "setting");
-    c->asleep = ui_paragraph("It's asleep. Move it to wake it, then change these.", "muted");
-    gtk_box_append(GTK_BOX(row), c->asleep);
-    gtk_box_append(GTK_BOX(card), row);
-    g_object_bind_property(c->asleep, "visible", row, "visible", G_BINDING_SYNC_CREATE);
-
     GtkWidget *head;
-    row = setting_row(c, card, "DPI", "Its DPI button steps through these.", &head);
+    GtkWidget *row = setting_row(c, card, "DPI", "Its DPI button steps through these.", &head);
     c->minus = step_button(v, c, "−", -DPI_STEP, "Lower DPI");
     c->plus = step_button(v, c, "+", DPI_STEP, "Higher DPI");
     c->dpi = ui_label("", "value");
@@ -396,13 +388,22 @@ static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseS
     chip(v, c, wrap, "1 mm", PICK_LIFT, 1);
     chip(v, c, wrap, "2 mm", PICK_LIFT, 2);
 
-    row = setting_row(c, card, "Lighting", NULL, &head);
-    c->light_note = ui_paragraph("Now an effect another app saved to it.", "muted");
-    gtk_box_append(GTK_BOX(gtk_widget_get_first_child(head)), c->light_note);
+    /* No choice here changes the page's length, which would move it when
+     * it's scrolled to the end: the colours always show, and picking one
+     * picks Solid if the effect has none; brightness dims when the light is
+     * off; and the note for an effect another app saved takes the colours'
+     * place, in a stack as tall as they are. */
+    row = setting_row(c, card, "Lighting", NULL, NULL);
     wrap = chips(row);
     static const char *const EFFECTS[] = { "Off", "Solid", "Breathing", "Colour cycle" };
     for (int e = LIGHT_OFF; e < LIGHT_OTHER; e++) chip(v, c, wrap, EFFECTS[e], PICK_LIGHT, e);
-    c->colours = chips(row);
+    c->light_slot = gtk_stack_new();
+    gtk_box_append(GTK_BOX(row), c->light_slot);
+    c->colours = lares_wrap_new(9);
+    gtk_stack_add_child(GTK_STACK(c->light_slot), c->colours);
+    c->light_note = ui_paragraph("Now an effect another app saved to it.", "muted");
+    gtk_widget_set_valign(c->light_note, GTK_ALIGN_START);
+    gtk_stack_add_child(GTK_STACK(c->light_slot), c->light_note);
     for (guint i = 0; i < G_N_ELEMENTS(COLOURS); i++) {
         GtkWidget *t = chip(v, c, c->colours, NULL, PICK_COLOUR, (int)COLOURS[i].rgb);
         GtkWidget *square = gtk_drawing_area_new();
@@ -415,7 +416,7 @@ static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseS
         gtk_accessible_update_property(GTK_ACCESSIBLE(t), GTK_ACCESSIBLE_PROPERTY_LABEL, COLOURS[i].name, -1);
     }
 
-    c->bright_row = setting_row(c, card, "Brightness", NULL, &head);
+    setting_row(c, card, "Brightness", NULL, &head);
     c->bright = lares_meter_new(10, 3);
     lares_meter_set_interactive(LARES_METER(c->bright), on_brightness, v);
     gtk_accessible_update_property(GTK_ACCESSIBLE(c->bright), GTK_ACCESSIBLE_PROPERTY_LABEL, "Brightness", -1);
@@ -440,10 +441,9 @@ static char *shape_of(DeviceView *v, Device *d)
 {
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     const MouseSettings *m = settings_shown(d) ? shown(v, d) : NULL;
-    return g_strdup_printf("%s\n%s\n%s\n%s\n%d %d %d %d %d %d %d %d %d", d->id, d->name, d->maker ? d->maker : "",
-                           d->model ? d->model : "", d->link, d->bluetooth, d->connected,
-                           d->connected && d->battery >= 0, d->battery_locked, busy, d->has_settings,
-                           m ? m->stages : -1, m ? m->rate_max : 0);
+    return g_strdup_printf("%s\n%s\n%s\n%d %d %d %d %d %d %d %d %d", d->id, d->name, d->model ? d->model : "",
+                           d->link, d->bluetooth, d->connected, d->connected && d->battery >= 0, d->battery_locked,
+                           busy, d->has_settings, m ? m->stages : -1, m ? m->rate_max : 0);
 }
 
 static Card *build_card(DeviceView *v, Device *d)
@@ -470,7 +470,9 @@ static Card *build_card(DeviceView *v, Device *d)
     gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(texts), name);
     /* Connected goes without saying: the icon lights up, and a Bluetooth one
-     * offers Disconnect. The line shows only when there's more to say. */
+     * offers Disconnect. The line shows only when there's more to say, and
+     * never comes or goes with a click: a button that works shows a spinner
+     * instead, and Connecting… takes the place of Not connected. */
     c->status = ui_label("", "muted");
     gtk_box_append(GTK_BOX(texts), c->status);
 
@@ -483,17 +485,15 @@ static Card *build_card(DeviceView *v, Device *d)
         gtk_box_append(GTK_BOX(texts), bat);
     }
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
-    /* Allow sits under what it allows, which leaves the name its room. */
+    /* Allow sits under what it allows, which leaves the name its room. The
+     * hint stays while it waits, so Allow doesn't move. */
     if (d->connected && d->battery_locked) {
-        /* While it waits, the line above says so. */
-        if (!busy) {
-            GtkWidget *hint = ui_label(d->has_settings ? "Lares can show its battery and settings once you allow it. "
-                                                         "That asks for your password, one time."
-                                                       : "Lares can show its battery once you allow it. That asks for "
-                                                         "your password, one time.", "muted");
-            gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
-            gtk_box_append(GTK_BOX(texts), hint);
-        }
+        GtkWidget *hint = ui_label(d->has_settings ? "Lares can show its battery and settings once you allow it. "
+                                                     "That asks for your password, one time."
+                                                   : "Lares can show its battery once you allow it. That asks for "
+                                                     "your password, one time.", "muted");
+        gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+        gtk_box_append(GTK_BOX(texts), hint);
         GtkWidget *allow = action_button(v, d, busy);
         gtk_widget_set_halign(allow, GTK_ALIGN_START);
         gtk_box_append(GTK_BOX(texts), allow);
@@ -501,9 +501,8 @@ static Card *build_card(DeviceView *v, Device *d)
     gtk_box_append(GTK_BOX(head), texts);
     if (d->bluetooth) gtk_box_append(GTK_BOX(head), action_button(v, d, busy));
 
-    detail(card, "Maker", d->maker);
     detail(card, "Model", d->model);
-    detail(card, "Connection", link_text(d->link));
+    c->connection = detail(card, "Connection", link_text(d->link));
     if (settings_shown(d)) {
         const MouseSettings *m = shown(v, d);
         if (m) {
@@ -548,14 +547,13 @@ static gboolean chip_on(GtkWidget *t, const MouseSettings *m)
 
 static void update_settings(Card *c, Device *d, const MouseSettings *m)
 {
-    gtk_widget_set_visible(c->asleep, d->asleep);
     for (guint i = 0; i < c->rows->len; i++) gtk_widget_set_sensitive(c->rows->pdata[i], !d->asleep);
     set_number(c->dpi, "%d", m->dpi[m->active]);
     gtk_widget_set_sensitive(c->minus, m->dpi[m->active] > m->dpi_min);
     gtk_widget_set_sensitive(c->plus, m->dpi[m->active] < m->dpi_max);
-    gtk_widget_set_visible(c->light_note, m->light == LIGHT_OTHER);
-    gtk_widget_set_visible(c->colours, has_colour(m->light));
-    gtk_widget_set_visible(c->bright_row, m->light != LIGHT_OFF);
+    gtk_stack_set_visible_child(GTK_STACK(c->light_slot), m->light == LIGHT_OTHER ? c->light_note : c->colours);
+    gtk_widget_set_sensitive(c->bright, m->light != LIGHT_OFF);
+    gtk_widget_set_sensitive(c->bright_text, m->light != LIGHT_OFF);
     lares_meter_set(LARES_METER(c->bright), m->brightness / 100.0);
     set_number(c->bright_text, "%d%%", m->brightness);
     /* The chips that are on first, which turns the others in their groups
@@ -579,12 +577,7 @@ static void update_card(DeviceView *v, Card *c, Device *d)
 {
     v->syncing = TRUE;
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
-    gboolean saving = d->settings_busy || (v->want_id && g_str_equal(v->want_id, d->id) && (v->pending || v->writing));
-    const char *status = busy && d->battery_locked ? "Waiting for your password…"
-                       : busy ? (d->connected ? "Disconnecting…" : "Connecting…")
-                       : !d->connected ? "Not connected"
-                       : saving ? "Saving to the mouse…"
-                       : d->charging ? "Charging" : "";
+    const char *status = !d->connected ? (busy ? "Connecting…" : "Not connected") : d->charging ? "Charging" : "";
     set_text(c->status, status);
     gtk_widget_set_visible(c->status, *status != '\0');
     if (c->battery) {
@@ -595,6 +588,14 @@ static void update_card(DeviceView *v, Card *c, Device *d)
         g_free(pct);
         ui_class(c->battery_text, "low", d->battery <= 20);
         ui_class(c->battery_text, "value", d->battery > 20);
+    }
+    /* Asleep shows on the connection's line, which is always there: a note
+     * that came and went as the mouse woke would move the page. */
+    if (c->connection) {
+        char *link = d->has_settings && d->asleep ? g_strdup_printf("%s, asleep", link_text(d->link))
+                                                  : g_strdup(link_text(d->link));
+        set_text(c->connection, link);
+        g_free(link);
     }
     if (c->waiting)
         set_text(c->waiting, d->asleep ? "Move the mouse to wake it, and its settings show here." : "Reading its settings…");

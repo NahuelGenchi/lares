@@ -43,7 +43,6 @@ static void device_free(gpointer p)
     g_free(x->id);
     g_free(x->name);
     g_free(x->address);
-    g_free(x->maker);
     g_free(x->model);
     g_free(x->mouse);
     g_free(x);
@@ -213,7 +212,6 @@ static void add_usb(Devices *d)
         *x = *u;
         x->id = g_strdup(u->id);
         x->name = g_strdup(u->name);
-        x->maker = g_strdup(u->maker);
         x->model = g_strdup(u->model);
         HidState *s = g_hash_table_lookup(d->hid, u->id);
         if (s) {
@@ -226,7 +224,6 @@ static void add_usb(Devices *d)
                 hyperx_decode(s->model, &s->state, x->mouse);
             }
             x->asleep = s->asleep;
-            x->settings_busy = s->writing;
         }
         g_ptr_array_add(d->list, x);
     }
@@ -277,8 +274,6 @@ static void add_upower(Devices *d)
         x->id = g_strdup(key);
         x->name = prop_string(p, "Model");
         if (!x->name || !*x->name) { g_free(x->name); x->name = g_strdup("Wireless device"); }
-        x->maker = prop_string(p, "Vendor");
-        if (x->maker && !*x->maker) g_clear_pointer(&x->maker, g_free);
         x->kind = kind;
         x->connected = TRUE;
         x->battery = battery;
@@ -587,23 +582,6 @@ static void scan_protocols(Devices *d)
     d->hid = hid;
 }
 
-/* Who made a device: its USB device's word for it, or, for one paired to a
- * receiver, the receiver's when they come from the same company. */
-static char *usb_maker(const char *owner, const char *usb)
-{
-    if (!usb) return NULL;
-    if (!g_str_equal(owner, usb)) {
-        char *hid = g_path_get_basename(owner), *vendor = sys_text(usb, "idVendor");
-        gboolean same = vendor && strlen(hid) > 9 && g_ascii_strncasecmp(hid + 5, vendor, 4) == 0;
-        g_free(vendor);
-        g_free(hid);
-        if (!same) return NULL;
-    }
-    char *maker = sys_text(usb, "manufacturer");
-    if (maker && !*maker) g_clear_pointer(&maker, g_free);
-    return maker;
-}
-
 /* One entry per physical device. Its first node, in sysfs order, says what
  * it is: a gaming mouse's extra keyboard node, for its programmable buttons,
  * comes after the mouse's. A device with a gamepad node is a controller,
@@ -633,7 +611,6 @@ static void scan_usb(Devices *d)
                     : g_strdup(n->name && *n->name ? n->name : "USB device");
             char *usb = direct ? g_strdup(n->owner) : devices_usb_parent(n->owner);
             const HyperxModel *m = direct ? usb_model(usb) : NULL;
-            x->maker = m ? g_strdup(m->brand) : usb_maker(n->owner, usb);
             x->link = !direct || (m && m->receiver) ? LINK_RECEIVER : LINK_USB;
             g_free(usb);
             g_free(product);
