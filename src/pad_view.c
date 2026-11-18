@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The Controller section: a card for each Xbox controller, with Padlight's
- * live picture and its Sticks, Buttons and Vibration tabs, the battery,
+ * live picture on its Buttons tab, next to Sticks and Vibration, the battery,
  * connection, model and firmware, who has it open, and Test vibration, Find
  * and Disconnect. Under the cards: paired controllers that are away, Pair a
  * controller, and the settings. Ported from Padlight's controllerCard.js,
@@ -25,8 +25,8 @@
 #define TRIGGER_PULL   0.9     /* a trigger counts for the button test pulled this far */
 #define STRENGTH_STEP  5
 
-enum { TAB_PICTURE, TAB_STICKS, TAB_BUTTONS, TAB_VIBRATION, N_TABS };
-static const char *const TAB_NAMES[N_TABS] = { "Picture", "Sticks", "Buttons", "Vibration" };
+enum { TAB_BUTTONS, TAB_STICKS, TAB_VIBRATION, N_TABS };
+static const char *const TAB_NAMES[N_TABS] = { "Buttons", "Sticks", "Vibration" };
 
 typedef struct PadView PadView;
 
@@ -50,7 +50,7 @@ typedef struct {
     PadView *v;
     char *path;
     GtkWidget *name, *sub, *entry, *stack, *tabs[N_TABS];
-    GtkWidget *picture, *check_picture, *count;
+    GtkWidget *picture, *count;
     GtkWidget *gauges[2], *stick_text[2], *trig_meter[2], *trig_text[2];
     GtkWidget *strong, *weak, *length, *strong_text, *weak_text, *length_text, *play;
     GtkWidget *users, *find;
@@ -228,9 +228,9 @@ static void feed_test(Card *c, const PadState *s)
     if (s->rt >= TRIGGER_PULL) pressed |= PB_BIT(PB_RT);
     guint32 before = m->seen;
     m->seen |= pressed & pad->checklist;
-    lares_pad_picture_set_state(LARES_PAD_PICTURE(c->check_picture), s);
+    lares_pad_picture_set_state(LARES_PAD_PICTURE(c->picture), s);
     if (m->seen != before) {
-        lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->check_picture), m->seen);
+        lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->picture), m->seen);
         show_count(c, pad, m);
     }
 }
@@ -240,7 +240,7 @@ static void on_reset(GtkButton *b, Card *c)
     const Pad *pad = pads_find(c->v->app->pads, c->path);
     Memory *m = memory_of(c->v, c->path);
     m->seen = 0;
-    lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->check_picture), 0);
+    lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->picture), 0);
     if (pad) show_count(c, pad, m);
 }
 
@@ -251,7 +251,6 @@ static void on_state(const PadState *s, gpointer data)
     Card *c = data;
     c->last = *s;
     switch (memory_of(c->v, c->path)->tab) {
-    case TAB_PICTURE: lares_pad_picture_set_state(LARES_PAD_PICTURE(c->picture), s); break;
     case TAB_STICKS: show_sticks(c, s); break;
     case TAB_BUTTONS: feed_test(c, s); break;
     default: break;
@@ -272,7 +271,6 @@ static void stop_reader(Card *c)
     if (c->rest_tick) { g_source_remove(c->rest_tick); c->rest_tick = 0; }
     g_clear_pointer(&c->reader, pad_reader_free);
     lares_pad_picture_set_state(LARES_PAD_PICTURE(c->picture), NULL);
-    lares_pad_picture_set_state(LARES_PAD_PICTURE(c->check_picture), NULL);
 }
 
 /* One reader per card, only while it's on screen and its tab moves: the
@@ -520,7 +518,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     c->path = g_strdup(pad->path);
     g_ptr_array_add(v->card_list, c);
     Memory *m = memory_of(v, pad->path);
-    if (m->tab == TAB_VIBRATION && !pad->rumble) m->tab = TAB_PICTURE;
+    if (m->tab == TAB_VIBRATION && !pad->rumble) m->tab = TAB_BUTTONS;
 
     GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(card, "card");
@@ -590,13 +588,10 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
         c->tabs[t] = tb;
         lares_wrap_append(LARES_WRAP(tabs), tb);
     }
-    c->picture = lares_pad_picture_new(PICTURE_HEIGHT, FALSE);
-    gtk_stack_add_named(GTK_STACK(c->stack), c->picture, TAB_NAMES[TAB_PICTURE]);
-    gtk_stack_add_named(GTK_STACK(c->stack), sticks_page(c), TAB_NAMES[TAB_STICKS]);
     GtkWidget *test = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
-    c->check_picture = lares_pad_picture_new(PICTURE_HEIGHT - 30, FALSE);
-    lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->check_picture), m->seen);
-    gtk_box_append(GTK_BOX(test), c->check_picture);
+    c->picture = lares_pad_picture_new(PICTURE_HEIGHT, FALSE);
+    lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->picture), m->seen);
+    gtk_box_append(GTK_BOX(test), c->picture);
     GtkWidget *count_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     c->count = ui_label("", "muted");
     gtk_widget_set_hexpand(c->count, TRUE);
@@ -605,6 +600,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     gtk_box_append(GTK_BOX(test), count_row);
     show_count(c, pad, m);
     gtk_stack_add_named(GTK_STACK(c->stack), test, TAB_NAMES[TAB_BUTTONS]);
+    gtk_stack_add_named(GTK_STACK(c->stack), sticks_page(c), TAB_NAMES[TAB_STICKS]);
     if (pad->rumble) gtk_stack_add_named(GTK_STACK(c->stack), vibration_page(c), TAB_NAMES[TAB_VIBRATION]);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(c->tabs[m->tab]), TRUE);
     gtk_stack_set_visible_child_name(GTK_STACK(c->stack), TAB_NAMES[m->tab]);
