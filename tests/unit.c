@@ -347,6 +347,20 @@ static void test_hyperx_events(void)
     g_assert_true(hyperx_event(stage, sizeof stage, &ev));
     g_assert_cmpint(ev.kind, ==, HYPERX_STAGE);
     g_assert_cmpint(ev.stage, ==, 3);
+    g_assert_cmpint(ev.code, ==, 0x3f);
+    /* The sample's stage 3 is 3200 DPI, so the event is taken; the one a
+     * click sends on waking, stage 0 with code 0, matches nothing. */
+    HyperxState s;
+    hyperx_sample(&s);
+    g_assert_true(hyperx_take_stage(&s, &ev));
+    g_assert_cmpint(s.dpi[4], ==, 3);
+    const guint8 waking[64] = { 0xfb, 0x08, 0x00, 0x00, 0x00 };
+    g_assert_true(hyperx_event(waking, sizeof waking, &ev));
+    g_assert_false(hyperx_take_stage(&s, &ev));
+    g_assert_cmpint(s.dpi[4], ==, 3);
+    const guint8 off_mask[64] = { 0xfb, 0x08, 0x06, 0x3f, 0x00 };
+    g_assert_true(hyperx_event(off_mask, sizeof off_mask, &ev));
+    g_assert_false(hyperx_take_stage(&s, &ev));
     const guint8 asleep[64] = { 0xfb, 0x0a, 0x00 }, awake[64] = { 0xfb, 0x0a, 0x01 };
     g_assert_true(hyperx_event(asleep, sizeof asleep, &ev));
     g_assert_cmpint(ev.kind, ==, HYPERX_LINK);
@@ -365,6 +379,41 @@ static void test_hyperx_events(void)
     g_assert_false(hyperx_event(button, sizeof button, &ev));
     g_assert_false(hyperx_event(table, sizeof table, &ev));
     g_assert_false(hyperx_event(ack, sizeof ack, &ev));
+}
+
+/* A change carries only what the person changed: what the mouse changed
+ * by itself meanwhile, here its DPI button, stays. */
+static void test_hyperx_merge(void)
+{
+    const HyperxModel *model = hyperx_model(0x03f0, 0x0f98);
+    HyperxState now;
+    hyperx_sample(&now);
+    MouseSettings base, want, out;
+    hyperx_decode(model, &now, &base);
+    now.dpi[4] = 4;                  /* the DPI button, after the view read it */
+
+    want = base;
+    want.light = LIGHT_SOLID;
+    want.rgb[0] = 0xff;
+    hyperx_merge(&now, &base, &want, &out);
+    g_assert_cmpint(out.active, ==, 4);
+    g_assert_cmpint(out.light, ==, LIGHT_SOLID);
+    g_assert_cmpint(out.rgb[0], ==, 0xff);
+    g_assert_cmpint(out.dpi_max, ==, model->dpi_max);
+
+    want = base;
+    want.active = 0;
+    want.dpi[1] = 900;
+    hyperx_merge(&now, &base, &want, &out);
+    g_assert_cmpint(out.active, ==, 0);
+    g_assert_cmpint(out.dpi[1], ==, 900);
+    g_assert_cmpint(out.dpi[2], ==, 1600);
+    g_assert_cmpint(out.light, ==, LIGHT_OTHER);   /* the sample's animation, untouched */
+
+    /* Nothing changed: nothing to send. */
+    guint8 packets[HYPERX_BLOCKS][HYPERX_REPORT];
+    hyperx_merge(&now, &base, &base, &out);
+    g_assert_cmpint(hyperx_packets(&now, &out, 0, packets), ==, 0);
 }
 
 static void test_usb_parent(void)
@@ -476,6 +525,7 @@ int main(int argc, char **argv)
     g_test_add_func("/devices/hyperx-settings", test_hyperx_settings);
     g_test_add_func("/devices/hyperx-real", test_hyperx_real);
     g_test_add_func("/devices/hyperx-events", test_hyperx_events);
+    g_test_add_func("/devices/hyperx-merge", test_hyperx_merge);
     g_test_add_func("/devices/usb-parent", test_usb_parent);
     g_test_add_func("/picture/map-parse", test_map_parse);
     g_test_add_func("/picture/map-paint", test_map_paint);

@@ -34,9 +34,10 @@ typedef struct {
     guint update_idle;
     gboolean syncing;    /* the view sets its own controls; their handlers stay out */
     /* A mouse's settings as the person sets them: shown at once, and
-     * written one change at a time, the latest last. */
+     * written one change at a time, the latest last. Only what differs
+     * from `base`, what the mouse held when they began, is written. */
     char *want_id;
-    MouseSettings want;
+    MouseSettings base, want;
     gboolean pending;    /* `want` waits to be written */
     gboolean writing;
     guint settle;
@@ -192,7 +193,7 @@ static void commit(DeviceView *v)
     if (v->writing || !v->pending) return;
     v->pending = FALSE;
     v->writing = TRUE;
-    devices_set_mouse(v->app->devices, v->want_id, &v->want, written, v);
+    devices_set_mouse(v->app->devices, v->want_id, &v->base, &v->want, written, v);
 }
 
 static gboolean settled(gpointer user)
@@ -212,7 +213,7 @@ static MouseSettings *wanting(DeviceView *v, GtkWidget *control)
         if (v->want_id && !g_str_equal(v->want_id, d->id)) commit(v);  /* another mouse's change goes first */
         g_free(v->want_id);
         v->want_id = g_strdup(d->id);
-        v->want = *d->mouse;
+        v->base = v->want = *d->mouse;
     }
     set_error(v, NULL, NULL);
     v->pending = TRUE;

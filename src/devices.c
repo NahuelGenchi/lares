@@ -61,7 +61,7 @@ typedef struct {
     gint64 answered;     /* monotonic time of the last answer, 0 for never */
     HyperxState state;   /* its settings, once `known` */
     gboolean known, asleep, reading, writing;
-    gboolean woke;       /* it woke while being read, so the answer may be stale */
+    gboolean stale;      /* it changed while being read, so read it again */
     int watch_fd;        /* open while its settings are on screen, -1 otherwise */
     guint watch;
 } HidState;
@@ -846,7 +846,7 @@ typedef struct {
     Devices *d;
     char *owner, *node;
     HyperxState state;
-    MouseSettings want;
+    MouseSettings base, want;
     DevDone done;
     gpointer user;
 } SettingsCtx;
@@ -890,8 +890,8 @@ static void settings_read(GObject *src, GAsyncResult *res, gpointer user)
         s->known = TRUE;
     }
     s->asleep = !ok; /* asleep, or fell asleep while asked */
-    if (s->woke) {
-        s->woke = FALSE;
+    if (s->stale) {
+        s->stale = FALSE;
         ask_settings(c->d, s);
     }
     schedule(c->d);
@@ -916,7 +916,8 @@ static void ask_settings(Devices *d, HidState *s)
 }
 
 /* What the mouse says by itself while its settings are on screen: its DPI
- * button, waking or falling asleep, and its battery after waking. Every
+ * button, waking or falling asleep, and its battery after waking. A wake,
+ * or a DPI event that doesn't match the table, means reading it again. Every
  * open hidraw node gets every report, so answers to the worker threads'
  * questions come here too; those aren't events and are skipped. */
 static gboolean on_report(int fd, GIOCondition cond, gpointer data)
@@ -924,21 +925,22 @@ static gboolean on_report(int fd, GIOCondition cond, gpointer data)
     HidState *s = data;
     guint8 report[HYPERX_REPORT];
     ssize_t got;
-    gboolean changed = FALSE, woke = FALSE;
+    gboolean changed = FALSE, again = FALSE;
     while ((got = read(fd, report, sizeof report)) > 0) {
         HyperxEvent ev;
         if (!hyperx_event(report, (gsize)got, &ev)) continue;
         switch (ev.kind) {
-        case HYPERX_STAGE:
-            if (s->known && (s->state.dpi[3] >> ev.stage & 1) && s->state.dpi[4] != ev.stage) {
-                s->state.dpi[4] = ev.stage;
-                changed = TRUE;
-            }
+        case HYPERX_STAGE: {
+            guint8 was = s->state.dpi[4];
+            if (!s->known) break;
+            if (hyperx_take_stage(&s->state, &ev)) changed |= s->state.dpi[4] != was;
+            else again = TRUE;
             break;
+        }
         case HYPERX_LINK:
             changed |= s->asleep == ev.linked;
             s->asleep = !ev.linked;
-            woke |= ev.linked;
+            again |= ev.linked;
             break;
         case HYPERX_BATTERY:
             changed |= s->level != ev.level || s->charging != ev.charging;
@@ -949,8 +951,8 @@ static gboolean on_report(int fd, GIOCondition cond, gpointer data)
         }
     }
     gboolean gone = got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR);
-    if (woke && s->reading) s->woke = TRUE;
-    else if (woke) ask_settings(s->d, s);
+    if (again && s->reading) s->stale = TRUE;
+    else if (again) ask_settings(s->d, s);
     if (changed) schedule(s->d);
     if (!gone) return G_SOURCE_CONTINUE;
     close(fd); /* unplugged: the next scan finds it again, or not */
@@ -995,7 +997,7 @@ static void write_thread(GTask *task, gpointer src, gpointer data, GCancellable 
 {
     SettingsCtx *c = data;
     GError *e = NULL;
-    if (hyperx_write(c->node, &c->want, &c->state, &e)) g_task_return_boolean(task, TRUE);
+    if (hyperx_write(c->node, &c->base, &c->want, &c->state, &e)) g_task_return_boolean(task, TRUE);
     else g_task_return_error(task, e);
 }
 
@@ -1026,7 +1028,9 @@ static gboolean pretend_written(gpointer data)
     SettingsCtx *c = data;
     HidState *s = g_hash_table_lookup(c->d->hid, c->owner);
     guint8 packets[HYPERX_BLOCKS][HYPERX_REPORT];
-    int n = s ? hyperx_packets(&s->state, &c->want, 0, packets) : -1;
+    MouseSettings merged;
+    if (s) hyperx_merge(&s->state, &c->base, &c->want, &merged);
+    int n = s ? hyperx_packets(&s->state, &merged, 0, packets) : -1;
     if (s) {
         s->writing = FALSE;
         for (int i = 0; i < n; i++) hyperx_apply(&s->state, packets[i]);
@@ -1037,7 +1041,8 @@ static gboolean pretend_written(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
-void devices_set_mouse(Devices *d, const char *id, const MouseSettings *want, DevDone done, gpointer user)
+void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, const MouseSettings *want,
+                       DevDone done, gpointer user)
 {
     HidState *s = g_hash_table_lookup(d->hid, id);
     if (!s || !s->known || s->writing) {
@@ -1045,6 +1050,7 @@ void devices_set_mouse(Devices *d, const char *id, const MouseSettings *want, De
         return;
     }
     SettingsCtx *c = settings_ctx(d, s);
+    c->base = *base;
     c->want = *want;
     c->done = done;
     c->user = user;

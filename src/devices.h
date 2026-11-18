@@ -69,9 +69,11 @@ void devices_allow_batteries(Devices *d, DevDone done, gpointer user);
  * mouse is listened to meanwhile, so pressing its DPI button or waking it
  * shows at once. Calls nest; each `on` needs its `off`. */
 void devices_want_settings(Devices *d, gboolean on);
-/* Writes `want` to the mouse, live and to its own memory, then reads it
- * back. A dry run only pretends. */
-void devices_set_mouse(Devices *d, const char *id, const MouseSettings *want, DevDone done, gpointer user);
+/* Writes what `want` changes from `base`, the settings the person changed,
+ * to the mouse, live and to its own memory, then reads it back. Whatever
+ * they didn't change keeps the mouse's own. A dry run only pretends. */
+void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, const MouseSettings *want,
+                       DevDone done, gpointer user);
 
 /* How an input node in sysfs is read, kept apart for the unit tests. */
 /* Whether `bit` is set in a capability bitmap: words of hex, most

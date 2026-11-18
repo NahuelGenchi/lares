@@ -36,6 +36,7 @@ typedef enum { HYPERX_STAGE, HYPERX_LINK, HYPERX_BATTERY } HyperxEventKind;
 typedef struct {
     HyperxEventKind kind;
     int stage;               /* HYPERX_STAGE: the stage's bit in the mask */
+    int code;                /* and its DPI as the table codes it */
     gboolean linked;         /* HYPERX_LINK: awake, or asleep and off */
     int level;               /* HYPERX_BATTERY */
     gboolean charging;
@@ -52,6 +53,10 @@ gboolean hyperx_battery_parse(const guint8 *report, gsize len, int *level, gbool
  * picked a stage, it woke or fell asleep, or its battery after waking. */
 gboolean hyperx_event(const guint8 *report, gsize len, HyperxEvent *event);
 
+/* Takes a HYPERX_STAGE event into `state` when it matches its DPI table,
+ * and says whether it did; when it doesn't, read the table again. */
+gboolean hyperx_take_stage(HyperxState *state, const HyperxEvent *event);
+
 /* `state` in plain units. `model` gives the limits, and may be NULL. */
 void hyperx_decode(const HyperxModel *model, const HyperxState *state, MouseSettings *out);
 
@@ -61,6 +66,12 @@ void hyperx_decode(const HyperxModel *model, const HyperxState *state, MouseSett
  * `want` is something the mouse can't hold. */
 int hyperx_packets(const HyperxState *now, const MouseSettings *want, guint16 slot,
                    guint8 out[HYPERX_BLOCKS][HYPERX_REPORT]);
+
+/* The mouse as it is `now`, with what `want` changes from `base`, which is
+ * what the person saw when they changed it. Settings they didn't touch keep
+ * the mouse's own, even when it changed them meanwhile, such as its DPI
+ * button. The limits come from `want`. */
+void hyperx_merge(const HyperxState *now, const MouseSettings *base, const MouseSettings *want, MouseSettings *out);
 
 /* Updates `state` as one of those packets would update the mouse: what a
  * dry run pretends, and what the tests check them against. */
@@ -77,9 +88,11 @@ void hyperx_sample(HyperxState *state);
 gboolean hyperx_battery(const char *node, int *level, gboolean *charging, GError **error);
 /* The live profile. G_IO_ERROR_NOT_CONNECTED while the mouse sleeps. */
 gboolean hyperx_read(const char *node, HyperxState *state, GError **error);
-/* Writes `want` live and to the mouse's memory, then reads the live profile
- * back into `state` and checks that it holds `want`. */
-gboolean hyperx_write(const char *node, const MouseSettings *want, HyperxState *state, GError **error);
+/* Writes what `want` changes from `base` (as hyperx_merge) live and to the
+ * mouse's memory, then reads the live profile back into `state` and checks
+ * that it holds the change. */
+gboolean hyperx_write(const char *node, const MouseSettings *base, const MouseSettings *want, HyperxState *state,
+                      GError **error);
 
 /* The udev rules that let the person at the screen open that interface,
  * and nothing else of these devices. */

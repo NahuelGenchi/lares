@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define ACK           0xff
-#define EVENT         0xfb   /* fb 08 <stage> <dpi>: DPI button; fb 0a <0|1>: asleep or awake */
+#define EVENT         0xfb   /* fb 08 <stage> <dpi code>: DPI button; fb 0a <0|1>: asleep or awake */
 #define LINK          0x52   /* 52 01 -> 53 01 <linked> */
 #define BATTERY       0x50   /* 50 02 -> 51 02 <level> <charge state> */
 #define DPI           0x32   /* 32 01 <profile> <table> writes, 32 02 <profile> reads */
@@ -80,7 +80,7 @@ gboolean hyperx_event(const guint8 *report, gsize len, HyperxEvent *event)
     }
     if (len < 3 || report[0] != EVENT) return FALSE;
     if (report[1] == 0x08 && len >= 5 && report[2] < 8) {
-        *event = (HyperxEvent){ .kind = HYPERX_STAGE, .stage = report[2] };
+        *event = (HyperxEvent){ .kind = HYPERX_STAGE, .stage = report[2], .code = report[3] | report[4] << 8 };
         return TRUE;
     }
     if (report[1] == 0x0a) {
@@ -116,6 +116,19 @@ static int stage_dpi(const guint8 *stage)
 static gboolean has_colour(LightEffect light)
 {
     return light == LIGHT_SOLID || light == LIGHT_BREATHING;
+}
+
+/* The DPI button's event names the stage and its DPI. The mouse also sends
+ * one with DPI code 0 when it wakes with a click, which names no stage, so
+ * only an event that matches the table is taken. */
+gboolean hyperx_take_stage(HyperxState *s, const HyperxEvent *ev)
+{
+    const guint8 *stage = s->dpi + 5 + 5 * ev->stage;
+    if (ev->kind != HYPERX_STAGE || ev->stage < 0 || ev->stage >= 8 || !(s->dpi[3] >> ev->stage & 1)
+        || (stage[0] | stage[1] << 8) != ev->code)
+        return FALSE;
+    s->dpi[4] = ev->stage;
+    return TRUE;
 }
 
 void hyperx_decode(const HyperxModel *model, const HyperxState *s, MouseSettings *out)
@@ -163,6 +176,24 @@ static gboolean holds(const MouseSettings *got, const MouseSettings *want)
 {
     return same_dpi(got, want) && got->lift_mm == want->lift_mm && got->brightness == want->brightness
         && same_light(got, want);
+}
+
+void hyperx_merge(const HyperxState *now, const MouseSettings *base, const MouseSettings *want, MouseSettings *out)
+{
+    hyperx_decode(NULL, now, out);
+    out->dpi_min = want->dpi_min;
+    out->dpi_max = want->dpi_max;
+    out->rate_max = want->rate_max;
+    for (int i = 0; i < MOUSE_STAGES; i++)
+        if (want->dpi[i] != base->dpi[i]) out->dpi[i] = want->dpi[i];
+    if (want->active != base->active) out->active = want->active;
+    if (want->rate != base->rate) out->rate = want->rate;
+    if (want->lift_mm != base->lift_mm) out->lift_mm = want->lift_mm;
+    if (want->brightness != base->brightness) out->brightness = want->brightness;
+    if (!same_light(want, base)) {
+        out->light = want->light;
+        memcpy(out->rgb, want->rgb, 3);
+    }
 }
 
 static guint8 *packet(guint8 out[][HYPERX_REPORT], int *n, guint8 command, guint8 sub, guint16 slot)
@@ -373,11 +404,12 @@ static gboolean read_state(Port *p, HyperxState *s, GError **error)
     return ok || fail(error, G_IO_ERROR_TIMED_OUT, "It didn't answer; it may have fallen asleep.");
 }
 
-/* Sends a change and waits until it's taken: the mouse answers a new
- * effect itself, and the receiver acknowledges the rest. */
+/* Sends a change and waits for the receiver to acknowledge it, which it
+ * does once the mouse has it. The mouse doesn't always answer a new effect
+ * itself, so that answer isn't waited for; the read-back checks the rest. */
 static gboolean send_change(Port *p, const guint8 *packet)
 {
-    return port_send(p, packet) && port_wait(p, ANSWER_MS, packet[0] == LIGHTING ? is_answer : is_ack, packet, NULL);
+    return port_send(p, packet) && port_wait(p, ANSWER_MS, is_ack, packet, NULL);
 }
 
 gboolean hyperx_battery(const char *node, int *level, gboolean *charging, GError **error)
@@ -418,15 +450,18 @@ gboolean hyperx_read(const char *node, HyperxState *state, GError **error)
     return ok;
 }
 
-static gboolean write_both(Port *p, const MouseSettings *want, HyperxState *state, GError **error)
+static gboolean write_both(Port *p, const MouseSettings *base, const MouseSettings *want, HyperxState *state,
+                           GError **error)
 {
     HyperxState now;
+    MouseSettings merged;
     if (!linked(p, error) || !read_state(p, &now, error)) return FALSE;
+    hyperx_merge(&now, base, want, &merged);
     /* Live first, then the profile it reloads when switched on, as NGENUITY
      * saves. */
     guint8 packets[HYPERX_BLOCKS][HYPERX_REPORT];
     for (guint16 slot = 0; slot < 2; slot++) {
-        int n = hyperx_packets(&now, want, slot, packets);
+        int n = hyperx_packets(&now, &merged, slot, packets);
         if (n < 0) return fail(error, G_IO_ERROR_INVALID_ARGUMENT, "The mouse can't hold that setting.");
         for (int i = 0; i < n; i++)
             if (!send_change(p, packets[i]))
@@ -435,17 +470,18 @@ static gboolean write_both(Port *p, const MouseSettings *want, HyperxState *stat
     if (!read_state(p, state, error)) return FALSE;
     MouseSettings got;
     hyperx_decode(NULL, state, &got);
-    return holds(&got, want) || fail(error, G_IO_ERROR_FAILED, "It kept its earlier setting.");
+    return holds(&got, &merged) || fail(error, G_IO_ERROR_FAILED, "It kept its earlier setting.");
 }
 
-gboolean hyperx_write(const char *node, const MouseSettings *want, HyperxState *state, GError **error)
+gboolean hyperx_write(const char *node, const MouseSettings *base, const MouseSettings *want, HyperxState *state,
+                      GError **error)
 {
     Port p;
     HyperxState s;
     g_mutex_lock(&turns);
     gboolean ok = port_open(&p, node, error);
     if (ok) {
-        ok = write_both(&p, want, &s, error);
+        ok = write_both(&p, base, want, &s, error);
         close(p.fd);
     }
     g_mutex_unlock(&turns);
