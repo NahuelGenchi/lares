@@ -8,17 +8,19 @@ Lares is one calm place to check and manage this PC and its devices. In Roman ho
 
 **Hardware** has live load graphs and temperatures for the processor and graphics card, memory use, and the system drive's space and temperature.
 
-**Controller** is everything Padlight did, ported to C: Padlight's live controller picture with Sticks, Buttons and Vibration tabs (the stick check with drift warnings, the button test, the motor lab), battery, connection, model and firmware with the update hint, which programs have it open, Test vibration, Find controller, Disconnect, nicknames and Pair a controller. Its settings hold the low battery alerts and level, connection notices, keeping the screen awake, idle disconnect, the top-bar icon and the background helper. **Headphones** lists Bluetooth headphones with their battery and a Connect button; AirPods appear there. Each shows only when such a device is paired.
+**Controller** is everything Padlight did, ported to C: Padlight's live controller picture with Sticks, Buttons and Vibration tabs (the stick check with drift warnings, the button test, the motor lab), battery, connection, model and firmware with the update hint, which programs have it open, Test vibration, Find controller, Disconnect, nicknames and Pair a controller. Its settings hold the low battery alerts and level, connection notices, keeping the screen awake and idle disconnect. **Headphones** lists Bluetooth headphones with their battery and a Connect button; AirPods appear there. Each shows only when such a device is paired.
 
 **Remote** is for playing this PC from another device, at home or away, with three free apps: Tailscale links the devices, Sunshine shares the screen, and Moonlight plays it on the other device. Until those are set up, the sidebar says *Set up remote* and the section is a three-step guide that ticks each step once Lares sees it done, and then shows the address to add in Moonlight. After that it switches between Home and Remote: Home puts the monitor back to its own size and turns Sunshine and Tailscale off; Remote turns them on and can set a screen size that fills the other device, so Moonlight shows no black bars. Click a row to change what a mode sets.
+
+**Settings** sits below Remote and is always there, with or without a controller. It holds what applies to Lares as a whole: Run in the background, and the top-bar icon with its battery level and whether it hides without a controller.
 
 ## Light on the PC
 
 Lares is C with GTK 4. Its window uses about 18 to 30 MB of its own memory (47 to 49 MB counting every shared library in full). It draws with GTK's software renderer, since the GPU renderers load the graphics driver and use about 100 MB. Nothing is read unless a section that shows it is on screen and the window isn't minimized; controllers are read straight from their evdev nodes, never through a helper process. Closing the window ends it.
 
-The background helper, `lares-pad`, links GLib alone and uses under 1 MB of its own (about 7 MB RSS). It runs alerts, notices, keeping the screen awake and idle disconnect while Lares is closed, and gives the top-bar addon its readings over D-Bus. It reads a controller only while a feature needs it, waiting on the device with no polling, and quits by itself when no setting needs it. Lares starts and stops it through systemd, and the Run in the background switch turns it off.
+The background helper, `lares-pad`, links GLib alone and uses under 1 MB of its own (about 7 MB RSS). It runs alerts, notices, keeping the screen awake and idle disconnect while Lares is closed, and gives the top-bar addon its readings over D-Bus. It reads a controller only while a feature needs it, waiting on the device with no polling, and quits by itself when no setting needs it. Lares starts and stops it through systemd, and the Run in the background switch, in Settings, turns it off.
 
-The top-bar addon (`lares@nahuelgenchi.github.io`) is JavaScript, because GNOME Shell runs nothing else in the top bar. It only draws: every reading and action comes from the helper. It stays off until Show in the top bar is turned on in Lares, and GNOME loads it at the next log-in after it is first installed.
+The top-bar addon (`lares@nahuelgenchi.github.io`) is JavaScript, because GNOME Shell runs nothing else in the top bar. It only draws: every reading and action comes from the helper. It stays off until Show in the top bar is turned on in Lares' Settings, and GNOME loads it at the next log-in after it is first installed.
 
 ## Build and install
 

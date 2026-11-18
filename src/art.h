@@ -22,3 +22,4 @@ extern const char *const ART_MOUSE[];
 extern const char *const ART_MEMORY[];
 extern const char *const ART_DISK[];
 extern const char *const ART_PENCIL[];
+extern const char *const ART_GEAR[];
