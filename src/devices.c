@@ -745,7 +745,7 @@ void devices_allow_batteries(Devices *d, DevDone done, gpointer user)
      * change. udevadm applies them to what's plugged in now and waits until
      * it has. */
     char *rules = hidbattery_udev_rules();
-    const char *script = "mkdir -p /etc/udev/rules.d && printf '%s' \"$1\" > " HIDBATTERY_RULES
+    const char *script = "umask 022 && mkdir -p /etc/udev/rules.d && printf '%s' \"$1\" > " HIDBATTERY_RULES
                          " && udevadm control --reload"
                          " && udevadm trigger --action=change --subsystem-match=hidraw && udevadm settle";
     const char *argv[] = { "pkexec", "/bin/sh", "-c", script, "lares", rules, NULL };
