@@ -11,6 +11,7 @@ static Section SECTIONS[] = {
     { "controller", "Controller", ART_GAMEPAD,    DEV_CONTROLLER, pad_view_build, pad_view_shown, NULL, NULL, FALSE },
     { "headphones", "Headphones", ART_HEADPHONES, DEV_AUDIO,      device_build,   device_shown,   NULL, NULL, FALSE },
     { "remote",     "Remote",     ART_LAPTOP,     0,              remote_build,   remote_shown,   NULL, NULL, FALSE },
+    { "settings",   "Settings",   ART_GEAR,       0,              settings_build, NULL,           NULL, NULL, FALSE },
 };
 
 static Section *find(Lares *app, const char *id)

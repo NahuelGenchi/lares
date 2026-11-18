@@ -104,9 +104,10 @@ static void on_dir_changed(GFileMonitor *m, GFile *file, GFile *other, GFileMoni
 {
     GFile *target = ev == G_FILE_MONITOR_EVENT_RENAMED || ev == G_FILE_MONITOR_EVENT_MOVED_IN ? other : file;
     if (!target) return;
-    char *name = g_file_get_basename(target);
-    gboolean ours = g_str_equal(name, "pad.ini");
+    char *name = g_file_get_basename(target), *own = g_path_get_basename(c->path); /* pad-dry-run.ini in a dry run */
+    gboolean ours = g_str_equal(name, own);
     g_free(name);
+    g_free(own);
     if (ours && !c->reload) c->reload = g_timeout_add(100, reload_now, c);
 }
 

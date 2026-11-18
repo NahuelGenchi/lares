@@ -28,6 +28,51 @@ GtkWidget *ui_page(void)
     return gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
 }
 
+/* A heading over a card of settings; hiding the card's parent hides both. */
+GtkWidget *ui_group(GtkWidget *page, const char *heading)
+{
+    GtkWidget *section = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
+    gtk_box_append(GTK_BOX(section), ui_label(heading, "group-heading"));
+    GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
+    gtk_widget_add_css_class(card, "card");
+    gtk_widget_add_css_class(card, "padded");
+    gtk_box_append(GTK_BOX(section), card);
+    gtk_box_append(GTK_BOX(page), section);
+    return card;
+}
+
+/* A setting's row in a group: its title, an optional line under it, and
+ * room on the right for its control. */
+GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub)
+{
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
+    gtk_widget_add_css_class(row, "setting");
+    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_hexpand(texts, TRUE);
+    gtk_box_append(GTK_BOX(texts), ui_label(title, NULL));
+    if (sub) {
+        GtkWidget *l = ui_label(sub, "muted");
+        gtk_label_set_wrap(GTK_LABEL(l), TRUE);
+        gtk_box_append(GTK_BOX(texts), l);
+    }
+    gtk_box_append(GTK_BOX(row), texts);
+    gtk_box_append(GTK_BOX(group), row);
+    return row;
+}
+
+/* A switch at the end of a setting's row, for the boolean `field`. `cb` runs
+ * on notify::active and finds the field in the switch's "field" data. */
+GtkWidget *ui_setting_switch(GtkWidget *row, const char *title, gboolean *field, GCallback cb, gpointer data)
+{
+    GtkWidget *sw = gtk_switch_new();
+    gtk_widget_set_valign(sw, GTK_ALIGN_CENTER);
+    g_object_set_data(G_OBJECT(sw), "field", field);
+    g_signal_connect(sw, "notify::active", cb, data);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(sw), GTK_ACCESSIBLE_PROPERTY_LABEL, title, -1);
+    gtk_box_append(GTK_BOX(row), sw);
+    return sw;
+}
+
 const char *const *device_art(DevKind kind)
 {
     switch (kind) {
