@@ -39,7 +39,7 @@ struct RemoteView {
     Step steps[N_STEPS];
     char *guide_key;          /* what the guide shows; it's redrawn only when this changes */
     gboolean signing_in;
-    GtkWidget *sw, *moonlight, *live_dot, *ip, *host;
+    GtkWidget *sw, *moonlight, *ip, *host;
     GtkWidget *note_rev, *note_icons, *note_text, *note_main, *note_alt;
     Row rows[N_ITEMS];
     gboolean ready, applying, restart;
@@ -141,13 +141,13 @@ static void set_field(GtkWidget *label, const char *text, gboolean known)
 static void update_connection(RemoteView *a)
 {
     Live *l = remote_live(a->m);
-    gboolean on = l->sunshine == 1;
+    gboolean on = l->sunshine == 1, live = on && l->streaming;
     const char *moon = l->sunshine < 0 ? "Unknown"
                      : !on ? "Off"
-                     : l->streaming ? "Streaming"
+                     : live ? "live"
                      : l->paired ? "Ready" : "No device paired";
-    set_field(a->moonlight, moon, on && (l->streaming || l->paired));
-    gtk_widget_set_visible(a->live_dot, on && l->streaming);
+    set_field(a->moonlight, moon, live || (on && l->paired));
+    ui_class(a->moonlight, "live", live); /* a badge that breathes */
     set_field(a->ip, l->tailscale_ip ? l->tailscale_ip : "Unknown", l->tailscale_ip != NULL);
     set_field(a->host, l->tailscale_host ? l->tailscale_host : "Unknown", l->tailscale_host != NULL);
 }
@@ -580,9 +580,8 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
     gtk_box_append(GTK_BOX(card), r->box);
 }
 
-/* A field of the connection card: its name, and its value on the right,
- * after `mark` if there is one. */
-static GtkWidget *add_field(GtkWidget *card, const char *name, GtkWidget *mark, gboolean selectable)
+/* A field of the connection card: its name, and its value on the right. */
+static GtkWidget *add_field(GtkWidget *card, const char *name, gboolean selectable)
 {
     if (gtk_widget_get_first_child(card)) {
         GtkWidget *sep = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -594,10 +593,6 @@ static GtkWidget *add_field(GtkWidget *card, const char *name, GtkWidget *mark, 
     GtkWidget *n = ui_label(name, NULL);
     gtk_widget_set_hexpand(n, TRUE);
     gtk_box_append(GTK_BOX(row), n);
-    if (mark) {
-        gtk_widget_set_valign(mark, GTK_ALIGN_CENTER);
-        gtk_box_append(GTK_BOX(row), mark);
-    }
     GtkWidget *v = ui_label("", "value");
     gtk_label_set_xalign(GTK_LABEL(v), 1);
     gtk_label_set_selectable(GTK_LABEL(v), selectable);
@@ -618,10 +613,9 @@ static void build_page(RemoteView *a)
 
     GtkWidget *conn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(conn, "card");
-    a->live_dot = ui_icon(ART_LIVE, 2, "live-dot");
-    a->moonlight = add_field(conn, "Moonlight", a->live_dot, FALSE);
-    a->ip = add_field(conn, "IP address", NULL, TRUE);
-    a->host = add_field(conn, "Host name", NULL, TRUE);
+    a->moonlight = add_field(conn, "Moonlight", FALSE);
+    a->ip = add_field(conn, "IP address", TRUE);
+    a->host = add_field(conn, "Host name", TRUE);
     gtk_box_append(GTK_BOX(a->mode_box), conn);
 
     GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);

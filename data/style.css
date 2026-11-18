@@ -18,6 +18,7 @@ window.lares {
   --note: rgba(196, 96, 42, 0.10);
   --warn: #a96d07;
   --bad: #bb3a2b;
+  --live: #d33a2c;
 
   font-family: "Monocraft";
   font-size: 18px;
@@ -58,6 +59,7 @@ window.lares.remote {
     --note: rgba(240, 154, 90, 0.12);
     --warn: #e7b24a;
     --bad: #f07a68;
+    --live: #ff7b6b;
   }
   window.lares.remote {
     --bg: #111a27;
@@ -110,16 +112,6 @@ window.lares .app-name {
   color: var(--muted);
 }
 
-/* Shown only while Moonlight streams. */
-.live-dot {
-  color: var(--accent);
-  animation: pulse 1100ms ease-in-out infinite alternate;
-}
-
-@keyframes pulse {
-  from { opacity: 1; }
-  to { opacity: 0.25; }
-}
 
 /* ----------------------------------------------------------- the switch */
 
@@ -249,6 +241,20 @@ modeswitch > button.selected:focus-visible {
 /* A field of Remote's connection card: as tall as a row, but not a button. */
 .field {
   padding: 18px;
+}
+
+/* While Moonlight streams, its field is a badge whose background breathes;
+   the word stays steady. */
+.value.live {
+  color: var(--live);
+  padding: 0 9px;
+  border-radius: 9px;
+  animation: breathe 2400ms ease-in-out infinite alternate;
+}
+
+@keyframes breathe {
+  from { background-color: alpha(currentColor, 0.10); }
+  to { background-color: alpha(currentColor, 0.26); }
 }
 
 .status .busy {
@@ -481,8 +487,9 @@ meter.low, meter.hot {
   nav > .pill, nav button.nav-item, button.tile, .device-art {
     transition: none;
   }
-  .live-dot {
+  .value.live {
     animation: none;
+    background-color: alpha(currentColor, 0.18);
   }
 }
 
