@@ -38,10 +38,10 @@ install: all
 	@mkdir -p $(PREFIX)/share/systemd/user
 	sed 's|@BINDIR@|$(PREFIX)/bin|' data/lares-pad.service.in > $(PREFIX)/share/systemd/user/lares-pad.service
 	install -Dm644 -t $(ADDONS)/$(ADDON) data/addon/metadata.json data/addon/extension.js \
-		data/addon/controllerArt.js data/addon/stylesheet.css
+		data/addon/controllerArt.js data/addon/stylesheet.css data/pad/controller.txt
 	install -Dm644 -t $(ADDONS)/$(ADDON)/icons data/addon/icons/lares-pad-symbolic.svg
-	@# The addon still draws Padlight's picture and glow; the window draws data/pad/controller.txt.
-	install -Dm644 -t $(ADDONS)/$(ADDON)/images data/pad/controller.png data/pad/glow.png
+	@# Padlight's photo-style picture, which earlier versions installed
+	rm -rf $(ADDONS)/$(ADDON)/images
 	@# Monocraft, Lares' lettering, unless it's installed already (SIL OFL 1.1)
 	@if ! fc-list | grep -qi monocraft; then \
 		install -Dm644 -t $(PREFIX)/share/fonts/lares data/fonts/Monocraft.ttf data/fonts/OFL.txt; \
@@ -50,7 +50,7 @@ install: all
 	-update-desktop-database -q $(PREFIX)/share/applications
 
 # What the Checks workflow runs: both programs with warnings as errors, the
-# unit tests, and the addon's JavaScript parsed.
+# unit tests, and the addon's JavaScript parsed and its picture tested.
 check: build/resources.c
 	@mkdir -p build/check
 	$(CC) $(CFLAGS) -Werror $(GTK) -o build/check/lares $(APP_SOURCES) $(GTK_LIBS)
@@ -59,6 +59,7 @@ check: build/resources.c
 		src/pad/pads.c src/pad/padconf.c src/pad_map.c src/remote_model.c $(GIO_LIBS)
 	build/check/unit
 	@for f in data/addon/*.js; do node --check "$$f" || exit 1; done
+	node tests/addon.mjs
 	@echo "make check: all passed"
 
 uninstall:

@@ -54,4 +54,4 @@ Work is tracked with issues, milestones and pull requests; see [CONTRIBUTING.md]
 
 ## License
 
-GPL-2.0-or-later. The controller picture, its glow and `data/addon/controllerArt.js` come from Padlight, by the same author, under the same license; the window's pixel-art picture, `data/pad/controller.txt`, is traced from it. Xbox is a trademark of Microsoft; Lares is not affiliated with it.
+GPL-2.0-or-later. The controller artwork, `data/pad/controller.png`, comes from Padlight, by the same author, under the same license; the pixel-art picture the window and the top-bar menu draw, `data/pad/controller.txt`, is traced from it. Xbox is a trademark of Microsoft; Lares is not affiliated with it.

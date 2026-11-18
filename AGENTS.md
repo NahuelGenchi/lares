@@ -24,7 +24,7 @@ Never describe something as working or complete unless a recorded check establis
 | `src/settings_view.c` | The Settings section: Run in the background and the top-bar icon |
 | `src/helper/lares-pad.c` | The background helper and its D-Bus interface for the addon |
 | `data/` | Stylesheet, artwork, the bundled Monocraft font, the desktop file, the helper's unit and the addon (`data/addon/`) |
-| `tests/unit.c` | Unit tests on plain data, run by `make check` |
+| `tests/unit.c`, `tests/addon.mjs` | Unit tests on plain data, and on the addon's controller picture under Node, run by `make check` |
 | `tools/pad-map.py` | Draws the controller picture's map from the artwork; needs Pillow and NumPy, building doesn't |
 | `.github/` | Issue form, PR template, the Checks and Project tracking workflows |
 

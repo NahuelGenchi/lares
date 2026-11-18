@@ -9,8 +9,8 @@ The map is the Controller section's picture: one character per pixel, read by
 src/pad_map.c. The controller's outline comes from the artwork's shape
 (data/pad/controller.png); every button is a hand-drawn sprite below, placed
 where the artwork has it. Positions are in the artwork's own units, 1444 by
-1007, the same as the top-bar addon's controllerArt.js. Needs Pillow and NumPy,
-only to run this script; building Lares doesn't.
+1007. The top-bar addon's controllerArt.js draws the same map. Needs Pillow and
+NumPy, only to run this script; building Lares doesn't.
 """
 import math
 import os

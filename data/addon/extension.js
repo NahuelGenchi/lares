@@ -6,7 +6,6 @@
 // GNOME Shell runs top-bar items only in JavaScript, so this file only draws:
 // every reading and action comes from Lares' helper, lares-pad, over D-Bus.
 
-import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -18,17 +17,12 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import {drawController, drawPlaceholder} from './controllerArt.js';
+import {drawController, lookOf, parseMap, sameLook} from './controllerArt.js';
 
 const BUS_NAME = 'com.nahuelgenchi.Lares.Pad';
 const OBJECT_PATH = '/com/nahuelgenchi/Lares/Pad';
 const IFACE = 'com.nahuelgenchi.Lares.Pad';
 
-// The helper sends pressed buttons as bits, in this order.
-const BUTTONS = ['a', 'b', 'x', 'y', 'lb', 'rb', 'lt', 'rt', 'view', 'menu', 'xbox', 'share',
-    'ls', 'rs', 'up', 'down', 'left', 'right'];
-
-const PICTURE_HEIGHT = 168;
 const METER_BLOCKS = 10;
 
 function call(method, params = null) {
@@ -44,9 +38,12 @@ function call(method, params = null) {
     });
 }
 
-function stateOf([bits, lx, ly, rx, ry, lt, rt]) {
-    return {buttons: BUTTONS.filter((_, i) => bits & (1 << i)), lx, ly, rx, ry, lt, rt};
+// The helper sends pressed buttons as bits, in the order of controllerArt.js' Button.
+function stateOf([buttons, lx, ly, rx, ry, lt, rt]) {
+    return {buttons, lx, ly, rx, ry, lt, rt};
 }
+
+const rgba = color => [color.red / 255, color.green / 255, color.blue / 255, color.alpha / 255];
 
 function since(seconds) {
     if (!seconds)
@@ -54,25 +51,36 @@ function since(seconds) {
     return ` since ${GLib.DateTime.new_from_unix_local(seconds).format('%H:%M')}`;
 }
 
-// The live picture: Padlight's artwork, lit as the controller is used.
+// The live picture: the window's pixel-art controller, lit as it is used.
+// One screen pixel per map pixel, as the menu has no room for two.
 const Picture = GObject.registerClass(
 class Picture extends St.DrawingArea {
-    _init(images, height, placeholder) {
-        super._init({style_class: 'lares-picture', height, x_expand: true});
-        this._images = images;
+    _init(map, placeholder) {
+        super._init({style_class: 'lares-picture', height: map.height, x_expand: true});
+        this._map = map;
         this._placeholder = placeholder;
-        this.state = {buttons: []};
+        this._look = lookOf(map);
+    }
+
+    // A state that looks the same, such as a stick resting a hair off centre,
+    // paints nothing again.
+    setState(state) {
+        const look = lookOf(this._map, state);
+        if (sameLook(look, this._look))
+            return;
+        this._look = look;
+        this.queue_repaint();
     }
 
     vfunc_repaint() {
         const cr = this.get_context();
         const [width, height] = this.get_surface_size();
-        const {red, green, blue} = this.get_theme_node().get_foreground_color();
-        const foreground = [red / 255, green / 255, blue / 255];
-        if (this._placeholder)
-            drawPlaceholder(cr, width, height, this._images.art, foreground);
-        else
-            drawController(cr, width, height, this._images, this.state, foreground);
+        // Lines in the menu's text color; what's held in the accent, from the stylesheet.
+        const node = this.get_theme_node();
+        const line = rgba(node.get_foreground_color());
+        const [found, accent] = node.lookup_color('-lares-accent', false);
+        drawController(cr, width, height, this._map, this._look,
+            {line, accent: found ? rgba(accent) : line}, this._placeholder);
         cr.$dispose();
     }
 });
@@ -95,10 +103,7 @@ class Indicator extends PanelMenu.Button {
         this._prefs = {};
         this._pictures = new Map();
         this._helper = false;
-        this._images = {
-            art: Cairo.ImageSurface.createFromPNG(`${extension.path}/images/controller.png`),
-            glow: Cairo.ImageSurface.createFromPNG(`${extension.path}/images/glow.png`),
-        };
+        this._map = undefined;
 
         const box = new St.BoxLayout({style_class: 'panel-status-menu-box lares-panel'});
         this._icon = new St.Icon({
@@ -176,7 +181,9 @@ class Indicator extends PanelMenu.Button {
             column.add_child(this._note("Lares' background helper is off. Turn on Run in the background in Lares."));
         } else if (!this._pads.length) {
             const empty = new St.BoxLayout({vertical: true, style_class: 'lares-card'});
-            empty.add_child(new Picture(this._images, 96, true));
+            const map = this._pictureMap();
+            if (map)
+                empty.add_child(new Picture(map, true));
             empty.add_child(this._note('No controller connected. Plug in a USB cable, or connect one over Bluetooth.'));
             column.add_child(empty);
         }
@@ -198,6 +205,20 @@ class Indicator extends PanelMenu.Button {
             this._column.remove_style_class_name('lares-on-light');
     }
 
+    // The picture's pixel map, read the first time a picture is shown
+    _pictureMap() {
+        if (this._map === undefined) {
+            try {
+                const [, bytes] = GLib.file_get_contents(`${this._extension.path}/controller.txt`);
+                this._map = parseMap(new TextDecoder().decode(bytes));
+            } catch (e) {
+                console.error(`Lares: the controller picture's map: ${e.message}`);
+                this._map = null;
+            }
+        }
+        return this._map;
+    }
+
     _note(text) {
         const label = new St.Label({text, style_class: 'lares-muted lares-note', x_expand: true});
         label.clutter_text.line_wrap = true;
@@ -209,9 +230,12 @@ class Indicator extends PanelMenu.Button {
         card.add_child(new St.Label({text: pad.name, style_class: 'lares-name'}));
         card.add_child(new St.Label({text: `${pad.connection}${since(pad.since)}`, style_class: 'lares-muted'}));
 
-        const picture = new Picture(this._images, PICTURE_HEIGHT, false);
-        this._pictures.set(pad.path, picture);
-        card.add_child(picture);
+        const map = this._pictureMap();
+        if (map) {
+            const picture = new Picture(map, false);
+            this._pictures.set(pad.path, picture);
+            card.add_child(picture);
+        }
 
         const battery = new St.BoxLayout({style_class: 'lares-battery'});
         if (pad.battery >= 0)
@@ -244,10 +268,8 @@ class Indicator extends PanelMenu.Button {
         for (const pad of this._pads)
             call(open ? 'Watch' : 'Unwatch', new GLib.Variant('(s)', [pad.path]));
         if (!open) {
-            for (const picture of this._pictures.values()) {
-                picture.state = {buttons: []};
-                picture.queue_repaint();
-            }
+            for (const picture of this._pictures.values())
+                picture.setState({});
             this.visible = this._pads.length > 0 || !this._prefs['hide-without-controller'];
         }
     }
@@ -256,8 +278,7 @@ class Indicator extends PanelMenu.Button {
         const picture = this._pictures.get(path);
         if (!picture || !this.menu.isOpen)
             return;
-        picture.state = stateOf(state);
-        picture.queue_repaint();
+        picture.setState(stateOf(state));
     }
 
     _openLares() {
