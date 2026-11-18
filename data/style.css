@@ -288,8 +288,10 @@ modeswitch > button.selected:focus-visible {
 
 /* --------------------------------------------------------------- chips */
 
+/* A row's choices, under its name: 18 below the open row's highlight and
+   18 above the next row's line. */
 .chips {
-  padding: 9px 18px 18px 54px;
+  padding: 18px 18px 18px 54px;
 }
 
 .chips > .group {
