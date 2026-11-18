@@ -71,6 +71,8 @@ struct PadView {
     GHashTable *users;        /* pad path -> "In use by …" */
     PadPair *pair;
     char *shape;              /* what the cards were built for */
+    char *away_busy;          /* the away controller being connected */
+    char *away_error_id, *away_error; /* why its last try failed */
     gboolean on_screen, syncing;
 };
 
@@ -660,11 +662,29 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
 
 /* ------------------------------------------------------------------ away */
 
+static void build_away(PadView *v);
+
+/* Once connected, the device watcher takes the card away; if it failed,
+ * the card gets its button back and says why. */
+static void away_done(gboolean ok, const char *message, gpointer user)
+{
+    PadView *v = user;
+    g_free(v->away_error_id);
+    g_free(v->away_error);
+    v->away_error_id = ok ? NULL : g_strdup(v->away_busy);
+    v->away_error = ok ? NULL : g_strdup(message);
+    g_clear_pointer(&v->away_busy, g_free);
+    build_away(v);
+}
+
 static void on_connect_away(GtkButton *b, PadView *v)
 {
-    devices_set_connected(v->app->devices, g_object_get_data(G_OBJECT(b), "device"), TRUE, NULL, NULL);
-    gtk_button_set_label(b, "Connecting…");
-    gtk_widget_set_sensitive(GTK_WIDGET(b), FALSE);
+    if (v->away_busy) return;
+    v->away_busy = g_strdup(g_object_get_data(G_OBJECT(b), "device"));
+    g_clear_pointer(&v->away_error_id, g_free);
+    g_clear_pointer(&v->away_error, g_free);
+    build_away(v);
+    devices_set_connected(v->app->devices, v->away_busy, TRUE, away_done, v);
 }
 
 /* Paired Bluetooth controllers that aren't here right now. */
@@ -687,8 +707,12 @@ static void build_away(PadView *v)
         gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
         gtk_box_append(GTK_BOX(texts), ui_label(d->name, NULL));
         gtk_box_append(GTK_BOX(texts), ui_label("Not connected", "muted"));
+        if (v->away_error_id && g_str_equal(v->away_error_id, d->id))
+            gtk_box_append(GTK_BOX(texts), ui_paragraph(v->away_error, "bad"));
         gtk_box_append(GTK_BOX(card), texts);
-        GtkWidget *b = button("Connect", "primary", G_CALLBACK(on_connect_away), v);
+        gboolean busy = v->away_busy && g_str_equal(v->away_busy, d->id);
+        GtkWidget *b = button(busy ? "Connecting…" : "Connect", "primary", G_CALLBACK(on_connect_away), v);
+        gtk_widget_set_sensitive(b, !busy);
         g_object_set_data_full(G_OBJECT(b), "device", g_strdup(d->id), g_free);
         gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
         gtk_box_append(GTK_BOX(card), b);

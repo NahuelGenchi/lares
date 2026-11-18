@@ -27,6 +27,7 @@ Devices *devices_new(void);
 GPtrArray *devices_list(Devices *d);        /* Device*, sorted by kind, then name */
 gboolean devices_any(Devices *d, DevKind kind);
 void devices_watch(Devices *d, DevNotify fn, gpointer user);
+/* done may be NULL; watchers hear about the change either way. */
 void devices_set_connected(Devices *d, const char *id, gboolean on, DevDone done, gpointer user);
 /* Batteries that only the device's own protocol reports (src/hidbattery.c)
  * are asked for while something on screen wants them: now, then every few
