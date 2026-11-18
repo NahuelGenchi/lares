@@ -178,7 +178,7 @@ class Indicator extends PanelMenu.Button {
         this._pictures.clear();
         const column = new St.BoxLayout({vertical: true, style_class: 'lares-menu', x_expand: true});
         if (!this._helper) {
-            column.add_child(this._note("Lares' background helper is off. Turn on Run in the background in Lares."));
+            column.add_child(this._note('The background helper is off. Turn on Run in the background in Settings.'));
         } else if (!this._pads.length) {
             const empty = new St.BoxLayout({vertical: true, style_class: 'lares-card'});
             const map = this._pictureMap();
@@ -281,11 +281,13 @@ class Indicator extends PanelMenu.Button {
         picture.setState(stateOf(state));
     }
 
+    // Settings while the helper is off, as that's where it's turned on.
     _openLares() {
+        const section = this._helper ? 'controller' : 'settings';
         try {
-            Gio.Subprocess.new(['lares', '--section', 'controller'], Gio.SubprocessFlags.NONE);
+            Gio.Subprocess.new(['lares', '--section', section], Gio.SubprocessFlags.NONE);
         } catch {
-            Gio.Subprocess.new([`${GLib.get_home_dir()}/.local/bin/lares`, '--section', 'controller'],
+            Gio.Subprocess.new([`${GLib.get_home_dir()}/.local/bin/lares`, '--section', section],
                 Gio.SubprocessFlags.NONE);
         }
     }

@@ -81,6 +81,15 @@ GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub)
     return row;
 }
 
+/* What turning a setting off saves, as a small tag under its description:
+ * "Off saves 1 MB RAM". Only for a saving a measurement backs. */
+void ui_setting_saving(GtkWidget *row, const char *text)
+{
+    GtkWidget *tag = ui_label(text, "saving");
+    gtk_widget_set_halign(tag, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(gtk_widget_get_first_child(row)), tag);
+}
+
 /* A switch at the end of a setting's row, for the boolean `field`. `cb` runs
  * on notify::active and finds the field in the switch's "field" data. */
 GtkWidget *ui_setting_switch(GtkWidget *row, const char *title, gboolean *field, GCallback cb, gpointer data)

@@ -468,6 +468,8 @@ static Card *build_card(DeviceView *v, Device *d)
     GtkWidget *name = ui_label(d->name, NULL);
     gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(texts), name);
+    /* Connected goes without saying: the icon lights up, and a Bluetooth one
+     * offers Disconnect. The line shows only when there's more to say. */
     c->status = ui_label("", "muted");
     gtk_box_append(GTK_BOX(texts), c->status);
 
@@ -482,12 +484,15 @@ static Card *build_card(DeviceView *v, Device *d)
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     /* Allow sits under what it allows, which leaves the name its room. */
     if (d->connected && d->battery_locked) {
-        GtkWidget *hint = ui_label(d->has_settings ? "Lares can show its battery and settings once you allow it. "
-                                                     "That asks for your password, one time."
-                                                   : "Lares can show its battery once you allow it. That asks for "
-                                                     "your password, one time.", "muted");
-        gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
-        gtk_box_append(GTK_BOX(texts), hint);
+        /* While it waits, the line above says so. */
+        if (!busy) {
+            GtkWidget *hint = ui_label(d->has_settings ? "Lares can show its battery and settings once you allow it. "
+                                                         "That asks for your password, one time."
+                                                       : "Lares can show its battery once you allow it. That asks for "
+                                                         "your password, one time.", "muted");
+            gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+            gtk_box_append(GTK_BOX(texts), hint);
+        }
         GtkWidget *allow = action_button(v, d, busy);
         gtk_widget_set_halign(allow, GTK_ALIGN_START);
         gtk_box_append(GTK_BOX(texts), allow);
@@ -574,11 +579,13 @@ static void update_card(DeviceView *v, Card *c, Device *d)
     v->syncing = TRUE;
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     gboolean saving = d->settings_busy || (v->want_id && g_str_equal(v->want_id, d->id) && (v->pending || v->writing));
-    set_text(c->status, busy && d->battery_locked ? "Waiting for your password…"
-                      : busy ? (d->connected ? "Disconnecting…" : "Connecting…")
-                      : !d->connected ? "Not connected"
-                      : saving ? "Saving to the mouse…"
-                      : d->charging ? "Charging" : "Connected");
+    const char *status = busy && d->battery_locked ? "Waiting for your password…"
+                       : busy ? (d->connected ? "Disconnecting…" : "Connecting…")
+                       : !d->connected ? "Not connected"
+                       : saving ? "Saving to the mouse…"
+                       : d->charging ? "Charging" : "";
+    set_text(c->status, status);
+    gtk_widget_set_visible(c->status, *status != '\0');
     if (c->battery) {
         lares_meter_set(LARES_METER(c->battery), d->battery / 100.0);
         ui_class(c->battery, "low", d->battery <= 20);

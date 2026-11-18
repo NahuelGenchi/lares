@@ -53,7 +53,7 @@ typedef struct {
     GtkWidget *picture, *count;
     GtkWidget *gauges[2], *stick_text[2], *trig_meter[2], *trig_text[2];
     GtkWidget *strong, *weak, *length, *strong_text, *weak_text, *length_text, *play;
-    GtkWidget *users, *find;
+    GtkWidget *users, *find, *test;
     PadReader *reader;
     gboolean reader_raw;
     Stick sticks[2];
@@ -63,7 +63,7 @@ typedef struct {
 
 struct PadView {
     Lares *app;
-    GtkWidget *page, *cards, *away, *pair_card, *pair_status, *pair_action, *pair_found;
+    GtkWidget *page, *cards, *empty, *away, *pair_card, *pair_status, *pair_action, *pair_found;
     GtkWidget *level_text, *idle_chips, *depends, *helper_off, *nicknames;
     GtkWidget *sw_alerts, *sw_notices, *sw_awake, *sw_idle;
     GPtrArray *card_list;     /* Card* */
@@ -297,6 +297,8 @@ static void on_tab(GtkToggleButton *t, Card *c)
     int tab = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "tab"));
     memory_of(c->v, c->path)->tab = tab;
     gtk_stack_set_visible_child_name(GTK_STACK(c->stack), TAB_NAMES[tab]);
+    /* Play does what Test vibration does on the Vibration tab. */
+    if (c->test) gtk_widget_set_visible(c->test, tab != TAB_VIBRATION);
     update_readers(c->v);
 }
 
@@ -605,7 +607,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     gtk_box_append(GTK_BOX(card), tabs);
     gtk_box_append(GTK_BOX(card), c->stack);
 
-    /* Battery, connection, model and firmware. */
+    /* Battery, model and firmware; the connection is in the line under the name. */
     GtkWidget *facts = lares_wrap_new(36);
     GtkWidget *bat = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
     if (pad->battery.known) {
@@ -621,7 +623,6 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
         gtk_box_append(GTK_BOX(bat), ui_label(pad->connection == PAD_USB ? "On USB power" : "No reading yet", NULL));
     }
     lares_wrap_append(LARES_WRAP(facts), fact("Battery", bat));
-    lares_wrap_append(LARES_WRAP(facts), fact("Connection", ui_label(pad_connection_name(pad->connection), NULL)));
     if (pad->model) lares_wrap_append(LARES_WRAP(facts), fact("Model", ui_label(pad->model, NULL)));
     if (pad->firmware)
         lares_wrap_append(LARES_WRAP(facts), fact("Firmware", ui_label(pad->firmware, pad->firmware_update ? "warn" : NULL)));
@@ -643,7 +644,9 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     /* What it can do. */
     GtkWidget *actions = lares_wrap_new(9);
     if (pad->rumble) {
-        lares_wrap_append(LARES_WRAP(actions), button("Test vibration", "quiet", G_CALLBACK(on_test), c));
+        c->test = button("Test vibration", "quiet", G_CALLBACK(on_test), c);
+        gtk_widget_set_visible(c->test, m->tab != TAB_VIBRATION);
+        lares_wrap_append(LARES_WRAP(actions), c->test);
         if (pad->connection != PAD_USB) {
             c->find = button(pad_finding(pad->path) ? "Stop finding" : "Find controller", "quiet", G_CALLBACK(on_find), c);
             lares_wrap_append(LARES_WRAP(actions), c->find);
@@ -670,9 +673,11 @@ static void build_away(PadView *v)
     GtkWidget *c;
     while ((c = gtk_widget_get_first_child(v->away))) gtk_box_remove(GTK_BOX(v->away), c);
     GPtrArray *list = devices_list(v->app->devices);
+    gboolean any = FALSE;
     for (guint i = 0; i < list->len; i++) {
         Device *d = list->pdata[i];
         if (d->kind != DEV_CONTROLLER || d->connected) continue;
+        any = TRUE;
         GtkWidget *card = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
         gtk_widget_add_css_class(card, "card");
         gtk_widget_add_css_class(card, "padded");
@@ -689,6 +694,8 @@ static void build_away(PadView *v)
         gtk_box_append(GTK_BOX(card), b);
         gtk_box_append(GTK_BOX(v->away), card);
     }
+    /* An away card already says no controller is connected. */
+    if (v->empty) gtk_widget_set_visible(v->empty, !any);
 }
 
 /* --------------------------------------------------------------- pairing */
@@ -831,9 +838,7 @@ static void build_settings(PadView *v, GtkWidget *page)
     v->helper_off = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(v->helper_off, "card");
     gtk_widget_add_css_class(v->helper_off, "padded");
-    GtkWidget *off = setting(v, v->helper_off, "Background is off",
-                             "Alerts, notices, keeping the screen awake and idle disconnect need Run in the "
-                             "background, in Settings.", NULL, NULL);
+    GtkWidget *off = setting(v, v->helper_off, "Background is off", "Alerts and play features need it.", NULL, NULL);
     GtkWidget *open = button("Open Settings", "quiet", G_CALLBACK(on_open_settings), v);
     gtk_widget_set_valign(open, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(off), open);
@@ -843,9 +848,8 @@ static void build_settings(PadView *v, GtkWidget *page)
     gtk_box_append(GTK_BOX(page), v->depends);
 
     GtkWidget *alerts = ui_group(v->depends, "Alerts");
-    setting(v, alerts, "Low battery alerts", "A notification when a controller's battery runs low, and one more at 10%.",
-            &p->alerts, &v->sw_alerts);
-    GtkWidget *level = setting(v, alerts, "Low battery level", "The battery turns orange from here.", NULL, NULL);
+    setting(v, alerts, "Low battery alerts", "Notifies when low, and again at 10%.", &p->alerts, &v->sw_alerts);
+    GtkWidget *level = setting(v, alerts, "Low battery level", "The battery turns orange at this level.", NULL, NULL);
     GtkWidget *minus = button("−", "quiet", G_CALLBACK(on_level), v), *plus = button("+", "quiet", G_CALLBACK(on_level), v);
     g_object_set_data(G_OBJECT(minus), "step", GINT_TO_POINTER(-5));
     g_object_set_data(G_OBJECT(plus), "step", GINT_TO_POINTER(5));
@@ -858,16 +862,12 @@ static void build_settings(PadView *v, GtkWidget *page)
         gtk_widget_set_valign(w, GTK_ALIGN_CENTER);
         gtk_box_append(GTK_BOX(level), w);
     }
-    setting(v, alerts, "Connection notices", "A short notification when a controller connects or leaves.",
-            &p->notices, &v->sw_notices);
+    setting(v, alerts, "Connection notices", "Notifies when a controller connects or leaves.", &p->notices,
+            &v->sw_notices);
 
     GtkWidget *play = ui_group(v->depends, "While you play");
-    setting(v, play, "Keep the screen awake",
-            "A button press, or a stick or trigger moved a quarter of its way, counts as activity, so the screen "
-            "doesn't dim or lock while you play with only a controller.", &p->keep_awake, &v->sw_awake);
-    setting(v, play, "Disconnect idle controllers",
-            "A Bluetooth controller with no input for this long disconnects to save its battery, as consoles do. "
-            "It stays paired. When the screen locks, those idle for a minute disconnect at once.",
+    setting(v, play, "Keep the screen awake", "No dimming or locking while you play.", &p->keep_awake, &v->sw_awake);
+    setting(v, play, "Disconnect idle controllers", "Saves controller battery. They stay paired.",
             &p->idle_disconnect, &v->sw_idle);
     v->idle_chips = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
     GtkWidget *first = NULL;
@@ -951,16 +951,17 @@ static void rebuild(gpointer data)
     g_ptr_array_set_size(v->card_list, 0);
     GtkWidget *c;
     while ((c = gtk_widget_get_first_child(v->cards))) gtk_box_remove(GTK_BOX(v->cards), c);
+    v->empty = NULL;
     for (guint i = 0; i < list->len; i++) gtk_box_append(GTK_BOX(v->cards), pad_card(v, list->pdata[i]));
     if (!list->len) {
-        GtkWidget *empty = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
-        gtk_widget_add_css_class(empty, "card");
-        gtk_widget_add_css_class(empty, "padded");
-        gtk_box_append(GTK_BOX(empty), lares_pad_picture_new(TRUE));
+        v->empty = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
+        gtk_widget_add_css_class(v->empty, "card");
+        gtk_widget_add_css_class(v->empty, "padded");
+        gtk_box_append(GTK_BOX(v->empty), lares_pad_picture_new(TRUE));
         GtkWidget *hint = ui_paragraph("No controller connected. Plug in a USB cable, or connect one over Bluetooth.", "muted");
         gtk_label_set_xalign(GTK_LABEL(hint), 0.5);
-        gtk_box_append(GTK_BOX(empty), hint);
-        gtk_box_append(GTK_BOX(v->cards), empty);
+        gtk_box_append(GTK_BOX(v->empty), hint);
+        gtk_box_append(GTK_BOX(v->cards), v->empty);
     }
     build_away(v);
     update_readers(v);
@@ -998,12 +999,11 @@ GtkWidget *pad_view_build(Lares *app, Section *self)
     gtk_widget_add_css_class(v->pair_card, "card");
     gtk_widget_add_css_class(v->pair_card, "padded");
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-    GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_widget_set_hexpand(texts, TRUE);
-    gtk_box_append(GTK_BOX(texts), ui_label("A new controller", NULL));
+    /* The hint and the button say what this card is for. */
     v->pair_status = ui_paragraph("", "muted");
-    gtk_box_append(GTK_BOX(texts), v->pair_status);
-    gtk_box_append(GTK_BOX(row), texts);
+    gtk_widget_set_hexpand(v->pair_status, TRUE);
+    gtk_widget_set_valign(v->pair_status, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(row), v->pair_status);
     v->pair_action = button("Pair a controller", "primary", G_CALLBACK(on_pair_action), v);
     gtk_widget_set_valign(v->pair_action, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(row), v->pair_action);

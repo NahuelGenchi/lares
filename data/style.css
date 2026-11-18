@@ -254,7 +254,6 @@ modeswitch > button.selected:focus-visible {
   color: var(--muted);
 }
 
-.status .ok,
 .status .busy {
   color: var(--accent);
 }
@@ -521,6 +520,16 @@ meter.interactive:focus-visible {
 }
 
 .setting { min-height: 36px; }
+
+/* What turning a setting off saves (ui_setting_saving). */
+.saving {
+  color: var(--accent);
+  background-color: var(--note);
+  border-radius: 9px;
+  padding: 4px 9px;
+  transition: color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 
 /* Settings in one card are split by a line, centred in the card's gap. */
 .setting ~ .setting {

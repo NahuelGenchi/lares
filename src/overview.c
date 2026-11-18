@@ -157,19 +157,36 @@ static void on_devices(gpointer user)
     gtk_widget_set_visible(o->devices, list->len > 0);
 }
 
+/* "Sunshine is off" when a service isn't as the mode sets it, or NULL. */
+static char *differs(Remote *r, const Config *c, Item i, int now)
+{
+    const char *want = c->values[c->mode][i];
+    if (now < 0 || !want || g_str_equal(want, "leave") || remote_matches(r, i, want)) return NULL;
+    return g_strdup_printf("%s is %s", item_name(i), now ? "on" : "off");
+}
+
+/* The mode, and under it only news: the stream, or a service that isn't as
+ * the mode sets it. What the mode sets goes without saying. */
 static void on_remote(gpointer user)
 {
     Overview *o = user;
-    Config *c = remote_config(o->app->remote);
-    Live *l = remote_live(o->app->remote);
+    Remote *r = o->app->remote;
+    Config *c = remote_config(r);
+    Live *l = remote_live(r);
     gtk_widget_set_visible(o->remote.button, c->ready);
     set_text(o->remote.value, c->mode_known ? mode_name(c->mode) : "…");
-    char *sub;
-    if (l->streaming) sub = g_strdup("Streaming to Moonlight now");
-    else if (l->sunshine < 0) sub = g_strdup("");
-    else sub = g_strdup_printf("Sunshine %s · Tailscale %s", l->sunshine ? "on" : "off",
-                               l->tailscale ? "on" : "off");
-    set_text(o->remote.sub, sub);
+    char *sub = NULL;
+    if (l->streaming) {
+        sub = g_strdup("Streaming to Moonlight now");
+    } else if (c->mode_known) {
+        char *sun = differs(r, c, ITEM_SUNSHINE, l->sunshine), *ts = differs(r, c, ITEM_TAILSCALE, l->tailscale);
+        if (sun && ts) sub = g_strdup_printf("%s · %s", sun, ts);
+        else if (sun || ts) sub = g_strdup(sun ? sun : ts);
+        else if (c->mode == MODE_REMOTE && l->sunshine == 1) sub = g_strdup("Waiting for Moonlight");
+        g_free(sun);
+        g_free(ts);
+    }
+    set_text(o->remote.sub, sub ? sub : "");
     g_free(sub);
 }
 
@@ -202,7 +219,7 @@ GtkWidget *overview_build(Lares *app, Section *self)
     gtk_box_append(GTK_BOX(page), o->devices);
 
     /* The Remote tile shows once remote play is set up. */
-    make_tile(o, &o->remote, "remote", ART_LAPTOP, "Remote", 0);
+    make_tile(o, &o->remote, "remote", ART_LAPTOP, "Mode", 0);
     gtk_box_append(GTK_BOX(page), o->remote.button);
     remote_watch(app->remote, on_remote, o);
     on_remote(o);
