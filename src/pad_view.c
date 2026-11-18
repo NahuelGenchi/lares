@@ -17,7 +17,6 @@
 #include "pad/padinput.h"
 #include "pad/padpair.h"
 
-#define PICTURE_HEIGHT 236
 #define GAUGE_SIZE     116
 #define DEAD_ZONE      0.10    /* games commonly ignore about this much around the centre */
 #define REST_STILL     0.02    /* a stick rests once it holds this still */
@@ -587,7 +586,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
         lares_wrap_append(LARES_WRAP(tabs), tb);
     }
     GtkWidget *test = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
-    c->picture = lares_pad_picture_new(PICTURE_HEIGHT, FALSE);
+    c->picture = lares_pad_picture_new(FALSE);
     lares_pad_picture_set_seen(LARES_PAD_PICTURE(c->picture), m->seen);
     gtk_box_append(GTK_BOX(test), c->picture);
     GtkWidget *count_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
@@ -957,7 +956,7 @@ static void rebuild(gpointer data)
         GtkWidget *empty = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
         gtk_widget_add_css_class(empty, "card");
         gtk_widget_add_css_class(empty, "padded");
-        gtk_box_append(GTK_BOX(empty), lares_pad_picture_new(124, TRUE));
+        gtk_box_append(GTK_BOX(empty), lares_pad_picture_new(TRUE));
         GtkWidget *hint = ui_paragraph("No controller connected. Plug in a USB cable, or connect one over Bluetooth.", "muted");
         gtk_label_set_xalign(GTK_LABEL(hint), 0.5);
         gtk_box_append(GTK_BOX(empty), hint);
