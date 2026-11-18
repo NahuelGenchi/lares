@@ -48,6 +48,18 @@ install: all
 	-gtk4-update-icon-cache -q -t -f $(PREFIX)/share/icons/hicolor
 	-update-desktop-database -q $(PREFIX)/share/applications
 
+# What the Checks workflow runs: both programs with warnings as errors, the
+# unit tests, and the addon's JavaScript parsed.
+check: build/resources.c
+	@mkdir -p build/check
+	$(CC) $(CFLAGS) -Werror $(GTK) -o build/check/lares $(APP_SOURCES) $(GTK_LIBS)
+	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/lares-pad $(HELPER_SOURCES) $(GIO_LIBS)
+	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/unit tests/unit.c src/pad/pads.c src/pad/padconf.c \
+		src/remote_model.c $(GIO_LIBS)
+	build/check/unit
+	@for f in data/addon/*.js; do node --check "$$f" || exit 1; done
+	@echo "make check: all passed"
+
 uninstall:
 	-systemctl --user disable --now lares-pad.service
 	rm -f $(PREFIX)/bin/lares $(PREFIX)/bin/lares-pad $(PREFIX)/share/applications/$(APP_ID).desktop \
@@ -57,4 +69,4 @@ uninstall:
 clean:
 	rm -rf build
 
-.PHONY: all install uninstall clean
+.PHONY: all check install uninstall clean
