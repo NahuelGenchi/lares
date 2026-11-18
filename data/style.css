@@ -238,16 +238,22 @@ modeswitch > button.selected:focus-visible {
   color: var(--muted);
 }
 
-/* A field of Remote's connection card: as tall as a row, but not a button. */
+/* A field of Remote's connection card: as tall as a row, but not a button.
+   Values keep 6 px above and below, room the live badge fills, so the row
+   is the same height with or without it. */
 .field {
-  padding: 18px;
+  padding: 12px 18px;
+}
+
+.field > .value {
+  padding: 6px 0;
 }
 
 /* While Moonlight streams, its field is a badge whose background breathes;
    the word stays steady. */
-.value.live {
+.field > .value.live {
   color: var(--live);
-  padding: 0 9px;
+  padding: 6px 14px;
   border-radius: 9px;
   animation: breathe 2400ms ease-in-out infinite alternate;
 }
@@ -487,7 +493,7 @@ meter.low, meter.hot {
   nav > .pill, nav button.nav-item, button.tile, .device-art {
     transition: none;
   }
-  .value.live {
+  .field > .value.live {
     animation: none;
     background-color: alpha(currentColor, 0.18);
   }
