@@ -254,7 +254,6 @@ modeswitch > button.selected:focus-visible {
   color: var(--muted);
 }
 
-.status .ok,
 .status .busy {
   color: var(--accent);
 }
