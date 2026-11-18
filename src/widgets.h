@@ -38,6 +38,8 @@ void lares_mode_switch_set_active(LaresModeSwitch *self, int side, gboolean anim
 #define LARES_TYPE_WRAP (lares_wrap_get_type())
 G_DECLARE_FINAL_TYPE(LaresWrap, lares_wrap, LARES, WRAP, GtkWidget)
 GtkWidget *lares_wrap_new(int spacing);
+/* The gap between lines when they wrap; the spacing until it's set. */
+void lares_wrap_set_row_spacing(LaresWrap *self, int spacing);
 void lares_wrap_append(LaresWrap *self, GtkWidget *child);
 
 /* The sidebar: one item per section, with a highlight that springs to the
@@ -50,11 +52,12 @@ void lares_nav_set_item_visible(LaresNav *self, const char *id, gboolean visible
 void lares_nav_set_item_label(LaresNav *self, const char *id, const char *label);
 void lares_nav_select(LaresNav *self, const char *id, gboolean animate);
 
-/* Gives its child at most `max_width`, centered: content stays a readable
- * column however wide the window gets. */
+/* Gives its child at most `max_width`, centered, but at most `max_lead`
+ * from the start: content stays a readable column however wide the window
+ * gets, and stays near what comes before it. */
 #define LARES_TYPE_CLAMP (lares_clamp_get_type())
 G_DECLARE_FINAL_TYPE(LaresClamp, lares_clamp, LARES, CLAMP, GtkWidget)
-GtkWidget *lares_clamp_new(GtkWidget *child, int max_width);
+GtkWidget *lares_clamp_new(GtkWidget *child, int max_width, int max_lead);
 
 /* A row of pixel blocks filled to a fraction, for batteries and load. */
 #define LARES_TYPE_METER (lares_meter_get_type())

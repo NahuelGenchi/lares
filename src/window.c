@@ -4,6 +4,9 @@
 
 #define CSS_RESOURCE "/com/nahuelgenchi/Lares/style.css"
 #define CONTENT_WIDTH 620
+/* A wider window adds room on the right: the column stays as far from the
+ * sidebar as at the default size. */
+#define CONTENT_LEAD  9
 
 static Section SECTIONS[] = {
     { "overview",   "Overview",   ART_OVERVIEW,   0,              overview_build, overview_shown, NULL, NULL, FALSE },
@@ -52,7 +55,7 @@ static GtkWidget *wrap_page(GtkWidget *page)
     gtk_widget_set_valign(page, GTK_ALIGN_START);
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_EXTERNAL);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), lares_clamp_new(page, CONTENT_WIDTH));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), lares_clamp_new(page, CONTENT_WIDTH, CONTENT_LEAD));
     return scroll;
 }
 
