@@ -226,6 +226,13 @@ modeswitch > button.selected:focus-visible {
   line-height: 1.5;
 }
 
+/* A Remote row's drift or error line, under its choices and level with
+   them (src/remote_view.c). */
+.hint.row-hint {
+  margin: 0;
+  padding: 0 18px 18px 54px;
+}
+
 .hint.warn { color: var(--warn); }
 .hint.bad { color: var(--bad); }
 

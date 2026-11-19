@@ -45,7 +45,6 @@ struct RemoteView {
     const Item *order;
     int n, step;
     Note note;
-    Row *open;
 };
 
 static void start_apply(RemoteView *a);
@@ -487,22 +486,15 @@ static void build_screen_chips(Row *r)
 
 /* ------------------------------------------------------------------- build */
 
+/* Each row opens and closes by itself. Closing the open one above, as
+ * opening another used to, slid the clicked head up from under the pointer. */
 static void on_head(GtkButton *b, Row *r)
 {
-    RemoteView *a = r->app;
     gboolean open = !gtk_revealer_get_reveal_child(GTK_REVEALER(r->revealer));
-    if (a->open && a->open != r) {
-        Row *o = a->open;
-        gtk_revealer_set_reveal_child(GTK_REVEALER(o->revealer), FALSE);
-        ui_class(o->chevron, "open", FALSE);
-        ui_class(o->box, "open", FALSE);
-        gtk_accessible_update_state(GTK_ACCESSIBLE(o->head), GTK_ACCESSIBLE_STATE_EXPANDED, FALSE, -1);
-    }
     gtk_revealer_set_reveal_child(GTK_REVEALER(r->revealer), open);
     ui_class(r->chevron, "open", open);
     ui_class(r->box, "open", open);
     gtk_accessible_update_state(GTK_ACCESSIBLE(r->head), GTK_ACCESSIBLE_STATE_EXPANDED, open, -1);
-    a->open = open ? r : NULL;
 }
 
 static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *card)
@@ -529,14 +521,6 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
     gtk_widget_set_hexpand(texts, TRUE);
     gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(texts), ui_label(item_name(i), "name"));
-    r->hint = ui_paragraph("", "hint");
-    gtk_label_set_wrap_mode(GTK_LABEL(r->hint), PANGO_WRAP_WORD_CHAR);
-    gtk_label_set_max_width_chars(GTK_LABEL(r->hint), 24);
-    r->hint_rev = gtk_revealer_new();
-    gtk_revealer_set_transition_type(GTK_REVEALER(r->hint_rev), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
-    gtk_revealer_set_transition_duration(GTK_REVEALER(r->hint_rev), 200);
-    gtk_revealer_set_child(GTK_REVEALER(r->hint_rev), r->hint);
-    gtk_box_append(GTK_BOX(texts), r->hint_rev);
     gtk_box_append(GTK_BOX(line), texts);
 
     r->value = ui_label("", "value");
@@ -545,7 +529,7 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
     gtk_box_append(GTK_BOX(line), r->value);
 
     /* The value tells the state: what the mode sets, or what's happening;
-     * drift and errors get a line under the name and the note. */
+     * drift and errors get a line at the row's end and the note. */
     r->chevron = ui_icon(ART_CHEVRON, 2, "chevron");
     gtk_box_append(GTK_BOX(line), r->chevron);
     gtk_button_set_child(GTK_BUTTON(r->head), line);
@@ -564,8 +548,19 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
         add_chip(r, flow, "Off", "off");
     }
 
+    /* The drift or error line comes and goes as changes run, so it sits at
+     * the row's end, under the choices: there it moves none of them. */
+    r->hint = ui_paragraph("", "hint");
+    gtk_widget_add_css_class(r->hint, "row-hint");
+    gtk_label_set_wrap_mode(GTK_LABEL(r->hint), PANGO_WRAP_WORD_CHAR);
+    r->hint_rev = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(r->hint_rev), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(r->hint_rev), 200);
+    gtk_revealer_set_child(GTK_REVEALER(r->hint_rev), r->hint);
+
     gtk_box_append(GTK_BOX(r->box), r->head);
     gtk_box_append(GTK_BOX(r->box), r->revealer);
+    gtk_box_append(GTK_BOX(r->box), r->hint_rev);
     if (gtk_widget_get_first_child(card)) {
         GtkWidget *sep = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
         gtk_widget_add_css_class(sep, "line");
