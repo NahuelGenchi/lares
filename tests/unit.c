@@ -10,6 +10,7 @@
 #include "../src/devices.h"
 #include "../src/hidpp.h"
 #include "../src/hyperx.h"
+#include "../src/pad/padconf.h"
 #include "../src/pad/pads.h"
 #include "../src/pad_map.h"
 #include "../src/remote_model.h"
@@ -571,22 +572,27 @@ static void test_hidpp_packets(void)
     guint8 out[HIDPP_LONG_LEN];
     /* Root getFeature(0x8040) to device 1, with Lares' software ID. */
     const guint8 id[] = { 0x80, 0x40 };
-    g_assert_cmpuint(hidpp_packet(1, 0x00, 0, id, sizeof id, out), ==, HIDPP_SHORT_LEN);
+    g_assert_cmpuint(hidpp_packet(HIDPP_SW_ID, 1, 0x00, 0, id, sizeof id, out), ==, HIDPP_SHORT_LEN);
     const guint8 get_feature[] = { 0x10, 0x01, 0x00, 0x0c, 0x80, 0x40, 0x00 };
     g_assert_cmpmem(out, HIDPP_SHORT_LEN, get_feature, sizeof get_feature);
     /* memoryRead of sector 1 at 0xf0 takes a long report. */
     const guint8 where[] = { 0x00, 0x01, 0x00, 0xf0 };
-    g_assert_cmpuint(hidpp_packet(1, 0x10, 5, where, sizeof where, out), ==, HIDPP_LONG_LEN);
+    g_assert_cmpuint(hidpp_packet(HIDPP_SW_ID, 1, 0x10, 5, where, sizeof where, out), ==, HIDPP_LONG_LEN);
     const guint8 read[] = { 0x11, 0x01, 0x10, 0x5c, 0x00, 0x01, 0x00, 0xf0 };
     g_assert_cmpmem(out, sizeof read, read, sizeof read);
     g_assert_cmpint(out[19], ==, 0);
     guint8 many[HIDPP_PARAMS + 1] = { 0 };
-    g_assert_cmpuint(hidpp_packet(1, 0x10, 5, many, sizeof many, out), ==, 0);
-    g_assert_cmpuint(hidpp_packet(1, 0x10, 16, NULL, 0, out), ==, 0);
+    g_assert_cmpuint(hidpp_packet(HIDPP_SW_ID, 1, 0x10, 5, many, sizeof many, out), ==, 0);
+    g_assert_cmpuint(hidpp_packet(HIDPP_SW_ID, 1, 0x10, 16, NULL, 0, out), ==, 0);
+    /* The helper's requests carry its own ID, as when it takes the lights. */
+    const guint8 take[] = { 0x01, 0x03, 0x06 };
+    g_assert_cmpuint(hidpp_packet(HIDPP_SW_HELPER, 1, 0x08, 5, take, sizeof take, out), ==, HIDPP_SHORT_LEN);
+    const guint8 taking[] = { 0x10, 0x01, 0x08, 0x5e, 0x01, 0x03, 0x06 };
+    g_assert_cmpmem(out, HIDPP_SHORT_LEN, taking, sizeof taking);
 
     /* Its answer, the device's refusal and the receiver's; then the
      * kernel's answer to the same question, another device, and an event. */
-    hidpp_packet(1, 0x00, 0, id, sizeof id, out);
+    hidpp_packet(HIDPP_SW_ID, 1, 0x00, 0, id, sizeof id, out);
     const guint8 answer[] = { 0x11, 0x01, 0x00, 0x0c, 0x0f, 0x00, 0x00 };
     const guint8 refused[] = { 0x11, 0x01, 0xff, 0x00, 0x0c, 0x05, 0x00 };
     const guint8 asleep[] = { 0x10, 0x01, 0x8f, 0x00, 0x0c, 0x09, 0x00 };
@@ -602,28 +608,97 @@ static void test_hidpp_packets(void)
     g_assert_cmpint(hidpp_match(answer, 4, out), ==, HIDPP_OTHER);
 }
 
-/* Only the reads Lares needs, and setBrightness, ever leave. */
+/* Only the reads Lares needs, setBrightness, a whole write of profile
+ * sector 1, and the live lighting as Logitech G HUB sends it ever leave. */
 static void test_hidpp_allowed(void)
 {
-    const guint8 get[] = { 0x00 }, take[] = { 0x01, 0x03, 0x05 };
+    const guint8 get[] = { 0x00 };
     g_assert_true(hidpp_allowed(HIDPP_ROOT, 0, NULL, 0));
     g_assert_true(hidpp_allowed(HIDPP_BRIGHTNESS, 1, NULL, 0));
     g_assert_true(hidpp_allowed(HIDPP_BRIGHTNESS, 2, NULL, 0));
     g_assert_true(hidpp_allowed(HIDPP_PROFILES, 5, NULL, 0));
     g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, get, sizeof get));
-    /* Taking the lighting into software control, setting an effect, the
-     * onboard mode or profile, profile memory writes, firmware updates,
-     * resets, hidden features and unknown features are refused. */
-    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, take, sizeof take));
+    const guint8 info[] = { 0xff, 0xff, 0x00 };
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 0, info, sizeof info));
+
+    /* Software control: taken in G HUB's two steps, answered with its flags
+     * for the keyboard idle or used again, and given back; no other mode or
+     * flags. */
+    const guint8 first[] = { 0x01, 0x00, 0x06 }, take[] = { 0x01, 0x03, 0x06 };
+    const guint8 idle[] = { 0x01, 0x03, 0x03 }, active[] = { 0x01, 0x03, 0x05 }, back[] = { 0x01, 0x00, 0x00 };
+    const guint8 mode2[] = { 0x01, 0x02, 0x06 }, odd[] = { 0x01, 0x03, 0x07 }, half[] = { 0x01, 0x00, 0x05 };
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, first, sizeof first));
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, take, sizeof take));
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, idle, sizeof idle));
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, active, sizeof active));
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, back, sizeof back));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, mode2, sizeof mode2));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, odd, sizeof odd));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, half, sizeof half));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, take, 2));
     g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, NULL, 0));
+
+    /* SetEffectByIndex: one light group, an effect from its list, volatile;
+     * never every group at once, whose list holds uploaded effects. */
+    guint8 effect[13] = { 0x00, 0x01, 0xff, 0x00, 0x00, 0x02 };
+    effect[12] = 0x01;
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, sizeof effect));
+    effect[0] = 0x01;
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, sizeof effect));
+    effect[0] = 0xff;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, sizeof effect));
+    effect[0] = 0x02;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, sizeof effect));
+    effect[0] = 0x00;
+    effect[1] = HIDPP_EFFECTS;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, sizeof effect));
+    effect[1] = 0x01;
+    effect[12] = 0x00;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, sizeof effect));
+    effect[12] = 0x01;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, 12));
     g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, NULL, 0));
-    for (guint8 f = 6; f <= 8; f++) g_assert_false(hidpp_allowed(HIDPP_PROFILES, f, NULL, 0));
+
+    /* NV settings (the startup and shutdown effects), several LEDs at once,
+     * power modes, the onboard mode or profile, firmware updates, resets,
+     * hidden features and unknown features are refused. */
+    const guint8 nv[] = { 0x01, 0x00, 0x01, 0x02 };
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 2, NULL, 0));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 7, get, sizeof get));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 8, get, sizeof get));
     g_assert_false(hidpp_allowed(HIDPP_PROFILES, 1, NULL, 0));
     g_assert_false(hidpp_allowed(HIDPP_PROFILES, 3, NULL, 0));
     g_assert_false(hidpp_allowed(0x00d0, 0, NULL, 0));
     g_assert_false(hidpp_allowed(0x1802, 0, NULL, 0));
     g_assert_false(hidpp_allowed(0x1e00, 0, NULL, 0));
     g_assert_false(hidpp_allowed(0x8081, 1, NULL, 0));
+
+    /* memoryAddrWrite: sector 1, from its start, as long as a sector. Never
+     * the directory, the ROM's copy, another profile, part of one, or more. */
+    const guint8 begin[] = { 0x00, 0x01, 0x00, 0x00, 0x00, 0xff };
+    const guint8 directory[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0xff };
+    const guint8 rom[] = { 0x01, 0x01, 0x00, 0x00, 0x00, 0xff };
+    const guint8 second[] = { 0x00, 0x02, 0x00, 0x00, 0x00, 0xff };
+    const guint8 middle[] = { 0x00, 0x01, 0x00, 0xd0, 0x00, 0x10 };
+    const guint8 longer[] = { 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c };
+    const guint8 none[] = { 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 };
+    g_assert_true(hidpp_allowed(HIDPP_PROFILES, 6, begin, sizeof begin));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, directory, sizeof directory));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, rom, sizeof rom));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, second, sizeof second));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, middle, sizeof middle));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, longer, sizeof longer));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, none, sizeof none));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, begin, 4));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 6, NULL, 0));
+    /* memoryWrite takes 16 bytes, memoryWriteEnd nothing. */
+    const guint8 chunk[16] = { 0 };
+    g_assert_true(hidpp_allowed(HIDPP_PROFILES, 7, chunk, sizeof chunk));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 7, chunk, 8));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 7, NULL, 0));
+    g_assert_true(hidpp_allowed(HIDPP_PROFILES, 8, NULL, 0));
+    g_assert_false(hidpp_allowed(HIDPP_PROFILES, 8, chunk, 1));
 }
 
 static void test_hidpp_profile(void)
@@ -679,12 +754,192 @@ static void test_hidpp_profile(void)
     g_assert_cmpint(l.effect, ==, KEY_LIGHT_WAVE);
     hidpp_slot_decode(off, &l);
     g_assert_cmpint(l.effect, ==, KEY_LIGHT_OFF);
+    /* The factory effect, in use and while saving power, and one nobody named. */
+    const guint8 own[HIDPP_SLOT] = { 0x18 }, saving[HIDPP_SLOT] = { 0x19 }, other[HIDPP_SLOT] = { 0x42, 0xff };
+    hidpp_slot_decode(own, &l);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_OWN);
+    hidpp_slot_decode(saving, &l);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_OWN);
+    hidpp_slot_decode(other, &l);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_OTHER);
+    g_assert_cmpint(l.rgb[0], ==, 0);
 
     /* Brightness: a device that says no range has none. */
     const guint8 none[] = { 0, 0, 0, 0, 0, 0 }, now[] = { 0x00, 0x32 };
     HidppKeyboard n = { 0 };
     hidpp_decode_brightness(none, now, &n);
     g_assert_false(n.has_brightness);
+}
+
+/* Effects as Logitech G HUB sent them to a real G715 (issue #57): the
+ * colour, then speed, saturation and intensity where each has them; half as
+ * strong for an idle keyboard. */
+static void test_hidpp_effects(void)
+{
+    guint8 p[10];
+    HidppLighting l = { KEY_LIGHT_SOLID, { 0xff, 0x50, 0x00 } };
+    const guint8 solid[10] = { 0xff, 0x50, 0x00, 0x02 }, solid_dim[10] = { 0x7f, 0x28, 0x00, 0x02 };
+    g_assert_cmphex(hidpp_effect(&l, FALSE, p), ==, 0x01);
+    g_assert_cmpmem(p, 10, solid, 10);
+    g_assert_cmphex(hidpp_effect(&l, TRUE, p), ==, 0x01);
+    g_assert_cmpmem(p, 10, solid_dim, 10);
+    l.effect = KEY_LIGHT_BREATHING;
+    const guint8 breathing[10] = { 0xff, 0x50, 0x00, 0x13, 0x88, 0x00, 0x64 };
+    g_assert_cmphex(hidpp_effect(&l, FALSE, p), ==, 0x0a);
+    g_assert_cmpmem(p, 10, breathing, 10);
+    g_assert_cmphex(hidpp_effect(&l, TRUE, p), ==, 0x0a);
+    g_assert_cmphex(p[6], ==, 50);
+    l.effect = KEY_LIGHT_CYCLE;
+    const guint8 cycle[10] = { 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x13, 0x88, 0x64, 0x00 };
+    g_assert_cmphex(hidpp_effect(&l, FALSE, p), ==, 0x15);
+    g_assert_cmpmem(p, 10, cycle, 10);
+    l.effect = KEY_LIGHT_WAVE;
+    const guint8 wave[10] = { 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x13, 0x88, 0x64, 0x01 };
+    g_assert_cmphex(hidpp_effect(&l, FALSE, p), ==, 0x16);
+    g_assert_cmpmem(p, 10, wave, 10);
+    g_assert_cmphex(hidpp_effect(&l, TRUE, p), ==, 0x16);
+    g_assert_cmphex(p[8], ==, 50);
+    l.effect = KEY_LIGHT_RIPPLE;
+    const guint8 ripple[10] = { 0xff, 0x50, 0x00, 0xff, 0x00, 0x00, 0x00, 0x14 };
+    g_assert_cmphex(hidpp_effect(&l, FALSE, p), ==, 0x17);
+    g_assert_cmpmem(p, 10, ripple, 10);
+    l.effect = KEY_LIGHT_OFF;
+    const guint8 zero[10] = { 0 };
+    g_assert_cmphex(hidpp_effect(&l, FALSE, p), ==, 0x00);
+    g_assert_cmpmem(p, 10, zero, 10);
+    /* Built-in is the factory effect, and its slower twin while idle. */
+    l.effect = KEY_LIGHT_OWN;
+    g_assert_cmphex(hidpp_effect(&l, FALSE, p), ==, 0x18);
+    g_assert_cmphex(hidpp_effect(&l, TRUE, p), ==, 0x19);
+    l.effect = KEY_LIGHT_OTHER;
+    g_assert_cmpint(hidpp_effect(&l, FALSE, p), ==, -1);
+
+    /* Each light group's list, as the G715 reported it: an effect's index
+     * in it, and none for a group that hasn't it. */
+    HidppEffects fx = { .feature = 0x08, .clusters = 2, .count = { 6, 5 },
+                        .effect = { { 0x00, 0x01, 0x0a, 0x15, 0x16, 0x17 }, { 0x00, 0x01, 0x0a, 0x15, 0x16 } } };
+    g_assert_cmpint(hidpp_effect_index(&fx, 0, 0x0a), ==, 2);
+    g_assert_cmpint(hidpp_effect_index(&fx, 1, 0x15), ==, 3);
+    g_assert_cmpint(hidpp_effect_index(&fx, 1, 0x17), ==, -1);
+    g_assert_cmpint(hidpp_effect_index(&fx, 2, 0x00), ==, -1);
+}
+
+/* The profile's lighting slot plays only effects every light group shares:
+ * Wave, Ripple and the factory one. The keyboard keeps those; Off, Solid,
+ * Breathing and Colour cycle the helper plays live. */
+static void test_hidpp_slots(void)
+{
+    g_assert_true(hidpp_kept(KEY_LIGHT_WAVE));
+    g_assert_true(hidpp_kept(KEY_LIGHT_RIPPLE));
+    g_assert_true(hidpp_kept(KEY_LIGHT_OWN));
+    for (KeyLight e = KEY_LIGHT_OFF; e <= KEY_LIGHT_CYCLE; e++) {
+        g_assert_false(hidpp_kept(e));
+        g_assert_true(key_light_live(e));
+    }
+    g_assert_false(hidpp_kept(KEY_LIGHT_OTHER));
+    g_assert_false(key_light_live(KEY_LIGHT_OTHER));
+
+    guint8 slot[HIDPP_SLOT];
+    HidppLighting l = { KEY_LIGHT_SOLID, { 0xff, 0x50, 0x00 } }, back;
+    g_assert_false(hidpp_slot_encode(&l, FALSE, slot));
+    l.effect = KEY_LIGHT_WAVE;
+    const guint8 wave[HIDPP_SLOT] = { 0x16, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x13, 0x88, 0x64, 0x01 };
+    g_assert_true(hidpp_slot_encode(&l, FALSE, slot));
+    g_assert_cmpmem(slot, HIDPP_SLOT, wave, sizeof wave);
+    l.effect = KEY_LIGHT_RIPPLE;
+    const guint8 ripple[HIDPP_SLOT] = { 0x17, 0xff, 0x50, 0x00, 0xff, 0x00, 0x00, 0x00, 0x14 };
+    const guint8 ripple_dim[HIDPP_SLOT] = { 0x17, 0x7f, 0x28, 0x00, 0xff, 0x00, 0x00, 0x00, 0x14 };
+    g_assert_true(hidpp_slot_encode(&l, FALSE, slot));
+    g_assert_cmpmem(slot, HIDPP_SLOT, ripple, sizeof ripple);
+    g_assert_true(hidpp_slot_encode(&l, TRUE, slot));
+    g_assert_cmpmem(slot, HIDPP_SLOT, ripple_dim, sizeof ripple_dim);
+    l.effect = KEY_LIGHT_OWN;
+    g_assert_true(hidpp_slot_encode(&l, FALSE, slot));
+    g_assert_cmphex(slot[0], ==, 0x18);
+    g_assert_true(hidpp_slot_encode(&l, TRUE, slot));
+    g_assert_cmphex(slot[0], ==, 0x19);
+
+    /* Every effect the keyboard keeps reads back as itself, with its colour. */
+    l.rgb[0] = 0xfe;   /* even, so half of it is exact */
+    for (KeyLight e = KEY_LIGHT_WAVE; e <= KEY_LIGHT_OWN; e++) {
+        l.effect = e;
+        g_assert_true(hidpp_slot_encode(&l, FALSE, slot));
+        hidpp_slot_decode(slot, &back);
+        g_assert_cmpint(back.effect, ==, e);
+        if (key_light_coloured(e)) g_assert_cmpmem(back.rgb, 3, l.rgb, 3);
+        else g_assert_cmpint(back.rgb[0] | back.rgb[1] | back.rgb[2], ==, 0);
+    }
+}
+
+/* The G715's factory profile, its keys' lighting changed: only the two
+ * slots of the keys and the CRC change, and Built-in brings back the
+ * factory sector byte for byte. */
+static void test_hidpp_profile_write(void)
+{
+    HidppKeyboard k;
+    hidpp_sample(&k);
+    const gsize size = k.profile_size;
+    guint8 lit[HIDPP_SECTOR_MAX], again[HIDPP_SECTOR_MAX];
+    HidppLighting blue = { KEY_LIGHT_RIPPLE, { 0x00, 0x00, 0xfe } };
+    g_assert_true(hidpp_profile_lit(k.profile, size, &blue, lit));
+    g_assert_true(hidpp_sector_valid(lit, size));
+    for (gsize i = 0; i < size - 2; i++) {
+        gboolean slot = (i >= 0xd0 && i < 0xd0 + HIDPP_SLOT) || (i >= 0xe6 && i < 0xe6 + HIDPP_SLOT);
+        if (!slot) g_assert_cmphex(lit[i], ==, k.profile[i]);
+    }
+    const guint8 on[HIDPP_SLOT] = { 0x17, 0x00, 0x00, 0xfe, 0xff, 0x00, 0x00, 0x00, 0x14 };
+    const guint8 idle[HIDPP_SLOT] = { 0x17, 0x00, 0x00, 0x7f, 0xff, 0x00, 0x00, 0x00, 0x14 };
+    g_assert_cmpmem(lit + 0xd0, HIDPP_SLOT, on, sizeof on);
+    g_assert_cmpmem(lit + 0xe6, HIDPP_SLOT, idle, sizeof idle);
+    g_assert_cmpmem(lit + 0xdb, HIDPP_SLOT, k.profile + 0xdb, HIDPP_SLOT);   /* the other slots stay */
+    HidppKeyboard r = { 0 };
+    hidpp_decode_profile(lit, size, &r);
+    g_assert_true(r.has_profile);
+    g_assert_cmpint(r.light.effect, ==, KEY_LIGHT_RIPPLE);
+    g_assert_cmpmem(r.light.rgb, 3, blue.rgb, 3);
+
+    HidppLighting own = { KEY_LIGHT_OWN, { 0 } };
+    g_assert_true(hidpp_profile_lit(lit, size, &own, again));
+    g_assert_cmpmem(again, size, k.profile, size);
+    g_assert_cmphex(again[size - 2] << 8 | again[size - 1], ==, 0xa9f7);
+
+    /* The same effect in a new colour keeps the speed it was saved with. */
+    guint8 slow[HIDPP_SECTOR_MAX];
+    memcpy(slow, k.profile, size);
+    const guint8 green[HIDPP_SLOT] = { 0x17, 0x00, 0xff, 0x00, 0xff, 0x00, 0x00, 0x00, 0x30 };
+    memcpy(slow + 0xd0, green, HIDPP_SLOT);
+    guint16 crc = hidpp_crc(slow, size - 2);
+    slow[size - 2] = crc >> 8;
+    slow[size - 1] = crc & 0xff;
+    HidppLighting red = { KEY_LIGHT_RIPPLE, { 0xfe, 0x00, 0x00 } };
+    g_assert_true(hidpp_profile_lit(slow, size, &red, lit));
+    const guint8 kept[HIDPP_SLOT] = { 0x17, 0xfe, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x30 };
+    g_assert_cmpmem(lit + 0xd0, HIDPP_SLOT, kept, sizeof kept);
+    g_assert_cmphex(lit[0xe6 + 8], ==, 0x14);   /* the idle slot played another, so it starts fresh */
+
+    /* A sector whose CRC fails, one too short for the slots, an effect the
+     * keyboard can't keep, and one Lares doesn't know are refused. */
+    memcpy(slow, k.profile, size);
+    slow[3] ^= 1;
+    g_assert_false(hidpp_profile_lit(slow, size, &blue, lit));
+    g_assert_false(hidpp_profile_lit(k.profile, 200, &blue, lit));
+    HidppLighting solid = { KEY_LIGHT_SOLID, { 0xff, 0x00, 0x00 } }, other = { KEY_LIGHT_OTHER, { 0 } };
+    g_assert_false(hidpp_profile_lit(k.profile, size, &solid, lit));
+    g_assert_false(hidpp_profile_lit(k.profile, size, &other, lit));
+}
+
+/* A live keyboard lighting keeps the helper running, unless it may not run. */
+static void test_live_needs_helper(void)
+{
+    PadPrefs p = { .background = TRUE, .key_light = KEY_LIGHT_OWN };
+    g_assert_false(padconf_needs_helper(&p));
+    p.key_light = KEY_LIGHT_SOLID;
+    g_assert_true(padconf_needs_helper(&p));
+    p.key_light = KEY_LIGHT_WAVE;   /* the keyboard keeps it */
+    g_assert_false(padconf_needs_helper(&p));
+    p.key_light = KEY_LIGHT_OFF;
+    p.background = FALSE;
+    g_assert_false(padconf_needs_helper(&p));
 }
 
 /* A G715 as the Keyboard section sees it: found behind its receiver,
@@ -751,6 +1006,18 @@ static void test_hidpp_keyboard(void)
     const guint8 profile[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x10, 0x00, 0x00, 0x01 };
     g_assert_true(hidpp_event(profile, sizeof profile, 1, &k, &ev));
     g_assert_cmpint(ev.kind, ==, HIDPP_EVENT_CHANGED);
+    /* While software holds its lights: left alone, used again, as the real
+     * one said them; its effects' timing isn't news. */
+    const guint8 idle[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x08, 0x10, 0x00 };
+    const guint8 used[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x08, 0x10, 0x01 };
+    const guint8 timing[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x08, 0x00, 0xff, 0x13, 0xc0 };
+    const guint8 helper[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x08, 0x5e, 0x01, 0x03, 0x06 };
+    g_assert_true(hidpp_event(idle, sizeof idle, 1, &k, &ev));
+    g_assert_cmpint(ev.kind, ==, HIDPP_EVENT_IDLE);
+    g_assert_true(hidpp_event(used, sizeof used, 1, &k, &ev));
+    g_assert_cmpint(ev.kind, ==, HIDPP_EVENT_ACTIVE);
+    g_assert_false(hidpp_event(timing, sizeof timing, 1, &k, &ev));
+    g_assert_false(hidpp_event(helper, sizeof helper, 1, &k, &ev));
     /* Answers to Lares' requests or the kernel's, the battery's news, and
      * errors aren't. */
     const guint8 mine[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x0f, 0x1c, 0x00, 0x32 };
@@ -890,7 +1157,11 @@ int main(int argc, char **argv)
     g_test_add_func("/devices/hidpp-packets", test_hidpp_packets);
     g_test_add_func("/devices/hidpp-allowed", test_hidpp_allowed);
     g_test_add_func("/devices/hidpp-profile", test_hidpp_profile);
+    g_test_add_func("/devices/hidpp-effects", test_hidpp_effects);
+    g_test_add_func("/devices/hidpp-slots", test_hidpp_slots);
+    g_test_add_func("/devices/hidpp-profile-write", test_hidpp_profile_write);
     g_test_add_func("/devices/hidpp-keyboard", test_hidpp_keyboard);
+    g_test_add_func("/devices/live-needs-helper", test_live_needs_helper);
     g_test_add_func("/picture/map-parse", test_map_parse);
     g_test_add_func("/picture/map-paint", test_map_paint);
     g_test_add_func("/picture/map-shipped", test_map_shipped);

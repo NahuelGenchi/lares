@@ -13,7 +13,7 @@ GIO_LIBS = $(shell pkg-config --libs gio-2.0 gio-unix-2.0) -lm
 
 PAD_SOURCES = $(wildcard src/pad/*.c)
 APP_SOURCES = $(wildcard src/*.c) $(PAD_SOURCES) build/resources.c
-HELPER_SOURCES = src/helper/lares-pad.c $(PAD_SOURCES)
+HELPER_SOURCES = src/helper/lares-pad.c src/helper/livelight.c src/hidpp.c $(PAD_SOURCES)
 HEADERS = $(wildcard src/*.h src/pad/*.h)
 
 all: build/lares build/lares-pad
@@ -26,7 +26,7 @@ build/lares: $(APP_SOURCES) $(HEADERS)
 	$(CC) $(CFLAGS) $(GTK) -o $@ $(APP_SOURCES) $(GTK_LIBS)
 
 # The helper links GLib alone: no GTK, so it stays a few megabytes.
-build/lares-pad: $(HELPER_SOURCES) $(wildcard src/pad/*.h)
+build/lares-pad: $(HELPER_SOURCES) $(wildcard src/pad/*.h src/helper/*.h) src/hidpp.h src/devices.h src/keylight.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(GIO) -o $@ $(HELPER_SOURCES) $(GIO_LIBS)
 

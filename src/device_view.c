@@ -6,9 +6,11 @@
  * then the button allows it. A mouse or keyboard whose own protocol reports
  * its settings shows them under its details, and changes them. */
 #include "lares.h"
+#include "pad_service.h"
 
 #define DPI_STEP  100   /* each − or + */
-#define SETTLE_MS 700   /* a stepped DPI or brightness is written once it stops, or a click or drag is let go */
+#define SETTLE_MS 700   /* a stepped DPI or brightness is written once it stops, or a click or drag is let go;
+                         * a keyboard's lighting, which it stores, once the picks stop */
 
 typedef enum { PICK_STAGE, PICK_RATE, PICK_LIFT, PICK_LIGHT, PICK_COLOUR } Pick;
 
@@ -20,8 +22,7 @@ typedef struct {
     GtkWidget *root, *status, *battery, *battery_text, *connection, *error;
     GtkWidget *waiting;            /* until the mouse's settings are known */
     GtkWidget *dpi, *minus, *plus, *light_slot, *light_note, *colours, *bright, *bright_text;
-    GtkWidget *effect, *effect_swatch, *effect_note;   /* a keyboard's lighting, shown only */
-    guint32 effect_rgb;            /* the swatch's colour, G_MAXUINT32 until it has one */
+    GtkWidget *app_note;           /* another app holds a keyboard's lighting */
     GPtrArray *rows;               /* the settings, greyed out while the mouse sleeps */
     GPtrArray *chips;              /* every choice, with its Pick and value */
 } Card;
@@ -42,6 +43,7 @@ typedef struct {
     char *want_id;
     MouseSettings base, want;
     KeyboardSettings key_base, key_want;
+    KeyboardSettings key_now;   /* what a keyboard shows: its own, with the live lighting the helper plays */
     gboolean pending;    /* `want` waits to be written */
     gboolean writing;
     guint settle;
@@ -182,10 +184,37 @@ static const MouseSettings *shown(DeviceView *v, Device *d)
     return changing(v, d) ? &v->want : d->mouse;
 }
 
+/* A keyboard's lighting is the live one the helper plays, when the settings
+ * ask for one: then software holding its lights is Lares itself. */
 static const KeyboardSettings *key_shown(DeviceView *v, Device *d)
 {
     if (v->kind != DEV_KEYBOARD) return NULL;
-    return changing(v, d) ? &v->key_want : d->keyboard;
+    if (changing(v, d)) return &v->key_want;
+    if (!d->keyboard) return NULL;
+    const PadPrefs *p = padconf_prefs(v->app->padconf);
+    v->key_now = *d->keyboard;
+    if (v->key_now.has_lighting && key_light_live(p->key_light)) {
+        v->key_now.light = p->key_light;
+        memcpy(v->key_now.rgb, p->key_rgb, 3);
+        v->key_now.app_controls = FALSE;
+    }
+    return &v->key_now;
+}
+
+/* A live lighting goes to the settings, which start the helper and which it
+ * plays; an effect the keyboard keeps clears them, so the helper gives the
+ * lights back. */
+static void key_live_save(DeviceView *v)
+{
+    PadPrefs *p = padconf_prefs(v->app->padconf);
+    KeyLight live = key_light_live(v->key_want.light) ? v->key_want.light : KEY_LIGHT_OWN;
+    if (!v->key_want.has_lighting
+        || (live == p->key_light && (!key_light_live(live) || memcmp(p->key_rgb, v->key_want.rgb, 3) == 0)))
+        return;
+    p->key_light = live;
+    if (key_light_live(live)) memcpy(p->key_rgb, v->key_want.rgb, 3);
+    padconf_save(v->app->padconf);
+    pad_service_sync(p);
 }
 
 static void written(gboolean ok, const char *message, gpointer user)
@@ -207,8 +236,12 @@ static void commit(DeviceView *v)
     if (v->writing || !v->pending) return;
     v->pending = FALSE;
     v->writing = TRUE;
-    if (v->kind == DEV_KEYBOARD) devices_set_keyboard(v->app->devices, v->want_id, &v->key_base, &v->key_want, written, v);
-    else devices_set_mouse(v->app->devices, v->want_id, &v->base, &v->want, written, v);
+    if (v->kind == DEV_KEYBOARD) {
+        key_live_save(v);
+        devices_set_keyboard(v->app->devices, v->want_id, &v->key_base, &v->key_want, written, v);
+    } else {
+        devices_set_mouse(v->app->devices, v->want_id, &v->base, &v->want, written, v);
+    }
 }
 
 static gboolean settled(gpointer user)
@@ -230,7 +263,7 @@ static gboolean begin(DeviceView *v, GtkWidget *control)
         if (v->want_id && !g_str_equal(v->want_id, d->id)) commit(v);  /* another device's change goes first */
         g_free(v->want_id);
         v->want_id = g_strdup(d->id);
-        if (keys) v->key_base = v->key_want = *d->keyboard;
+        if (keys) v->key_base = v->key_want = *key_shown(v, d);
         else v->base = v->want = *d->mouse;
     }
     set_error(v, NULL, NULL);
@@ -261,13 +294,45 @@ static void changed(DeviceView *v, gboolean at_once)
     update_soon(v);
 }
 
+static guint32 rgb_value(const guint8 rgb[3])
+{
+    return (guint32)rgb[0] << 16 | rgb[1] << 8 | rgb[2];
+}
+
 static guint32 rgb_of(const MouseSettings *m)
 {
-    return (guint32)m->rgb[0] << 16 | m->rgb[1] << 8 | m->rgb[2];
+    return rgb_value(m->rgb);
+}
+
+static void set_rgb(guint8 rgb[3], int value)
+{
+    rgb[0] = (guint32)value >> 16 & 0xff;
+    rgb[1] = (guint32)value >> 8 & 0xff;
+    rgb[2] = (guint32)value & 0xff;
+}
+
+/* A keyboard stores its lighting, so a pick is written once the picks stop. */
+static void on_key_chip(GtkToggleButton *t, DeviceView *v)
+{
+    KeyboardSettings *k = gtk_toggle_button_get_active(t) ? key_wanting(v, GTK_WIDGET(t)) : NULL;
+    if (!k) return;
+    int value = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"));
+    if ((Pick)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick")) == PICK_LIGHT) {
+        k->light = value;
+        if (key_light_coloured(k->light) && !rgb_value(k->rgb)) k->rgb[0] = 0xff;
+    } else {
+        if (!key_light_coloured(k->light)) k->light = KEY_LIGHT_SOLID;
+        set_rgb(k->rgb, value);
+    }
+    changed(v, FALSE);
 }
 
 static void on_chip(GtkToggleButton *t, DeviceView *v)
 {
+    if (v->kind == DEV_KEYBOARD) {
+        on_key_chip(t, v);
+        return;
+    }
     MouseSettings *m = gtk_toggle_button_get_active(t) ? wanting(v, GTK_WIDGET(t)) : NULL;
     if (!m) return;
     int value = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"));
@@ -282,9 +347,7 @@ static void on_chip(GtkToggleButton *t, DeviceView *v)
         break;
     case PICK_COLOUR:
         if (!has_colour(m->light)) m->light = LIGHT_SOLID;
-        m->rgb[0] = (guint32)value >> 16 & 0xff;
-        m->rgb[1] = (guint32)value >> 8 & 0xff;
-        m->rgb[2] = (guint32)value & 0xff;
+        set_rgb(m->rgb, value);
         break;
     }
     changed(v, TRUE);
@@ -438,6 +501,39 @@ static void brightness_row(DeviceView *v, Card *c, GtkWidget *card, LaresMeterCh
     gtk_box_append(GTK_BOX(head), c->bright_text);
 }
 
+/* The Lighting row: a chip for each effect, then the colours. No choice
+ * here changes the page's length, which would move it when it's scrolled to
+ * the end: the colours always show, and picking one picks Solid if the
+ * effect has none; brightness dims when the light is off; and the note for
+ * an effect another app saved takes the colours' place, in a stack as tall
+ * as they are. */
+static GtkWidget *lighting_row(DeviceView *v, Card *c, GtkWidget *card, const char *sub, const char *const *effects,
+                               int n)
+{
+    GtkWidget *row = setting_row(c, card, "Lighting", sub, NULL);
+    GtkWidget *wrap = chips(row);
+    for (int e = 0; e < n; e++) chip(v, c, wrap, effects[e], PICK_LIGHT, e);
+    c->light_slot = gtk_stack_new();
+    gtk_box_append(GTK_BOX(row), c->light_slot);
+    c->colours = lares_wrap_new(9);
+    gtk_stack_add_child(GTK_STACK(c->light_slot), c->colours);
+    c->light_note = ui_paragraph("Now an effect another app saved to it.", "muted");
+    gtk_widget_set_valign(c->light_note, GTK_ALIGN_START);
+    gtk_stack_add_child(GTK_STACK(c->light_slot), c->light_note);
+    for (guint i = 0; i < G_N_ELEMENTS(COLOURS); i++) {
+        GtkWidget *t = chip(v, c, c->colours, NULL, PICK_COLOUR, (int)COLOURS[i].rgb);
+        GtkWidget *square = gtk_drawing_area_new();
+        gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(square), 18);
+        gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(square), 18);
+        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(square), draw_swatch, GUINT_TO_POINTER(COLOURS[i].rgb), NULL);
+        gtk_button_set_child(GTK_BUTTON(t), square);
+        gtk_widget_add_css_class(t, "swatch");
+        gtk_widget_set_tooltip_text(t, COLOURS[i].name);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(t), GTK_ACCESSIBLE_PROPERTY_LABEL, COLOURS[i].name, -1);
+    }
+    return row;
+}
+
 static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseSettings *m)
 {
     GtkWidget *head;
@@ -468,56 +564,26 @@ static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseS
     chip(v, c, wrap, "1 mm", PICK_LIFT, 1);
     chip(v, c, wrap, "2 mm", PICK_LIFT, 2);
 
-    /* No choice here changes the page's length, which would move it when
-     * it's scrolled to the end: the colours always show, and picking one
-     * picks Solid if the effect has none; brightness dims when the light is
-     * off; and the note for an effect another app saved takes the colours'
-     * place, in a stack as tall as they are. */
-    row = setting_row(c, card, "Lighting", NULL, NULL);
-    wrap = chips(row);
     static const char *const EFFECTS[] = { "Off", "Solid", "Breathing", "Colour cycle" };
-    for (int e = LIGHT_OFF; e < LIGHT_OTHER; e++) chip(v, c, wrap, EFFECTS[e], PICK_LIGHT, e);
-    c->light_slot = gtk_stack_new();
-    gtk_box_append(GTK_BOX(row), c->light_slot);
-    c->colours = lares_wrap_new(9);
-    gtk_stack_add_child(GTK_STACK(c->light_slot), c->colours);
-    c->light_note = ui_paragraph("Now an effect another app saved to it.", "muted");
-    gtk_widget_set_valign(c->light_note, GTK_ALIGN_START);
-    gtk_stack_add_child(GTK_STACK(c->light_slot), c->light_note);
-    for (guint i = 0; i < G_N_ELEMENTS(COLOURS); i++) {
-        GtkWidget *t = chip(v, c, c->colours, NULL, PICK_COLOUR, (int)COLOURS[i].rgb);
-        GtkWidget *square = gtk_drawing_area_new();
-        gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(square), 18);
-        gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(square), 18);
-        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(square), draw_swatch, GUINT_TO_POINTER(COLOURS[i].rgb), NULL);
-        gtk_button_set_child(GTK_BUTTON(t), square);
-        gtk_widget_add_css_class(t, "swatch");
-        gtk_widget_set_tooltip_text(t, COLOURS[i].name);
-        gtk_accessible_update_property(GTK_ACCESSIBLE(t), GTK_ACCESSIBLE_PROPERTY_LABEL, COLOURS[i].name, -1);
-    }
+    lighting_row(v, c, card, NULL, EFFECTS, LIGHT_OTHER);
 
     brightness_row(v, c, card, on_brightness, 10);
 }
 
-/* A keyboard's brightness, which it sets, and its lighting, which shows
- * here for now: what its onboard profile holds, which it plays by itself. */
+/* A keyboard's brightness, and its lighting: Wave, Ripple and Built-in, the
+ * effect it came with, go to its onboard profile, and it plays them by
+ * itself anywhere; the others it can't keep, so the helper plays them. */
 static void build_keys(DeviceView *v, Card *c, GtkWidget *card, const KeyboardSettings *k)
 {
     if (k->has_brightness) brightness_row(v, c, card, on_key_brightness, key_blocks(k));
     if (!k->has_lighting) return;
-    GtkWidget *head;
-    GtkWidget *row = setting_row(c, card, "Lighting", NULL, &head);
-    c->effect_swatch = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(c->effect_swatch), 18);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(c->effect_swatch), 18);
-    gtk_widget_set_valign(c->effect_swatch, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(head), c->effect_swatch);
-    c->effect = ui_label("", "value");
-    gtk_label_set_xalign(GTK_LABEL(c->effect), 1);
-    gtk_widget_set_valign(c->effect, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(head), c->effect);
-    c->effect_note = ui_paragraph("Another app holds its lighting now, so what shows may differ.", "muted");
-    gtk_box_append(GTK_BOX(row), c->effect_note);
+    static const char *const EFFECTS[] = { "Off", "Solid", "Breathing", "Colour cycle", "Wave", "Ripple", "Built-in" };
+    GtkWidget *row = lighting_row(v, c, card,
+                                  "Wave, Ripple and Built-in stay on the keyboard. The others play while Lares runs in "
+                                  "the background.",
+                                  EFFECTS, KEY_LIGHT_OTHER);
+    c->app_note = ui_paragraph("Another app holds its lighting now, so what shows may differ.", "muted");
+    gtk_box_append(GTK_BOX(row), c->app_note);
 }
 
 /* -------------------------------------------------------------- cards */
@@ -552,7 +618,6 @@ static Card *build_card(DeviceView *v, Device *d)
     c->shape = shape_of(v, d);
     c->rows = g_ptr_array_new();
     c->chips = g_ptr_array_new();
-    c->effect_rgb = G_MAXUINT32;
     GtkWidget *card = c->root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(card, "card");
     gtk_widget_add_css_class(card, "padded");
@@ -637,8 +702,9 @@ static void set_number(GtkWidget *label, const char *format, int n)
     set_text(label, text);
 }
 
-static gboolean chip_on(GtkWidget *t, const MouseSettings *m)
+static gboolean chip_on(GtkWidget *t, gconstpointer settings)
 {
+    const MouseSettings *m = settings;
     int value = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"));
     switch ((Pick)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick"))) {
     case PICK_STAGE:  return value == m->active;
@@ -648,6 +714,28 @@ static gboolean chip_on(GtkWidget *t, const MouseSettings *m)
     case PICK_COLOUR: return has_colour(m->light) && (guint32)value == rgb_of(m);
     }
     return FALSE;
+}
+
+static gboolean key_chip_on(GtkWidget *t, gconstpointer settings)
+{
+    const KeyboardSettings *k = settings;
+    int value = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"));
+    if ((Pick)GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick")) == PICK_LIGHT) return value == (int)k->light;
+    return key_light_coloured(k->light) && (guint32)value == rgb_value(k->rgb);
+}
+
+/* The chips that are on first, which turns the others in their groups off;
+ * then any still on, for a group with none on. */
+static void sync_chips(Card *c, gboolean (*on)(GtkWidget *t, gconstpointer settings), gconstpointer settings)
+{
+    for (int pass = 0; pass < 2; pass++) {
+        for (guint i = 0; i < c->chips->len; i++) {
+            GtkWidget *t = c->chips->pdata[i];
+            gboolean yes = on(t, settings);
+            if (yes == (pass == 0) && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(t)) != yes)
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(t), yes);
+        }
+    }
 }
 
 static void update_settings(Card *c, Device *d, const MouseSettings *m)
@@ -661,34 +749,14 @@ static void update_settings(Card *c, Device *d, const MouseSettings *m)
     gtk_widget_set_sensitive(c->bright_text, m->light != LIGHT_OFF);
     lares_meter_set(LARES_METER(c->bright), m->brightness / 100.0);
     set_number(c->bright_text, "%d%%", m->brightness);
-    /* The chips that are on first, which turns the others in their groups
-     * off; then any still on, for a group with none on. */
-    for (int pass = 0; pass < 2; pass++) {
-        for (guint i = 0; i < c->chips->len; i++) {
-            GtkWidget *t = c->chips->pdata[i];
-            gboolean on = chip_on(t, m);
-            if (pass == 0 && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick")) == PICK_STAGE) {
-                char label[16];
-                snprintf(label, sizeof label, "%d", m->dpi[GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"))]);
-                if (g_strcmp0(gtk_button_get_label(GTK_BUTTON(t)), label) != 0) gtk_button_set_label(GTK_BUTTON(t), label);
-            }
-            if (on == (pass == 0) && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(t)) != on)
-                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(t), on);
-        }
+    for (guint i = 0; i < c->chips->len; i++) {
+        GtkWidget *t = c->chips->pdata[i];
+        if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "pick")) != PICK_STAGE) continue;
+        char label[16];
+        snprintf(label, sizeof label, "%d", m->dpi[GPOINTER_TO_INT(g_object_get_data(G_OBJECT(t), "value"))]);
+        if (g_strcmp0(gtk_button_get_label(GTK_BUTTON(t)), label) != 0) gtk_button_set_label(GTK_BUTTON(t), label);
     }
-}
-
-static const char *key_light_text(KeyLight light)
-{
-    switch (light) {
-    case KEY_LIGHT_OFF:       return "Off";
-    case KEY_LIGHT_SOLID:     return "Solid";
-    case KEY_LIGHT_BREATHING: return "Breathing";
-    case KEY_LIGHT_CYCLE:     return "Colour cycle";
-    case KEY_LIGHT_WAVE:      return "Wave";
-    case KEY_LIGHT_RIPPLE:    return "Ripple";
-    default:                  return "Built-in effect";
-    }
+    sync_chips(c, chip_on, m);
 }
 
 static void update_keys(Card *c, Device *d, const KeyboardSettings *k)
@@ -701,16 +769,10 @@ static void update_keys(Card *c, Device *d, const KeyboardSettings *k)
         lares_meter_set(LARES_METER(c->bright), key_fraction(k));
         set_number(c->bright_text, "%d%%", k->brightness);
     }
-    if (!c->effect) return;
-    set_text(c->effect, key_light_text(k->light));
-    gboolean coloured = k->light == KEY_LIGHT_SOLID || k->light == KEY_LIGHT_BREATHING || k->light == KEY_LIGHT_RIPPLE;
-    guint32 rgb = (guint32)k->rgb[0] << 16 | k->rgb[1] << 8 | k->rgb[2];
-    if (coloured && rgb != c->effect_rgb) {
-        c->effect_rgb = rgb;
-        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(c->effect_swatch), draw_swatch, GUINT_TO_POINTER(rgb), NULL);
-    }
-    gtk_widget_set_visible(c->effect_swatch, coloured);
-    gtk_widget_set_visible(c->effect_note, k->app_controls);
+    if (!c->light_slot) return;
+    gtk_stack_set_visible_child(GTK_STACK(c->light_slot), k->light == KEY_LIGHT_OTHER ? c->light_note : c->colours);
+    gtk_widget_set_visible(c->app_note, k->app_controls);
+    sync_chips(c, key_chip_on, k);
 }
 
 static void update_card(DeviceView *v, Card *c, Device *d)
