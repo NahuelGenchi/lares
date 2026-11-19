@@ -1,5 +1,8 @@
 #include "devices.h"
-#include "hidbattery.h"
+#include "hyperx.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <glib-unix.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
 #include <stdlib.h>
@@ -24,8 +27,8 @@ struct Devices {
     GPtrArray *usb;            /* Device*, the keyboards and mice found in sysfs */
     GFileMonitor *dev_monitor;
     guint scan_timer;
-    GHashTable *hid;           /* USB device path -> HidState, for batteries only they report */
-    int battery_wants;
+    GHashTable *hid;           /* USB device path -> HidState, for what only they report */
+    int battery_wants, settings_wants;
     guint battery_timer;
     gboolean dry_allowed;      /* a dry run's pretend permission for those batteries */
     GPtrArray *list;
@@ -40,20 +43,41 @@ static void device_free(gpointer p)
     g_free(x->id);
     g_free(x->name);
     g_free(x->address);
+    g_free(x->model);
+    g_free(x->mouse);
     g_free(x);
 }
 
-/* A device whose battery only its own protocol reports (src/hidbattery.c). */
+/* A device whose battery and settings only its own protocol reports
+ * (src/hyperx.c). */
 typedef struct {
+    Devices *d;
+    char *owner;         /* its USB device in sysfs, also its key in Devices.hid */
     char *node;          /* /dev/hidrawN */
+    const HyperxModel *model;
     int level;           /* -1 until it answers */
     gboolean charging, asking;
     gint64 answered;     /* monotonic time of the last answer, 0 for never */
+    HyperxState state;   /* its settings, once `known` */
+    gboolean known, asleep, reading, writing;
+    gboolean stale;      /* asked for while being read or written, so read it after */
+    int watch_fd;        /* open while its settings are on screen, -1 otherwise */
+    guint watch;
 } HidState;
+
+static void stop_watch(HidState *s)
+{
+    if (s->watch) g_source_remove(s->watch);
+    if (s->watch_fd >= 0) close(s->watch_fd);
+    s->watch = 0;
+    s->watch_fd = -1;
+}
 
 static void hid_state_free(gpointer p)
 {
     HidState *s = p;
+    stop_watch(s);
+    g_free(s->owner);
     g_free(s->node);
     g_free(s);
 }
@@ -130,6 +154,10 @@ static void add_bluez(Devices *d)
             x->name = prop_string(p, "Alias");
             if (!x->name) x->name = g_strdup("Bluetooth device");
             x->address = prop_string(p, "Address");
+            /* Its own name, when the person gave it another. */
+            x->model = prop_string(p, "Name");
+            if (x->model && (!*x->model || g_str_equal(x->model, x->name))) g_clear_pointer(&x->model, g_free);
+            x->link = LINK_BLUETOOTH;
             x->kind = kind;
             x->bluetooth = TRUE;
             x->connected = prop_bool(p, "Connected");
@@ -184,11 +212,18 @@ static void add_usb(Devices *d)
         *x = *u;
         x->id = g_strdup(u->id);
         x->name = g_strdup(u->name);
+        x->model = g_strdup(u->model);
         HidState *s = g_hash_table_lookup(d->hid, u->id);
         if (s) {
             x->battery = s->level;
             x->charging = s->charging;
             x->battery_locked = !hid_open(s) && !(d->dry && d->dry_allowed);
+            x->has_settings = TRUE;
+            if (s->known) {
+                x->mouse = g_new(MouseSettings, 1);
+                hyperx_decode(s->model, &s->state, x->mouse);
+            }
+            x->asleep = s->asleep;
         }
         g_ptr_array_add(d->list, x);
     }
@@ -393,25 +428,30 @@ static gboolean is_usb_device(const char *s)  /* bus and ports, such as 1-2 or 1
     return TRUE;
 }
 
+char *devices_usb_parent(const char *path)
+{
+    if (!path) return NULL;
+    char **parts = g_strsplit(path, "/", -1);
+    char *usb = NULL;
+    for (guint i = g_strv_length(parts); i-- > 0 && !usb;) {
+        if (!is_usb_device(parts[i])) continue;
+        char *rest = parts[i + 1];
+        parts[i + 1] = NULL;
+        usb = g_strjoinv("/", parts);
+        parts[i + 1] = rest;
+    }
+    g_strfreev(parts);
+    return usb;
+}
+
 char *devices_input_owner(const char *device)
 {
     if (!device) return NULL;
     char **parts = g_strsplit(device, "/", -1);
     guint n = g_strv_length(parts);
-    char *owner = NULL;
-    if (n >= 2 && is_hid_id(parts[n - 1]) && is_hid_id(parts[n - 2])) {
-        owner = g_strdup(device);
-    } else {
-        for (guint i = n; i-- > 0 && !owner;) {
-            if (!is_usb_device(parts[i])) continue;
-            char *rest = parts[i + 1];
-            parts[i + 1] = NULL;
-            owner = g_strjoinv("/", parts);
-            parts[i + 1] = rest;
-        }
-    }
+    gboolean paired = n >= 2 && is_hid_id(parts[n - 1]) && is_hid_id(parts[n - 2]);
     g_strfreev(parts);
-    return owner;
+    return paired ? g_strdup(device) : devices_usb_parent(device);
 }
 
 static char *sys_text(const char *dir, const char *file)
@@ -476,17 +516,22 @@ static GPtrArray *usb_input_nodes(void)
     return nodes;
 }
 
-/* The hidraw node of a USB device's battery interface, when it's a model
- * src/hidbattery.c knows. */
-static char *battery_node(const char *owner)
+/* The model src/hyperx.c knows a USB device as, or NULL. */
+static const HyperxModel *usb_model(const char *usb)
 {
-    char *vendor = sys_text(owner, "idVendor"), *product = sys_text(owner, "idProduct");
-    const HidBatteryModel *m = vendor && product
-        ? hidbattery_model(g_ascii_strtoull(vendor, NULL, 16), g_ascii_strtoull(product, NULL, 16)) : NULL;
+    char *vendor = sys_text(usb, "idVendor"), *product = sys_text(usb, "idProduct");
+    const HyperxModel *m = vendor && product
+        ? hyperx_model(g_ascii_strtoull(vendor, NULL, 16), g_ascii_strtoull(product, NULL, 16)) : NULL;
     g_free(vendor);
     g_free(product);
+    return m;
+}
+
+/* The hidraw node of the interface a model's protocol answers on. */
+static char *protocol_node(const char *owner, const HyperxModel *m)
+{
     char *node = NULL;
-    GDir *dir = m ? g_dir_open("/sys/class/hidraw", 0, NULL) : NULL;
+    GDir *dir = g_dir_open("/sys/class/hidraw", 0, NULL);
     const char *entry;
     while (dir && !node && (entry = g_dir_read_name(dir))) {
         /* .../1-1/1-1:1.2/0003:03F0:0F98.0003: the HID device, its interface, its USB device */
@@ -507,27 +552,31 @@ static char *battery_node(const char *owner)
     return node;
 }
 
-/* Keeps what each battery last said across scans, for the devices still
+/* Keeps what each device last said across scans, for the devices still
  * there. */
-static void scan_batteries(Devices *d)
+static void scan_protocols(Devices *d)
 {
-    GHashTable *hid = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, hid_state_free);
+    GHashTable *hid = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, hid_state_free);
     for (guint i = 0; i < d->usb->len; i++) {
         Device *x = d->usb->pdata[i];
-        char *node = battery_node(x->id);
+        const HyperxModel *m = usb_model(x->id);
+        char *node = m ? protocol_node(x->id, m) : NULL;
         if (!node) continue;
-        gpointer key, old;
-        HidState *s;
-        if (g_hash_table_steal_extended(d->hid, x->id, &key, &old)) {
-            g_free(key);
-            s = old;
+        HidState *s = g_hash_table_lookup(d->hid, x->id);
+        if (s) {
+            g_hash_table_steal(d->hid, x->id);
+            if (!g_str_equal(s->node, node)) stop_watch(s);   /* plugged in again */
             g_free(s->node);
         } else {
             s = g_new0(HidState, 1);
+            s->d = d;
+            s->owner = g_strdup(x->id);
             s->level = -1;
+            s->watch_fd = -1;
         }
         s->node = node;
-        g_hash_table_insert(hid, g_strdup(x->id), s);
+        s->model = m;
+        g_hash_table_insert(hid, s->owner, s);
     }
     g_hash_table_destroy(d->hid);
     d->hid = hid;
@@ -556,9 +605,14 @@ static void scan_usb(Devices *d)
              * which starts with the maker's company. A device paired to a
              * receiver has only its node's name. */
             char *last = g_path_get_basename(n->owner);
-            char *product = is_usb_device(last) ? sys_text(n->owner, "product") : NULL;
+            gboolean direct = is_usb_device(last);
+            char *product = direct ? sys_text(n->owner, "product") : NULL;
             x->name = product && *product ? g_steal_pointer(&product)
                     : g_strdup(n->name && *n->name ? n->name : "USB device");
+            char *usb = direct ? g_strdup(n->owner) : devices_usb_parent(n->owner);
+            const HyperxModel *m = direct ? usb_model(usb) : NULL;
+            x->link = !direct || (m && m->receiver) ? LINK_RECEIVER : LINK_USB;
+            g_free(usb);
             g_free(product);
             g_free(last);
             g_hash_table_insert(owners, x->id, x);
@@ -575,10 +629,11 @@ static void scan_usb(Devices *d)
     g_ptr_array_free(found, TRUE);
     g_hash_table_destroy(owners);
     g_ptr_array_free(nodes, TRUE);
-    scan_batteries(d);
+    scan_protocols(d);
 }
 
 static void ask_batteries(Devices *d);
+static void settings_on(Devices *d);
 
 static gboolean scan_later(gpointer data)
 {
@@ -586,6 +641,7 @@ static gboolean scan_later(gpointer data)
     d->scan_timer = 0;
     scan_usb(d);
     if (d->battery_wants) ask_batteries(d);
+    if (d->settings_wants) settings_on(d);
     schedule(d);
     return G_SOURCE_REMOVE;
 }
@@ -617,7 +673,7 @@ static void ask_ctx_free(gpointer p)
 static void ask_thread(GTask *task, gpointer src, gpointer data, GCancellable *cancel)
 {
     AskCtx *a = data;
-    g_task_return_boolean(task, hidbattery_query(a->node, &a->level, &a->charging, NULL));
+    g_task_return_boolean(task, hyperx_battery(a->node, &a->level, &a->charging, NULL));
 }
 
 static void asked(GObject *src, GAsyncResult *res, gpointer user)
@@ -694,6 +750,7 @@ static void allow_finish(AllowCtx *c, gboolean ok, const char *message)
         g_hash_table_iter_init(&it, c->d->hid);
         while (g_hash_table_iter_next(&it, NULL, &value)) ((HidState *)value)->answered = 0;
         ask_batteries(c->d);
+        if (c->d->settings_wants) settings_on(c->d);
         schedule(c->d);
     }
     c->done(ok, message, c->user);
@@ -744,8 +801,8 @@ void devices_allow_batteries(Devices *d, DevDone done, gpointer user)
     /* The rules travel as an argument, so root reads nothing the user could
      * change. udevadm applies them to what's plugged in now and waits until
      * it has. */
-    char *rules = hidbattery_udev_rules();
-    const char *script = "umask 022 && mkdir -p /etc/udev/rules.d && printf '%s' \"$1\" > " HIDBATTERY_RULES
+    char *rules = hyperx_udev_rules();
+    const char *script = "umask 022 && mkdir -p /etc/udev/rules.d && printf '%s' \"$1\" > " HYPERX_RULES
                          " && udevadm control --reload"
                          " && udevadm trigger --action=change --subsystem-match=hidraw && udevadm settle";
     const char *argv[] = { "pkexec", "/bin/sh", "-c", script, "lares", rules, NULL };
@@ -758,6 +815,244 @@ void devices_allow_batteries(Devices *d, DevDone done, gpointer user)
         return;
     }
     g_subprocess_communicate_utf8_async(p, NULL, NULL, allowed, c);
+}
+
+/* -------------------------------------------------------------- settings */
+
+typedef struct {
+    Devices *d;
+    char *owner, *node;
+    HyperxState state;
+    MouseSettings base, want;
+    DevDone done;
+    gpointer user;
+} SettingsCtx;
+
+static void settings_ctx_free(gpointer p)
+{
+    SettingsCtx *c = p;
+    g_free(c->owner);
+    g_free(c->node);
+    g_free(c);
+}
+
+static SettingsCtx *settings_ctx(Devices *d, HidState *s)
+{
+    SettingsCtx *c = g_new0(SettingsCtx, 1);
+    c->d = d;
+    c->owner = g_strdup(s->owner);
+    c->node = g_strdup(s->node);
+    return c;
+}
+
+static void ask_settings(Devices *d, HidState *s);
+
+static void read_thread(GTask *task, gpointer src, gpointer data, GCancellable *cancel)
+{
+    SettingsCtx *c = data;
+    GError *e = NULL;
+    if (hyperx_read(c->node, &c->state, &e)) g_task_return_boolean(task, TRUE);
+    else g_task_return_error(task, e);
+}
+
+static void settings_read(GObject *src, GAsyncResult *res, gpointer user)
+{
+    SettingsCtx *c = g_task_get_task_data(G_TASK(res));
+    gboolean ok = g_task_propagate_boolean(G_TASK(res), NULL);
+    HidState *s = g_hash_table_lookup(c->d->hid, c->owner);
+    if (!s) return; /* unplugged meanwhile */
+    s->reading = FALSE;
+    if (ok) {
+        s->state = c->state;
+        s->known = TRUE;
+    }
+    s->asleep = !ok; /* asleep, or fell asleep while asked */
+    if (s->stale) {
+        s->stale = FALSE;
+        ask_settings(c->d, s);
+    }
+    schedule(c->d);
+}
+
+static void ask_settings(Devices *d, HidState *s)
+{
+    /* A wake or a rescan while it's being read or written may have changed
+     * it: read it once that's done, rather than not at all. */
+    if (s->reading || s->writing) {
+        s->stale = TRUE;
+        return;
+    }
+    if (!hid_open(s)) {
+        if (d->dry && d->dry_allowed && !s->known) { /* pretend, as nothing was really allowed */
+            hyperx_sample(&s->state);
+            s->known = TRUE;
+            schedule(d);
+        }
+        return;
+    }
+    s->reading = TRUE;
+    GTask *task = g_task_new(NULL, NULL, settings_read, NULL);
+    g_task_set_task_data(task, settings_ctx(d, s), settings_ctx_free);
+    g_task_run_in_thread(task, read_thread);
+    g_object_unref(task);
+}
+
+/* What the mouse says by itself while its settings are on screen: its DPI
+ * button, waking or falling asleep, and its battery after waking. A wake,
+ * or a DPI event that doesn't match the table, means reading it again. Every
+ * open hidraw node gets every report, so answers to the worker threads'
+ * questions come here too; those aren't events and are skipped. */
+static gboolean on_report(int fd, GIOCondition cond, gpointer data)
+{
+    HidState *s = data;
+    guint8 report[HYPERX_REPORT];
+    ssize_t got;
+    gboolean changed = FALSE, again = FALSE;
+    while ((got = read(fd, report, sizeof report)) > 0) {
+        HyperxEvent ev;
+        if (!hyperx_event(report, (gsize)got, &ev)) continue;
+        switch (ev.kind) {
+        case HYPERX_STAGE: {
+            guint8 was = s->state.dpi[4];
+            if (!s->known) break;
+            if (hyperx_take_stage(&s->state, &ev)) changed |= s->state.dpi[4] != was;
+            else again = TRUE;
+            break;
+        }
+        case HYPERX_LINK:
+            changed |= s->asleep == ev.linked;
+            s->asleep = !ev.linked;
+            again |= ev.linked;
+            break;
+        case HYPERX_BATTERY:
+            changed |= s->level != ev.level || s->charging != ev.charging;
+            s->level = ev.level;
+            s->charging = ev.charging;
+            s->answered = g_get_monotonic_time();
+            break;
+        }
+    }
+    gboolean gone = got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR);
+    if (again) ask_settings(s->d, s);
+    if (changed) schedule(s->d);
+    if (!gone) return G_SOURCE_CONTINUE;
+    close(fd); /* unplugged: the next scan finds it again, or not */
+    s->watch_fd = -1;
+    s->watch = 0;
+    return G_SOURCE_REMOVE;
+}
+
+static void start_watch(HidState *s)
+{
+    if (s->watch || !hid_open(s)) return;
+    s->watch_fd = open(s->node, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (s->watch_fd >= 0) s->watch = g_unix_fd_add(s->watch_fd, G_IO_IN | G_IO_HUP | G_IO_ERR, on_report, s);
+}
+
+static void settings_on(Devices *d)
+{
+    GHashTableIter it;
+    gpointer value;
+    g_hash_table_iter_init(&it, d->hid);
+    while (g_hash_table_iter_next(&it, NULL, &value)) {
+        start_watch(value);
+        ask_settings(d, value);
+    }
+}
+
+void devices_want_settings(Devices *d, gboolean on)
+{
+    int was = d->settings_wants;
+    d->settings_wants = MAX(0, was + (on ? 1 : -1));
+    if (!was && d->settings_wants) {
+        settings_on(d);
+    } else if (was && !d->settings_wants) {
+        GHashTableIter it;
+        gpointer value;
+        g_hash_table_iter_init(&it, d->hid);
+        while (g_hash_table_iter_next(&it, NULL, &value)) stop_watch(value);
+    }
+}
+
+static void write_thread(GTask *task, gpointer src, gpointer data, GCancellable *cancel)
+{
+    SettingsCtx *c = data;
+    GError *e = NULL;
+    if (hyperx_write(c->node, &c->base, &c->want, &c->state, &e)) g_task_return_boolean(task, TRUE);
+    else g_task_return_error(task, e);
+}
+
+static void settings_written(GObject *src, GAsyncResult *res, gpointer user)
+{
+    SettingsCtx *c = g_task_get_task_data(G_TASK(res));
+    GError *e = NULL;
+    gboolean ok = g_task_propagate_boolean(G_TASK(res), &e);
+    HidState *s = g_hash_table_lookup(c->d->hid, c->owner);
+    if (s) {
+        s->writing = FALSE;
+        if (ok) {
+            s->state = c->state;
+            s->asleep = FALSE;
+        } else if (g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED)) {
+            s->asleep = TRUE;
+        } else {
+            s->stale = TRUE; /* to show what it holds after all */
+        }
+        if (s->stale) {
+            s->stale = FALSE;
+            ask_settings(c->d, s);
+        }
+        schedule(c->d);
+    }
+    c->done(ok, e ? e->message : NULL, c->user);
+    g_clear_error(&e);
+}
+
+static gboolean pretend_written(gpointer data)
+{
+    SettingsCtx *c = data;
+    HidState *s = g_hash_table_lookup(c->d->hid, c->owner);
+    guint8 packets[HYPERX_BLOCKS][HYPERX_REPORT];
+    MouseSettings merged;
+    if (s) hyperx_merge(&s->state, &c->base, &c->want, &merged);
+    int n = s ? hyperx_packets(&s->state, &merged, 0, packets) : -1;
+    if (s) {
+        s->writing = FALSE;
+        for (int i = 0; i < n; i++) hyperx_apply(&s->state, packets[i]);
+        if (s->stale) {
+            s->stale = FALSE;
+            ask_settings(c->d, s);
+        }
+        schedule(c->d);
+    }
+    c->done(n >= 0, n >= 0 ? NULL : "The mouse can't hold that setting.", c->user);
+    settings_ctx_free(c);
+    return G_SOURCE_REMOVE;
+}
+
+void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, const MouseSettings *want,
+                       DevDone done, gpointer user)
+{
+    HidState *s = g_hash_table_lookup(d->hid, id);
+    if (!s || !s->known || s->writing) {
+        done(FALSE, "Its settings can't be changed right now.", user);
+        return;
+    }
+    SettingsCtx *c = settings_ctx(d, s);
+    c->base = *base;
+    c->want = *want;
+    c->done = done;
+    c->user = user;
+    s->writing = TRUE;
+    schedule(d);
+    if (d->dry) {
+        g_timeout_add(600, pretend_written, c);
+        return;
+    }
+    GTask *task = g_task_new(NULL, NULL, settings_written, NULL);
+    g_task_set_task_data(task, c, settings_ctx_free);
+    g_task_run_in_thread(task, write_thread);
+    g_object_unref(task);
 }
 
 /* --------------------------------------------------------------- actions */
@@ -853,7 +1148,7 @@ Devices *devices_new(void)
     d->watchers = g_array_new(FALSE, FALSE, sizeof(Watcher));
     d->batteries = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
     d->usb = g_ptr_array_new_with_free_func(device_free);
-    d->hid = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, hid_state_free);
+    d->hid = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, hid_state_free);
     d->dry = g_getenv("LARES_DRY_RUN") != NULL;
     GFile *dev = g_file_new_for_path("/dev/input");
     d->dev_monitor = g_file_monitor_directory(dev, G_FILE_MONITOR_NONE, NULL, NULL);

@@ -55,8 +55,29 @@ static GtkWidget *wrap_page(GtkWidget *page)
     gtk_widget_set_valign(page, GTK_ALIGN_START);
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_EXTERNAL);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), lares_clamp_new(page, CONTENT_WIDTH, CONTENT_LEAD));
+    GtkWidget *viewport = gtk_viewport_new(NULL, NULL);
+    gtk_viewport_set_child(GTK_VIEWPORT(viewport), lares_clamp_new(page, CONTENT_WIDTH, CONTENT_LEAD));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), viewport);
     return scroll;
+}
+
+/* A page scrolls to show the focused control only when the keyboard moved
+ * the focus there. A click focuses what it clicks too, and scrolling then,
+ * to show all of a control half under the window's edge, would move the
+ * page under the pointer. So a pointer or touch press turns that off for
+ * every page, and a key turns it back on. */
+static gboolean on_input(GtkEventControllerLegacy *c, GdkEvent *event, Lares *app)
+{
+    GdkEventType type = gdk_event_get_event_type(event);
+    gboolean pointer = type == GDK_BUTTON_PRESS || type == GDK_TOUCH_BEGIN;
+    if (!pointer && type != GDK_KEY_PRESS) return GDK_EVENT_PROPAGATE;
+    for (int i = 0; i < app->n_sections; i++) {
+        GtkWidget *page = app->sections[i].page;
+        if (!page) continue;
+        GtkWidget *viewport = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(page));
+        gtk_viewport_set_scroll_to_focus(GTK_VIEWPORT(viewport), !pointer);
+    }
+    return GDK_EVENT_PROPAGATE;
 }
 
 void lares_show(Lares *app, const char *id)
@@ -169,6 +190,11 @@ void lares_open_window(Lares *app)
     gtk_widget_set_hexpand(app->stack, TRUE);
     gtk_box_append(GTK_BOX(body), app->stack);
     gtk_window_set_child(GTK_WINDOW(app->win), body);
+
+    GtkEventController *input = gtk_event_controller_legacy_new();
+    gtk_event_controller_set_propagation_phase(input, GTK_PHASE_CAPTURE);
+    g_signal_connect(input, "event", G_CALLBACK(on_input), app);
+    gtk_widget_add_controller(app->win, input);
 
     g_signal_connect(app->win, "notify::suspended", G_CALLBACK(on_window_state), app);
     g_signal_connect(app->win, "map", G_CALLBACK(on_map_change), app);

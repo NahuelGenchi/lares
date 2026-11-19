@@ -59,6 +59,7 @@ GtkWidget *settings_build(Lares *app, Section *self);
 /* Small helpers shared by the sections */
 GtkWidget *ui_label(const char *text, const char *css_class);
 GtkWidget *ui_paragraph(const char *text, const char *css_class);
+GtkWidget *ui_busy_child(const char *text, gboolean busy);
 GtkWidget *ui_icon(const char *const *art, int pixel, const char *css_class);
 void ui_class(GtkWidget *w, const char *css_class, gboolean on);
 GtkWidget *ui_page(void);

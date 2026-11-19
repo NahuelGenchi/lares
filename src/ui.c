@@ -18,6 +18,22 @@ GtkWidget *ui_paragraph(const char *text, const char *css_class)
     return l;
 }
 
+/* A button's text, or while it works a spinner over the same text made
+ * invisible, so the button keeps its size and what's beside it stays put. */
+GtkWidget *ui_busy_child(const char *text, gboolean busy)
+{
+    GtkWidget *label = gtk_label_new(text);
+    if (!busy) return label;
+    gtk_widget_set_opacity(label, 0);
+    GtkWidget *overlay = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(overlay), label);
+    GtkWidget *spin = lares_pixel_spinner_new(2);
+    gtk_widget_set_halign(spin, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(spin, GTK_ALIGN_CENTER);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), spin);
+    return overlay;
+}
+
 GtkWidget *ui_icon(const char *const *art, int pixel, const char *css_class)
 {
     GtkWidget *w = lares_pixel_icon_new(art, pixel);
