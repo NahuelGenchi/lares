@@ -91,7 +91,8 @@ uninstall:
 	rm -rf $(ADDONS)/$(ADDON) $(PREFIX)/share/fonts/lares
 	@test ! -e /usr/local/libexec/lares-awdl || echo "AirDrop's link stays installed; remove it with:" \
 		"sudo rm /usr/local/libexec/lares-awdl /etc/NetworkManager/conf.d/90-lares-airdrop.conf" \
-		"/etc/systemd/network/10-lares-awdl.link"
+		"/etc/systemd/network/10-lares-awdl.link; and, with ufw: sudo ufw delete allow in on awdl0" \
+		"proto tcp to any port 8770:8779 && sudo ufw delete allow in on awdl0 proto udp to any port 5353"
 
 clean:
 	rm -rf build

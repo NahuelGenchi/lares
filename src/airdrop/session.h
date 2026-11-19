@@ -10,6 +10,7 @@
  * context the object was made on. */
 
 #define AIRDROP_PORT 8770           /* MDNS-1's conventional port, and DISC-5's */
+#define AIRDROP_PORTS 10            /* 8770 to 8779: what Share's firewall rule opens */
 #define AIRDROP_RECEIVER_FLAGS 0x089 /* URL sharing, mixed types, Discover (MDNS-5) */
 
 /* Our self-signed certificate (TLS-2), made once with the openssl command
@@ -41,8 +42,8 @@ typedef struct {
 } AirdropReceiverCallbacks;
 
 typedef struct AirdropReceiver AirdropReceiver;
-/* Listens on `address` ("fe80::…%awdl0") only, on AIRDROP_PORT or, if it's
- * taken, any port: airdrop_receiver_port says which. Files go to `folder`,
+/* Listens on `address` ("fe80::…%awdl0") only, on AIRDROP_PORT or the next
+ * free one of AIRDROP_PORTS, else any: airdrop_receiver_port says which. Files go to `folder`,
  * through a staging folder inside it, never over an existing file. */
 AirdropReceiver *airdrop_receiver_new(const char *address, const char *name, const char *folder,
                                       GTlsCertificate *cert, const AirdropReceiverCallbacks *cb,

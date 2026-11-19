@@ -1001,8 +1001,8 @@ AirdropReceiver *airdrop_receiver_new(const char *address, const char *name, con
      * open beside its /Ask (HTTP-1). */
     r->service = g_threaded_socket_service_new(6);
     gboolean ok = FALSE;
-    for (int i = 0; i < 2 && !ok; i++) {
-        GSocketAddress *a = g_inet_socket_address_new_from_string(address, i == 0 ? AIRDROP_PORT : 0);
+    for (int i = 0; i <= AIRDROP_PORTS && !ok; i++) {
+        GSocketAddress *a = g_inet_socket_address_new_from_string(address, i < AIRDROP_PORTS ? AIRDROP_PORT + i : 0);
         if (!a) {
             g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Bad address %s", address);
             break;

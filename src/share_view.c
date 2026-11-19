@@ -453,7 +453,8 @@ GtkWidget *share_build(Lares *app, Section *self)
     v->setup_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_box_append(GTK_BOX(v->setup_box),
                    ui_paragraph("Send and receive files with iPhones, iPads and Macs nearby. Lares lends AirDrop "
-                                "the Wi-Fi card while it's on, which needs your password, one time.", NULL));
+                                "the Wi-Fi card while it's on, and lets AirDrop alone through the firewall. "
+                                "That needs your password, one time.", NULL));
     v->allow = gtk_button_new();
     gtk_widget_add_css_class(v->allow, "primary");
     gtk_widget_add_css_class(v->allow, "action");

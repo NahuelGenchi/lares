@@ -450,7 +450,12 @@ void share_allow(Share *s)
                          " && umask 022 && mkdir -p /etc/NetworkManager/conf.d /etc/systemd/network"
                          " && printf '%s' \"$3\" > " SHARE_NM_CONF
                          " && printf '%s' \"$4\" > " SHARE_LINK_FILE
-                         " && { nmcli general reload conf >/dev/null 2>&1 || true; }";
+                         " && { nmcli general reload conf >/dev/null 2>&1 || true; }"
+                         /* With ufw on, nearby devices couldn't reach the receiver:
+                          * open its ports and mDNS, on AirDrop's interface only. */
+                         " && if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then"
+                         " ufw allow in on awdl0 proto tcp to any port 8770:8779 comment 'Lares AirDrop' >/dev/null"
+                         " && ufw allow in on awdl0 proto udp to any port 5353 comment 'Lares AirDrop' >/dev/null; fi";
     const char *nm = "# Lares' Share: AirDrop's interfaces belong to lares-awdl.\n[keyfile]\n"
                      "unmanaged-devices+=interface-name:awdl0;interface-name:laresmon0;interface-name:laresibss0\n";
     const char *link = "# Lares' Share: keep the address lares-awdl gives awdl0.\n[Match]\nOriginalName=awdl0\n\n"
