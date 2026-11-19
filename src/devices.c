@@ -1,4 +1,5 @@
 #include "devices.h"
+#include "hidpp.h"
 #include "hyperx.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -28,7 +29,8 @@ struct Devices {
     GFileMonitor *dev_monitor;
     guint scan_timer;
     GHashTable *hid;           /* USB device path -> HidState, for what only they report */
-    int battery_wants, settings_wants;
+    GHashTable *pp;            /* HID device path -> PpState, keyboards that HID++ reports */
+    int battery_wants, settings_wants, keys_wants;
     guint battery_timer;
     gboolean dry_allowed;      /* a dry run's pretend permission for those batteries */
     GPtrArray *list;
@@ -45,6 +47,7 @@ static void device_free(gpointer p)
     g_free(x->address);
     g_free(x->model);
     g_free(x->mouse);
+    g_free(x->keyboard);
     g_free(x);
 }
 
@@ -83,6 +86,42 @@ static void hid_state_free(gpointer p)
 }
 
 static gboolean hid_open(HidState *s)
+{
+    return access(s->node, R_OK | W_OK) == 0;
+}
+
+/* A keyboard paired to a Logitech receiver, whose settings HID++ reports
+ * (src/hidpp.c) through the receiver's node. */
+typedef struct {
+    Devices *d;
+    char *owner;         /* its HID device in sysfs, also its key in Devices.pp */
+    char *node;          /* the receiver's HID++ node, /dev/hidrawN */
+    guint8 index;        /* its place on the receiver */
+    const HidppModel *model;
+    HidppKeyboard state; /* its settings, once `known` */
+    gboolean known, asleep, reading, writing, stale;
+    int watch_fd;        /* open while Keyboard shows, -1 otherwise */
+    guint watch;
+} PpState;
+
+static void pp_stop_watch(PpState *s)
+{
+    if (s->watch) g_source_remove(s->watch);
+    if (s->watch_fd >= 0) close(s->watch_fd);
+    s->watch = 0;
+    s->watch_fd = -1;
+}
+
+static void pp_state_free(gpointer p)
+{
+    PpState *s = p;
+    pp_stop_watch(s);
+    g_free(s->owner);
+    g_free(s->node);
+    g_free(s);
+}
+
+static gboolean pp_open(PpState *s)
 {
     return access(s->node, R_OK | W_OK) == 0;
 }
@@ -224,6 +263,16 @@ static void add_usb(Devices *d)
                 hyperx_decode(s->model, &s->state, x->mouse);
             }
             x->asleep = s->asleep;
+        }
+        PpState *k = g_hash_table_lookup(d->pp, u->id);
+        if (k) {
+            x->settings_locked = !pp_open(k) && !(d->dry && d->dry_allowed);
+            x->has_settings = TRUE;
+            if (k->known) {
+                x->keyboard = g_new(KeyboardSettings, 1);
+                hidpp_decode(&k->state, k->model, x->keyboard);
+            }
+            x->asleep = k->asleep;
         }
         g_ptr_array_add(d->list, x);
     }
@@ -582,6 +631,76 @@ static void scan_protocols(Devices *d)
     d->hid = hid;
 }
 
+/* For a keyboard paired to a receiver src/hidpp.c knows, such as
+ * .../1-8.4:1.2/0003:046D:C547.0007/0003:046D:40A2.0009: the receiver's
+ * HID++ node, and the keyboard's place on it. */
+static char *pp_node(const char *owner, guint8 *index, const HidppModel **model)
+{
+    char *name = g_path_get_basename(owner), *receiver = g_path_get_dirname(owner);
+    char *rname = g_path_get_basename(receiver), *node = NULL;
+    const HidppModel *m = NULL;
+    if (is_hid_id(name) && is_hid_id(rname) && g_str_has_prefix(name, "0003:046D:")
+        && g_str_has_prefix(rname, "0003:046D:"))
+        m = hidpp_model(g_ascii_strtoull(rname + 10, NULL, 16), g_ascii_strtoull(name + 10, NULL, 16));
+    char *iface = m ? g_path_get_dirname(receiver) : NULL;
+    char *number = iface ? sys_text(iface, "bInterfaceNumber") : NULL;
+    char *uevent = number && g_ascii_strtoll(number, NULL, 16) == m->interface ? sys_text(owner, "uevent") : NULL;
+    char *phys = uevent ? strstr(uevent, "HID_PHYS=") : NULL;
+    int at = -1;
+    if (phys) {
+        phys += strlen("HID_PHYS=");
+        char *nl = strchr(phys, '\n');
+        if (nl) *nl = '\0';
+        at = hidpp_phys_index(phys);
+    }
+    char *dir = at > 0 ? g_build_filename(receiver, "hidraw", NULL) : NULL;
+    GDir *raw = dir ? g_dir_open(dir, 0, NULL) : NULL;
+    const char *entry = raw ? g_dir_read_name(raw) : NULL;
+    if (entry && g_str_has_prefix(entry, "hidraw")) {
+        node = g_build_filename("/dev", entry, NULL);
+        *index = (guint8)at;
+        *model = m;
+    }
+    if (raw) g_dir_close(raw);
+    g_free(dir);
+    g_free(uevent);
+    g_free(number);
+    g_free(iface);
+    g_free(rname);
+    g_free(receiver);
+    g_free(name);
+    return node;
+}
+
+static void scan_hidpp(Devices *d)
+{
+    GHashTable *pp = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, pp_state_free);
+    for (guint i = 0; i < d->usb->len; i++) {
+        Device *x = d->usb->pdata[i];
+        guint8 index = 0;
+        const HidppModel *model = NULL;
+        char *node = x->kind == DEV_KEYBOARD ? pp_node(x->id, &index, &model) : NULL;
+        if (!node) continue;
+        PpState *s = g_hash_table_lookup(d->pp, x->id);
+        if (s) {
+            g_hash_table_steal(d->pp, x->id);
+            if (!g_str_equal(s->node, node)) pp_stop_watch(s);   /* plugged in again */
+            g_free(s->node);
+        } else {
+            s = g_new0(PpState, 1);
+            s->d = d;
+            s->owner = g_strdup(x->id);
+            s->watch_fd = -1;
+        }
+        s->node = node;
+        s->index = index;
+        s->model = model;
+        g_hash_table_insert(pp, s->owner, s);
+    }
+    g_hash_table_destroy(d->pp);
+    d->pp = pp;
+}
+
 /* One entry per physical device. Its first node, in sysfs order, says what
  * it is: a gaming mouse's extra keyboard node, for its programmable buttons,
  * comes after the mouse's. A device with a gamepad node is a controller,
@@ -630,10 +749,12 @@ static void scan_usb(Devices *d)
     g_hash_table_destroy(owners);
     g_ptr_array_free(nodes, TRUE);
     scan_protocols(d);
+    scan_hidpp(d);
 }
 
 static void ask_batteries(Devices *d);
 static void settings_on(Devices *d);
+static void keys_on(Devices *d);
 
 static gboolean scan_later(gpointer data)
 {
@@ -642,6 +763,7 @@ static gboolean scan_later(gpointer data)
     scan_usb(d);
     if (d->battery_wants) ask_batteries(d);
     if (d->settings_wants) settings_on(d);
+    if (d->keys_wants) keys_on(d);
     schedule(d);
     return G_SOURCE_REMOVE;
 }
@@ -751,6 +873,7 @@ static void allow_finish(AllowCtx *c, gboolean ok, const char *message)
         while (g_hash_table_iter_next(&it, NULL, &value)) ((HidState *)value)->answered = 0;
         ask_batteries(c->d);
         if (c->d->settings_wants) settings_on(c->d);
+        if (c->d->keys_wants) keys_on(c->d);
         schedule(c->d);
     }
     c->done(ok, message, c->user);
@@ -788,6 +911,15 @@ static gboolean pretend_allowed(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+char *devices_udev_rules(void)
+{
+    char *hyperx = hyperx_udev_rules(), *hidpp = hidpp_udev_rules();
+    char *rules = g_strconcat(hyperx, hidpp, NULL);
+    g_free(hyperx);
+    g_free(hidpp);
+    return rules;
+}
+
 void devices_allow_batteries(Devices *d, DevDone done, gpointer user)
 {
     AllowCtx *c = g_new0(AllowCtx, 1);
@@ -801,7 +933,7 @@ void devices_allow_batteries(Devices *d, DevDone done, gpointer user)
     /* The rules travel as an argument, so root reads nothing the user could
      * change. udevadm applies them to what's plugged in now and waits until
      * it has. */
-    char *rules = hyperx_udev_rules();
+    char *rules = devices_udev_rules();
     const char *script = "umask 022 && mkdir -p /etc/udev/rules.d && printf '%s' \"$1\" > " HYPERX_RULES
                          " && udevadm control --reload"
                          " && udevadm trigger --action=change --subsystem-match=hidraw && udevadm settle";
@@ -960,8 +1092,12 @@ static void settings_on(Devices *d)
     }
 }
 
-void devices_want_settings(Devices *d, gboolean on)
+static void keys_want(Devices *d, gboolean on);
+
+void devices_want_settings(Devices *d, DevKind kind, gboolean on)
 {
+    if (kind == DEV_KEYBOARD) keys_want(d, on);
+    if (kind != DEV_MOUSE) return;
     int was = d->settings_wants;
     d->settings_wants = MAX(0, was + (on ? 1 : -1));
     if (!was && d->settings_wants) {
@@ -1052,6 +1188,240 @@ void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, co
     GTask *task = g_task_new(NULL, NULL, settings_written, NULL);
     g_task_set_task_data(task, c, settings_ctx_free);
     g_task_run_in_thread(task, write_thread);
+    g_object_unref(task);
+}
+
+/* ------------------------------------------------------------- keyboards */
+
+typedef struct {
+    Devices *d;
+    char *owner, *node;
+    guint8 index;
+    HidppKeyboard state;
+    int value, now;        /* the brightness to set, and what it reads back */
+    DevDone done;
+    gpointer user;
+} KeysCtx;
+
+static void keys_ctx_free(gpointer p)
+{
+    KeysCtx *c = p;
+    g_free(c->owner);
+    g_free(c->node);
+    g_free(c);
+}
+
+static KeysCtx *keys_ctx(Devices *d, PpState *s)
+{
+    KeysCtx *c = g_new0(KeysCtx, 1);
+    c->d = d;
+    c->owner = g_strdup(s->owner);
+    c->node = g_strdup(s->node);
+    c->index = s->index;
+    return c;
+}
+
+static void ask_keys(Devices *d, PpState *s);
+
+static void keys_read_thread(GTask *task, gpointer src, gpointer data, GCancellable *cancel)
+{
+    KeysCtx *c = data;
+    GError *e = NULL;
+    if (hidpp_read(c->node, c->index, &c->state, &e)) g_task_return_boolean(task, TRUE);
+    else g_task_return_error(task, e);
+}
+
+static void keys_read(GObject *src, GAsyncResult *res, gpointer user)
+{
+    KeysCtx *c = g_task_get_task_data(G_TASK(res));
+    gboolean ok = g_task_propagate_boolean(G_TASK(res), NULL);
+    PpState *s = g_hash_table_lookup(c->d->pp, c->owner);
+    if (!s) return; /* unplugged meanwhile */
+    s->reading = FALSE;
+    if (ok) {
+        s->state = c->state;
+        s->known = TRUE;
+    }
+    s->asleep = !ok; /* asleep, or fell asleep while asked */
+    if (s->stale) {
+        s->stale = FALSE;
+        ask_keys(c->d, s);
+    }
+    schedule(c->d);
+}
+
+static void ask_keys(Devices *d, PpState *s)
+{
+    if (s->reading || s->writing) {
+        s->stale = TRUE;
+        return;
+    }
+    if (!pp_open(s)) {
+        if (d->dry && d->dry_allowed && !s->known) { /* pretend, as nothing was really allowed */
+            hidpp_sample(&s->state);
+            s->known = TRUE;
+            schedule(d);
+        }
+        return;
+    }
+    s->reading = TRUE;
+    GTask *task = g_task_new(NULL, NULL, keys_read, NULL);
+    g_task_set_task_data(task, keys_ctx(d, s), keys_ctx_free);
+    g_task_run_in_thread(task, keys_read_thread);
+    g_object_unref(task);
+}
+
+/* What the keyboard or its receiver says by itself while Keyboard shows:
+ * the receiver lost or found it, it reconnected, its brightness changed, or
+ * another setting did. A new link or another setting means reading it
+ * again. The receiver's node also carries the answers to everyone's
+ * requests; those aren't events. */
+static gboolean on_keys_report(int fd, GIOCondition cond, gpointer data)
+{
+    PpState *s = data;
+    guint8 report[64];
+    ssize_t got;
+    gboolean changed = FALSE, again = FALSE;
+    while ((got = read(fd, report, sizeof report)) > 0) {
+        HidppEvent ev;
+        if (!hidpp_event(report, (gsize)got, s->index, &s->state, &ev)) continue;
+        switch (ev.kind) {
+        case HIDPP_EVENT_LINK:
+            changed |= s->asleep == ev.linked;
+            s->asleep = !ev.linked;
+            again |= ev.linked;
+            break;
+        case HIDPP_EVENT_BRIGHTNESS:
+            if (!s->known) break;
+            changed |= s->state.brightness != ev.brightness || s->asleep;
+            s->state.brightness = CLAMP(ev.brightness, 0, s->state.brightness_max);
+            s->asleep = FALSE;
+            break;
+        case HIDPP_EVENT_CHANGED:
+            again = TRUE;
+            break;
+        }
+    }
+    gboolean gone = got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR);
+    if (again) ask_keys(s->d, s);
+    if (changed) schedule(s->d);
+    if (!gone) return G_SOURCE_CONTINUE;
+    close(fd); /* unplugged: the next scan finds it again, or not */
+    s->watch_fd = -1;
+    s->watch = 0;
+    return G_SOURCE_REMOVE;
+}
+
+static void keys_start_watch(PpState *s)
+{
+    if (s->watch || !pp_open(s)) return;
+    s->watch_fd = open(s->node, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (s->watch_fd >= 0) s->watch = g_unix_fd_add(s->watch_fd, G_IO_IN | G_IO_HUP | G_IO_ERR, on_keys_report, s);
+}
+
+static void keys_on(Devices *d)
+{
+    GHashTableIter it;
+    gpointer value;
+    g_hash_table_iter_init(&it, d->pp);
+    while (g_hash_table_iter_next(&it, NULL, &value)) {
+        keys_start_watch(value);
+        ask_keys(d, value);
+    }
+}
+
+static void keys_want(Devices *d, gboolean on)
+{
+    int was = d->keys_wants;
+    d->keys_wants = MAX(0, was + (on ? 1 : -1));
+    if (!was && d->keys_wants) {
+        keys_on(d);
+    } else if (was && !d->keys_wants) {
+        GHashTableIter it;
+        gpointer value;
+        g_hash_table_iter_init(&it, d->pp);
+        while (g_hash_table_iter_next(&it, NULL, &value)) pp_stop_watch(value);
+    }
+}
+
+static void keys_write_thread(GTask *task, gpointer src, gpointer data, GCancellable *cancel)
+{
+    KeysCtx *c = data;
+    GError *e = NULL;
+    if (hidpp_set_brightness(c->node, c->index, c->value, &c->now, &e)) g_task_return_boolean(task, TRUE);
+    else g_task_return_error(task, e);
+}
+
+static void keys_written(GObject *src, GAsyncResult *res, gpointer user)
+{
+    KeysCtx *c = g_task_get_task_data(G_TASK(res));
+    GError *e = NULL;
+    gboolean ok = g_task_propagate_boolean(G_TASK(res), &e);
+    PpState *s = g_hash_table_lookup(c->d->pp, c->owner);
+    if (s) {
+        s->writing = FALSE;
+        if (ok) {
+            s->state.brightness = c->now;
+            s->asleep = FALSE;
+        } else if (g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED)
+                   || g_error_matches(e, G_IO_ERROR, G_IO_ERROR_TIMED_OUT)) {
+            s->asleep = TRUE;
+        } else {
+            s->stale = TRUE; /* to show what it holds after all */
+        }
+        if (s->stale) {
+            s->stale = FALSE;
+            ask_keys(c->d, s);
+        }
+        schedule(c->d);
+    }
+    c->done(ok, e ? e->message : NULL, c->user);
+    g_clear_error(&e);
+}
+
+static gboolean pretend_keys_written(gpointer data)
+{
+    KeysCtx *c = data;
+    PpState *s = g_hash_table_lookup(c->d->pp, c->owner);
+    if (s) {
+        s->writing = FALSE;
+        s->state.brightness = c->value;
+        if (s->stale) {
+            s->stale = FALSE;
+            ask_keys(c->d, s);
+        }
+        schedule(c->d);
+    }
+    c->done(TRUE, NULL, c->user);
+    keys_ctx_free(c);
+    return G_SOURCE_REMOVE;
+}
+
+void devices_set_keyboard(Devices *d, const char *id, const KeyboardSettings *base, const KeyboardSettings *want,
+                          DevDone done, gpointer user)
+{
+    PpState *s = g_hash_table_lookup(d->pp, id);
+    if (!s || !s->known || s->writing || !s->state.has_brightness) {
+        done(FALSE, "Its settings can't be changed right now.", user);
+        return;
+    }
+    if (want->brightness == base->brightness) {
+        done(TRUE, NULL, user);
+        return;
+    }
+    KeysCtx *c = keys_ctx(d, s);
+    c->value = hidpp_brightness_value(&s->state, want->brightness);
+    c->done = done;
+    c->user = user;
+    s->writing = TRUE;
+    schedule(d);
+    if (d->dry) {
+        g_timeout_add(600, pretend_keys_written, c);
+        return;
+    }
+    GTask *task = g_task_new(NULL, NULL, keys_written, NULL);
+    g_task_set_task_data(task, c, keys_ctx_free);
+    g_task_run_in_thread(task, keys_write_thread);
     g_object_unref(task);
 }
 
@@ -1149,6 +1519,7 @@ Devices *devices_new(void)
     d->batteries = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
     d->usb = g_ptr_array_new_with_free_func(device_free);
     d->hid = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, hid_state_free);
+    d->pp = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, pp_state_free);
     d->dry = g_getenv("LARES_DRY_RUN") != NULL;
     GFile *dev = g_file_new_for_path("/dev/input");
     d->dev_monitor = g_file_monitor_directory(dev, G_FILE_MONITOR_NONE, NULL, NULL);

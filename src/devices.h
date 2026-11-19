@@ -30,6 +30,27 @@ typedef struct {
     guint8 rgb[3];               /* the colour of a solid or breathing light */
 } MouseSettings;
 
+/* The lighting a keyboard's onboard profile holds. KEY_LIGHT_OWN is one of
+ * the keyboard's own effects, such as the G715's factory one. */
+typedef enum {
+    KEY_LIGHT_OFF, KEY_LIGHT_SOLID, KEY_LIGHT_BREATHING, KEY_LIGHT_CYCLE, KEY_LIGHT_WAVE, KEY_LIGHT_RIPPLE,
+    KEY_LIGHT_OWN,
+} KeyLight;
+
+#define KEY_LEVELS 8
+
+/* A keyboard's settings in plain units, as it last reported them. */
+typedef struct {
+    gboolean has_brightness;
+    int brightness;              /* 0 to 100 % */
+    int levels;                  /* the brightness levels it keeps, from off, or 0 when it keeps any */
+    int level[KEY_LEVELS];       /* those levels, in %, rising */
+    gboolean has_lighting;       /* its onboard profile holds the lighting below */
+    gboolean app_controls;       /* an app holds the lighting, so the profile's isn't what shows */
+    KeyLight light;
+    guint8 rgb[3];               /* the colour of a solid, breathing or ripple light */
+} KeyboardSettings;
+
 typedef struct {
     char *id;          /* the BlueZ or UPower object path */
     char *name;
@@ -41,8 +62,10 @@ typedef struct {
     int battery;       /* 0 to 100, or -1 when the device doesn't say */
     gboolean charging;
     gboolean battery_locked;  /* its battery can be read once the person allows it */
-    gboolean has_settings;    /* its own protocol reports its settings (src/hyperx.c) */
+    gboolean settings_locked; /* and its settings */
+    gboolean has_settings;    /* its own protocol reports its settings (src/hyperx.c, src/hidpp.c) */
     MouseSettings *mouse;     /* what they were last time, or NULL until it answers */
+    KeyboardSettings *keyboard;
     gboolean asleep;          /* its receiver says it's asleep or off */
 } Device;
 
@@ -61,18 +84,25 @@ void devices_set_connected(Devices *d, const char *id, gboolean on, DevDone done
  * minutes. Calls nest; each `on` needs its `off`. */
 void devices_want_batteries(Devices *d, gboolean on);
 /* Lets the person at the screen read those batteries and settings from now
- * on: a udev rule installed through pkexec, which asks for the password
+ * on: udev rules installed through pkexec, which asks for the password
  * once. */
 void devices_allow_batteries(Devices *d, DevDone done, gpointer user);
-/* Mouse settings are read while something on screen wants them, and the
- * mouse is listened to meanwhile, so pressing its DPI button or waking it
- * shows at once. Calls nest; each `on` needs its `off`. */
-void devices_want_settings(Devices *d, gboolean on);
+/* The rules that does install: each device's own interface, and nothing
+ * else of it. */
+char *devices_udev_rules(void);
+/* The settings of mice, or of keyboards, are read while something on screen
+ * wants them, and the devices are listened to meanwhile, so pressing a
+ * mouse's DPI button or waking a device shows at once. Calls nest; each
+ * `on` needs its `off`. */
+void devices_want_settings(Devices *d, DevKind kind, gboolean on);
 /* Writes what `want` changes from `base`, the settings the person changed,
  * to the mouse, live and to its own memory, then reads it back. Whatever
  * they didn't change keeps the mouse's own. A dry run only pretends. */
 void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, const MouseSettings *want,
                        DevDone done, gpointer user);
+/* The same for a keyboard: today its brightness. */
+void devices_set_keyboard(Devices *d, const char *id, const KeyboardSettings *base, const KeyboardSettings *want,
+                          DevDone done, gpointer user);
 
 /* How an input node in sysfs is read, kept apart for the unit tests. */
 /* Whether `bit` is set in a capability bitmap: words of hex, most
