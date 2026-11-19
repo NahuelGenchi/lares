@@ -591,7 +591,7 @@ static void scan_usb(Devices *d)
     GPtrArray *nodes = usb_input_nodes();
     g_ptr_array_sort(nodes, by_device_path);
     GHashTable *owners = g_hash_table_new(g_str_hash, g_str_equal);
-    GPtrArray *found = g_ptr_array_new();
+    GPtrArray *found = g_ptr_array_new(), *models = g_ptr_array_new();   /* models: the HyperxModel of each, or NULL */
     for (guint i = 0; i < nodes->len; i++) {
         InputNode *n = nodes->pdata[i];
         Device *x = g_hash_table_lookup(owners, n->owner);
@@ -617,15 +617,23 @@ static void scan_usb(Devices *d)
             g_free(last);
             g_hash_table_insert(owners, x->id, x);
             g_ptr_array_add(found, x);
+            g_ptr_array_add(models, (gpointer)m);
         }
         if (n->kind == DEV_CONTROLLER) x->kind = DEV_CONTROLLER;
     }
+    /* A mouse on its cable leaves its receiver unlinked, so it gets one
+     * entry, its own, rather than a second from the receiver saying it's
+     * asleep. Its receiver comes back as the cable comes out. */
     g_ptr_array_set_size(d->usb, 0);
     for (guint i = 0; i < found->len; i++) {
         Device *x = found->pdata[i];
-        if (x->kind == DEV_CONTROLLER) device_free(x);
-        else g_ptr_array_add(d->usb, x);
+        if (x->kind == DEV_CONTROLLER
+            || hyperx_on_cable(models->pdata[i], (const HyperxModel *const *)models->pdata, models->len))
+            device_free(x);
+        else
+            g_ptr_array_add(d->usb, x);
     }
+    g_ptr_array_free(models, TRUE);
     g_ptr_array_free(found, TRUE);
     g_hash_table_destroy(owners);
     g_ptr_array_free(nodes, TRUE);
@@ -822,6 +830,7 @@ void devices_allow_batteries(Devices *d, DevDone done, gpointer user)
 typedef struct {
     Devices *d;
     char *owner, *node;
+    const HyperxModel *model;
     HyperxState state;
     MouseSettings base, want;
     DevDone done;
@@ -842,6 +851,7 @@ static SettingsCtx *settings_ctx(Devices *d, HidState *s)
     c->d = d;
     c->owner = g_strdup(s->owner);
     c->node = g_strdup(s->node);
+    c->model = s->model;
     return c;
 }
 
@@ -851,7 +861,7 @@ static void read_thread(GTask *task, gpointer src, gpointer data, GCancellable *
 {
     SettingsCtx *c = data;
     GError *e = NULL;
-    if (hyperx_read(c->node, &c->state, &e)) g_task_return_boolean(task, TRUE);
+    if (hyperx_read(c->node, c->model, &c->state, &e)) g_task_return_boolean(task, TRUE);
     else g_task_return_error(task, e);
 }
 
@@ -978,7 +988,7 @@ static void write_thread(GTask *task, gpointer src, gpointer data, GCancellable 
 {
     SettingsCtx *c = data;
     GError *e = NULL;
-    if (hyperx_write(c->node, &c->base, &c->want, &c->state, &e)) g_task_return_boolean(task, TRUE);
+    if (hyperx_write(c->node, c->model, &c->base, &c->want, &c->state, &e)) g_task_return_boolean(task, TRUE);
     else g_task_return_error(task, e);
 }
 

@@ -43,9 +43,12 @@
 #define DPI_STEP      50
 #define DEFAULT_SPEED 50     /* of breathing and the colour cycle; lower is faster */
 
+/* Plugged in by its cable, which charges it, the mouse is a USB device of
+ * its own and reloads its saved profile; its receiver stays, unlinked. */
 static const HyperxModel MODELS[] = {
-    /* Pulsefire Haste 2 Wireless, its 2.4 GHz receiver */
-    { 0x03f0, 0x0f98, 2, TRUE, 200, 26000, 1000 },
+    /* Pulsefire Haste 2 Wireless: its 2.4 GHz receiver, and itself on its cable */
+    { 0x03f0, 0x0f98, 2, TRUE, 0x0d97, 200, 26000, 1000 },
+    { 0x03f0, 0x0d97, 2, FALSE, 0, 200, 26000, 1000 },
 };
 
 /* Polling rates, and their codes in the DPI table. */
@@ -64,6 +67,15 @@ const HyperxModel *hyperx_model(guint16 vendor, guint16 product)
     for (guint i = 0; i < G_N_ELEMENTS(MODELS); i++)
         if (MODELS[i].vendor == vendor && MODELS[i].product == product) return &MODELS[i];
     return NULL;
+}
+
+gboolean hyperx_on_cable(const HyperxModel *receiver, const HyperxModel *const *plugged, guint n)
+{
+    if (!receiver || !receiver->receiver || !receiver->cable) return FALSE;
+    for (guint i = 0; i < n; i++)
+        if (plugged[i] && plugged[i]->vendor == receiver->vendor && plugged[i]->product == receiver->cable)
+            return TRUE;
+    return FALSE;
 }
 
 /* 51 02: byte 2 the level, byte 3 the charging state (0 not charging,
@@ -419,6 +431,13 @@ static gboolean linked(Port *p, GError **error)
                     : fail(error, G_IO_ERROR_TIMED_OUT, "Its receiver didn't answer.");
 }
 
+/* Whether the mouse is there to answer. On its cable it always is, and it
+ * says "not linked" to the question above, having no radio link then. */
+static gboolean reachable(Port *p, const HyperxModel *model, GError **error)
+{
+    return !model->receiver || linked(p, error);
+}
+
 static gboolean read_state(Port *p, HyperxState *s, GError **error)
 {
     gboolean ok = ask_live(p, DPI, GET, s->dpi) && ask_live(p, SENSOR, GET, s->sensor)
@@ -457,14 +476,14 @@ gboolean hyperx_battery(const char *node, int *level, gboolean *charging, GError
     return ok;
 }
 
-gboolean hyperx_read(const char *node, HyperxState *state, GError **error)
+gboolean hyperx_read(const char *node, const HyperxModel *model, HyperxState *state, GError **error)
 {
     Port p;
     HyperxState s;
     g_mutex_lock(&turns);
     gboolean ok = port_open(&p, node, error);
     if (ok) {
-        ok = linked(&p, error) && read_state(&p, &s, error);
+        ok = reachable(&p, model, error) && read_state(&p, &s, error);
         close(p.fd);
     }
     g_mutex_unlock(&turns);
@@ -472,12 +491,12 @@ gboolean hyperx_read(const char *node, HyperxState *state, GError **error)
     return ok;
 }
 
-static gboolean write_both(Port *p, const MouseSettings *base, const MouseSettings *want, HyperxState *state,
-                           GError **error)
+static gboolean write_both(Port *p, const HyperxModel *model, const MouseSettings *base, const MouseSettings *want,
+                           HyperxState *state, GError **error)
 {
     HyperxState now;
     MouseSettings merged;
-    if (!linked(p, error) || !read_state(p, &now, error)) return FALSE;
+    if (!reachable(p, model, error) || !read_state(p, &now, error)) return FALSE;
     hyperx_merge(&now, base, want, &merged);
     /* Live first, then the profile it reloads when switched on, as NGENUITY
      * saves. */
@@ -501,15 +520,15 @@ static gboolean write_both(Port *p, const MouseSettings *base, const MouseSettin
     return holds(&got, &merged) || fail(error, G_IO_ERROR_FAILED, "It kept its earlier setting.");
 }
 
-gboolean hyperx_write(const char *node, const MouseSettings *base, const MouseSettings *want, HyperxState *state,
-                      GError **error)
+gboolean hyperx_write(const char *node, const HyperxModel *model, const MouseSettings *base,
+                      const MouseSettings *want, HyperxState *state, GError **error)
 {
     Port p;
     HyperxState s;
     g_mutex_lock(&turns);
     gboolean ok = port_open(&p, node, error);
     if (ok) {
-        ok = write_both(&p, base, want, &s, error);
+        ok = write_both(&p, model, base, want, &s, error);
         close(p.fd);
     }
     g_mutex_unlock(&turns);

@@ -226,7 +226,8 @@ static void test_hid_battery(void)
     g_assert_nonnull(m);
     g_assert_cmpint(m->interface, ==, 2);
     g_assert_true(m->receiver);
-    g_assert_null(hyperx_model(0x03f0, 0x0d97));
+    g_assert_null(hyperx_model(0x03f0, 0x0f99));
+    g_assert_null(hyperx_model(0x046d, 0x0d97));
 
     /* The rule opens the battery interface only, to the person at the screen. */
     char *rules = hyperx_udev_rules();
@@ -235,6 +236,79 @@ static void test_hid_battery(void)
                                    "TAG+=\"uaccess\"\n"));
     g_assert_null(strstr(rules, "MODE="));  /* no world-readable node */
     g_free(rules);
+}
+
+/* The Pulsefire Haste 2 Wireless plugged in by its cable: a USB device of
+ * its own, which answers on one interface, and whose receiver then says
+ * it isn't linked. */
+static void test_hyperx_cable(void)
+{
+    const HyperxModel *receiver = hyperx_model(0x03f0, 0x0f98), *wired = hyperx_model(0x03f0, 0x0d97);
+    g_assert_nonnull(wired);
+    g_assert_false(wired->receiver);
+    g_assert_cmpint(wired->interface, ==, 2);
+    g_assert_cmpint(wired->dpi_max, ==, receiver->dpi_max);
+    g_assert_cmpint(wired->rate_max, ==, receiver->rate_max);
+
+    /* The rule opens that interface, and only that one, as well. */
+    char *rules = hyperx_udev_rules();
+    g_assert_nonnull(strstr(rules, "SUBSYSTEM==\"hidraw\", ENV{ID_USB_VENDOR_ID}==\"03f0\", "
+                                   "ENV{ID_USB_MODEL_ID}==\"0d97\", ENV{ID_USB_INTERFACE_NUM}==\"02\", "
+                                   "TAG+=\"uaccess\"\n"));
+    g_assert_nonnull(strstr(rules, "ENV{ID_USB_MODEL_ID}==\"0f98\""));
+    int lines = 0;
+    for (const char *c = strstr(rules, "0d97"); c; c = strstr(c + 1, "0d97")) lines++;
+    g_assert_cmpint(lines, ==, 1);
+    g_free(rules);
+
+    /* The receiver gives way to the mouse on its cable, whatever else is
+     * plugged in, and only to it. */
+    const HyperxModel *both[] = { receiver, NULL, wired };
+    g_assert_true(hyperx_on_cable(receiver, both, G_N_ELEMENTS(both)));
+    g_assert_false(hyperx_on_cable(wired, both, G_N_ELEMENTS(both)));
+    g_assert_false(hyperx_on_cable(NULL, both, G_N_ELEMENTS(both)));
+    const HyperxModel *alone[] = { receiver, NULL };
+    g_assert_false(hyperx_on_cable(receiver, alone, G_N_ELEMENTS(alone)));
+    g_assert_false(hyperx_on_cable(receiver, NULL, 0));
+    const HyperxModel *cable_only[] = { wired };
+    g_assert_true(hyperx_on_cable(receiver, cable_only, 1));
+
+    /* Its answers on the cable, as it gave them: charged full, and its
+     * settings in the same layout as over the receiver. */
+    int level = -1;
+    gboolean charging = TRUE;
+    const guint8 battery[64] = { 0x51, 0x02, 0x64, 0x02, 0x18, 0x00, 0x55, 0x10, 0x01 };
+    g_assert_true(hyperx_battery_parse(battery, sizeof battery, &level, &charging));
+    g_assert_cmpint(level, ==, 100);
+    g_assert_false(charging);
+    static const guint8 dpi[] = {
+        0x33, 0x02, 0x08, 0x0f, 0x01,
+        0x07, 0x00, 0xff, 0x00, 0x00,   0x0f, 0x00, 0x00, 0x00, 0xff,   0x1f, 0x00, 0xff, 0xff, 0x00,
+        0x3f, 0x00, 0x00, 0xff, 0x00,   0x07, 0x02, 0xff, 0xff, 0xff,
+    };
+    static const guint8 light[] = { 0x43, 0x03, 0x01, 0x00, 0x00, 0x00, 0x01, 0x80, 0x00, 0xff };
+    HyperxState s = { 0 };
+    memcpy(s.dpi, dpi, sizeof dpi);
+    s.sensor[0] = 0x37;
+    s.sensor[1] = 0x02;
+    s.brightness[0] = 0x41;
+    s.brightness[1] = 0x02;
+    s.brightness[2] = 0xff;
+    memcpy(s.light, light, sizeof light);
+    MouseSettings m;
+    hyperx_decode(wired, &s, &m);
+    g_assert_cmpint(m.stages, ==, 4);   /* the fifth stage, 26000, is off */
+    g_assert_cmpint(m.active, ==, 1);
+    const int want[] = { 400, 800, 1600, 3200 };
+    for (int i = 0; i < 4; i++) g_assert_cmpint(m.dpi[i], ==, want[i]);
+    g_assert_cmpint(m.rate, ==, 1000);
+    g_assert_cmpint(m.lift_mm, ==, 1);
+    g_assert_cmpint(m.brightness, ==, 100);
+    g_assert_cmpint(m.light, ==, LIGHT_SOLID);
+    g_assert_cmpint(m.rgb[0], ==, 0x80);
+    g_assert_cmpint(m.rgb[1], ==, 0x00);
+    g_assert_cmpint(m.rgb[2], ==, 0xff);
+    g_assert_cmpint(m.dpi_max, ==, 26000);
 }
 
 /* The settings as the protocol notes read them from a Pulsefire Haste 2
@@ -564,6 +638,7 @@ int main(int argc, char **argv)
     g_test_add_func("/devices/input-kinds", test_input_kinds);
     g_test_add_func("/devices/input-owner", test_input_owner);
     g_test_add_func("/devices/hid-battery", test_hid_battery);
+    g_test_add_func("/devices/hyperx-cable", test_hyperx_cable);
     g_test_add_func("/devices/hyperx-settings", test_hyperx_settings);
     g_test_add_func("/devices/hyperx-real", test_hyperx_real);
     g_test_add_func("/devices/hyperx-events", test_hyperx_events);

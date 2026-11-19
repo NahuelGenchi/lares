@@ -3,8 +3,9 @@
 #include "devices.h"
 
 /* HyperX's wireless mice, over the HID protocol HyperX's NGENUITY app uses,
- * on their receiver's vendor interface: the battery, and the settings the
- * mouse keeps in its own memory. Today: the Pulsefire Haste 2 Wireless. */
+ * on their receiver's vendor interface, or on their own while plugged in by
+ * their cable: the battery, and the settings the mouse keeps in its own
+ * memory. Today: the Pulsefire Haste 2 Wireless. */
 
 /* The rule file's name predates the settings; it opens the same interface. */
 #define HYPERX_RULES "/etc/udev/rules.d/70-lares-batteries.rules"
@@ -15,6 +16,7 @@ typedef struct {
     guint16 vendor, product;
     int interface;            /* the USB interface that answers */
     gboolean receiver;        /* the device is a wireless receiver */
+    guint16 cable;            /* a receiver's: its mouse's own product while on its cable, or 0 */
     int dpi_min, dpi_max, rate_max;
 } HyperxModel;
 
@@ -43,6 +45,11 @@ typedef struct {
 
 /* The model with this USB vendor and product, or NULL. */
 const HyperxModel *hyperx_model(guint16 vendor, guint16 product);
+
+/* Whether the mouse `receiver` pairs with is on its cable: among `plugged`,
+ * the models of the `n` USB devices there now, any of which may be NULL.
+ * The mouse then leaves its receiver unlinked. */
+gboolean hyperx_on_cable(const HyperxModel *receiver, const HyperxModel *const *plugged, guint n);
 
 /* Whether `report`, one input report as hidraw returns it, is a battery
  * answer; if so, its level (0 to 100) and whether it's charging. */
@@ -79,19 +86,20 @@ void hyperx_apply(HyperxState *state, const guint8 *packet);
 /* How a new Pulsefire Haste 2 Wireless is set, for a dry run without one. */
 void hyperx_sample(HyperxState *state);
 
-/* These ask the receiver on `node` (/dev/hidrawN) and wait for the mouse:
- * they block, so run them in a worker thread. They take turns, as the
- * mouse drops packets that come too fast. A sleeping mouse doesn't answer;
- * its receiver says so, and then nothing is sent to it, since the receiver
- * would keep it for the mouse until it wakes. */
+/* These ask the receiver on `node` (/dev/hidrawN), or the mouse itself on
+ * its cable, and wait for the mouse: they block, so run them in a worker
+ * thread. They take turns, as the mouse drops packets that come too fast.
+ * A sleeping mouse doesn't answer; its receiver says so, and then nothing
+ * is sent to it, since the receiver would keep it for the mouse until it
+ * wakes. `model` is the device's on `node`. */
 gboolean hyperx_battery(const char *node, int *level, gboolean *charging, GError **error);
 /* The live profile. G_IO_ERROR_NOT_CONNECTED while the mouse sleeps. */
-gboolean hyperx_read(const char *node, HyperxState *state, GError **error);
+gboolean hyperx_read(const char *node, const HyperxModel *model, HyperxState *state, GError **error);
 /* Writes what `want` changes from `base` (as hyperx_merge) live and to the
  * mouse's memory, then reads the live profile back into `state` and checks
  * that it holds the change. */
-gboolean hyperx_write(const char *node, const MouseSettings *base, const MouseSettings *want, HyperxState *state,
-                      GError **error);
+gboolean hyperx_write(const char *node, const HyperxModel *model, const MouseSettings *base,
+                      const MouseSettings *want, HyperxState *state, GError **error);
 
 /* The udev rules that let the person at the screen open that interface,
  * and nothing else of these devices. */
