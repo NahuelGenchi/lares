@@ -1421,11 +1421,15 @@ static uint32_t ibss_cell(struct setup *s, const uint32_t *freqs, size_t nfreqs)
         cell = s->ifname;
         idx = s->ifindex;
     }
-    /* A cell on another address still lets the monitor hear everything,
-     * only unACKed, so a driver that refuses gets a warning, as in owly. */
+    /* The cell ACKs the phone's frames only on the AWDL address. owly only
+     * warns here, since its cell keeps the card's own address, which is
+     * its AWDL address; ours is random per session, so a cell on any other
+     * would leave the phone unanswered: say so rather than run unheard. */
     int r = link_set_mac(idx, s->addr);
-    if (r < 0)
-        awdl_log("couldn't give %s the AWDL address, so it won't ACK the phone: %s", cell, strerror(-r));
+    if (r < 0) {
+        set_err(s->err, s->errlen, "Couldn't give %s the AWDL address: %s", cell, strerror(-r));
+        return 0;
+    }
     /* IP runs on awdl0. Left alone, the kernel and avahi take the cell for
      * a network too and send plain IPv6 on AWDL's BSSID. */
     ipv6_conf_set(cell, "disable_ipv6", "1");
