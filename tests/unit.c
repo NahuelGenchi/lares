@@ -659,13 +659,50 @@ static void test_hidpp_allowed(void)
     g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, effect, 12));
     g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 1, NULL, 0));
 
-    /* NV settings (the startup and shutdown effects), several LEDs at once,
-     * power modes, the onboard mode or profile, firmware updates, resets,
-     * hidden features and unknown features are refused. */
-    const guint8 nv[] = { 0x01, 0x00, 0x01, 0x02 };
+    /* The NV config of the startup (0001) and shutdown (0040) effects: read,
+     * and set on or off with two colours, as G HUB sent them (issue #68). */
+    const guint8 nv_get[] = { 0x00, 0x00, 0x01 }, nv_get_off[] = { 0x00, 0x00, 0x40 };
+    guint8 nv[] = { 0x01, 0x00, 0x40, 0x01, 0xfe, 0x83, 0x85, 0xcb, 0xe8, 0xce };
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv_get, sizeof nv_get));
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv_get_off, sizeof nv_get_off));
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    nv[3] = 0x02;
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    nv[2] = 0x01;
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    /* Never another cap, such as 0020, which G HUB reads, a state other than
+     * on or off, another operation, or a request cut short or too long. */
+    const guint8 nv_other[] = { 0x00, 0x00, 0x20 }, nv_high[] = { 0x00, 0x01, 0x01 };
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv_other, sizeof nv_other));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv_high, sizeof nv_high));
+    nv[2] = 0x20;
     g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    nv[2] = 0x01;
+    nv[3] = 0x03;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    nv[3] = 0x00;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    nv[3] = 0x01;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, 4));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, 9));
+    nv[0] = 0x02;
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv, sizeof nv));
+    const guint8 nv_long[] = { 0x00, 0x00, 0x01, 0x00 }, nv_set_long[11] = { 0x01, 0x00, 0x01, 0x01 };
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv_long, sizeof nv_long));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv_set_long, sizeof nv_set_long));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, nv_get, 2));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, NULL, 0));
+
+    /* The power-mode timers G HUB sets under software control aren't
+     * needed: the keyboard goes idle at its profile's dim time anyway, and a
+     * set wakes it again (issue #68). Neither read nor set is sent. */
+    const guint8 power_get[] = { 0x00 }, power[] = { 0x01, 0x00, 0x00, 0x00, 0x3c, 0x01, 0x2c };
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 7, power_get, sizeof power_get));
+    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 7, power, sizeof power));
+
+    /* Several LEDs at once, the onboard mode or profile, firmware updates,
+     * resets, hidden features and unknown features are refused. */
     g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 2, NULL, 0));
-    g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 7, get, sizeof get));
     g_assert_false(hidpp_allowed(HIDPP_RGB_EFFECTS, 8, get, sizeof get));
     g_assert_false(hidpp_allowed(HIDPP_PROFILES, 1, NULL, 0));
     g_assert_false(hidpp_allowed(HIDPP_PROFILES, 3, NULL, 0));
@@ -928,6 +965,121 @@ static void test_hidpp_profile_write(void)
     g_assert_false(hidpp_profile_lit(k.profile, size, &other, lit));
 }
 
+/* The startup and shutdown effects as the G715 answered them, and the
+ * requests that turn them on or off: only the on/off byte changes, and a
+ * shutdown effect never set gets the colours G HUB gave it (issue #68). */
+static void test_hidpp_nv(void)
+{
+    const guint8 startup[16] = { 0x00, 0x00, 0x01, 0x01, 0xff, 0x8d, 0xaa, 0x8b, 0xe4, 0xe9 };
+    HidppNv nv;
+    g_assert_true(hidpp_nv_decode(HIDPP_NV_STARTUP, startup, sizeof startup, &nv));
+    g_assert_true(nv.known);
+    g_assert_true(nv.on);
+    g_assert_cmpmem(nv.colours, HIDPP_NV_COLOURS, startup + 4, HIDPP_NV_COLOURS);
+    guint8 set[HIDPP_NV_LEN];
+    const guint8 off[HIDPP_NV_LEN] = { 0x01, 0x00, 0x01, 0x02, 0xff, 0x8d, 0xaa, 0x8b, 0xe4, 0xe9 };
+    hidpp_nv_encode(HIDPP_NV_STARTUP, FALSE, &nv, set);
+    g_assert_cmpmem(set, sizeof set, off, sizeof off);
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 3, set, sizeof set));
+    hidpp_nv_encode(HIDPP_NV_STARTUP, TRUE, &nv, set);
+    g_assert_cmphex(set[3], ==, 0x01);
+    g_assert_cmpmem(set + 4, HIDPP_NV_COLOURS, startup + 4, HIDPP_NV_COLOURS);
+
+    /* Off, as G HUB left it, then on again with its colours. */
+    const guint8 shutdown[] = { 0x00, 0x00, 0x40, 0x02, 0xfe, 0x83, 0x85, 0xcb, 0xe8, 0xce };
+    const guint8 ghub_on[HIDPP_NV_LEN] = { 0x01, 0x00, 0x40, 0x01, 0xfe, 0x83, 0x85, 0xcb, 0xe8, 0xce };
+    g_assert_true(hidpp_nv_decode(HIDPP_NV_SHUTDOWN, shutdown, sizeof shutdown, &nv));
+    g_assert_false(nv.on);
+    hidpp_nv_encode(HIDPP_NV_SHUTDOWN, TRUE, &nv, set);
+    g_assert_cmpmem(set, sizeof set, ghub_on, sizeof ghub_on);
+    HidppNv never = { .known = TRUE };
+    hidpp_nv_encode(HIDPP_NV_SHUTDOWN, TRUE, &never, set);
+    g_assert_cmpmem(set, sizeof set, ghub_on, sizeof ghub_on);
+    hidpp_nv_encode(HIDPP_NV_STARTUP, TRUE, &never, set);
+    g_assert_cmpmem(set + 4, HIDPP_NV_COLOURS, startup + 4, HIDPP_NV_COLOURS);
+
+    /* Another cap's answer, a state that isn't on or off, a set's answer
+     * and a short one aren't the effect. */
+    g_assert_false(hidpp_nv_decode(HIDPP_NV_SHUTDOWN, startup, sizeof startup, &nv));
+    g_assert_false(nv.known);
+    guint8 odd[sizeof shutdown];
+    memcpy(odd, shutdown, sizeof odd);
+    odd[3] = 0x00;
+    g_assert_false(hidpp_nv_decode(HIDPP_NV_SHUTDOWN, odd, sizeof odd, &nv));
+    odd[3] = 0x01;
+    odd[0] = 0x01;
+    g_assert_false(hidpp_nv_decode(HIDPP_NV_SHUTDOWN, odd, sizeof odd, &nv));
+    g_assert_false(hidpp_nv_decode(HIDPP_NV_SHUTDOWN, shutdown, 9, &nv));
+}
+
+/* The profile's timers, seconds little-endian at 0x1c and 0x1e: only they
+ * and the CRC change, and the factory times bring back the factory sector
+ * byte for byte. */
+static void test_hidpp_timers(void)
+{
+    HidppKeyboard k;
+    hidpp_sample(&k);
+    g_assert_cmpint(k.dim_s, ==, 60);
+    g_assert_cmpint(k.off_s, ==, 300);
+    const gsize size = k.profile_size;
+    guint8 timed[HIDPP_SECTOR_MAX], again[HIDPP_SECTOR_MAX];
+    g_assert_true(hidpp_profile_timed(k.profile, size, 120, 900, timed));
+    g_assert_true(hidpp_sector_valid(timed, size));
+    const guint8 times[] = { 0x78, 0x00, 0x84, 0x03 };
+    g_assert_cmpmem(timed + 0x1c, sizeof times, times, sizeof times);
+    for (gsize i = 0; i < size - 2; i++)
+        if (i < 0x1c || i >= 0x20) g_assert_cmphex(timed[i], ==, k.profile[i]);
+    HidppKeyboard r = { 0 };
+    hidpp_decode_profile(timed, size, &r);
+    g_assert_cmpint(r.dim_s, ==, 120);
+    g_assert_cmpint(r.off_s, ==, 900);
+    g_assert_cmpint(r.light.effect, ==, KEY_LIGHT_OWN);
+    g_assert_true(hidpp_profile_timed(timed, size, 60, 300, again));
+    g_assert_cmpmem(again, size, k.profile, size);
+    g_assert_cmphex(again[size - 2] << 8 | again[size - 1], ==, 0xa9f7);
+    g_assert_true(hidpp_profile_timed(k.profile, size, 1, HIDPP_TIMER_MAX, timed));
+
+    /* Never at once, past an hour, on a sector whose CRC fails, or on one
+     * too short to hold them. */
+    g_assert_false(hidpp_profile_timed(k.profile, size, 0, 300, timed));
+    g_assert_false(hidpp_profile_timed(k.profile, size, 60, 0, timed));
+    g_assert_false(hidpp_profile_timed(k.profile, size, 60, HIDPP_TIMER_MAX + 1, timed));
+    g_assert_false(hidpp_profile_timed(k.profile, size, -1, 300, timed));
+    guint8 bad[HIDPP_SECTOR_MAX];
+    memcpy(bad, k.profile, size);
+    bad[0x1c] ^= 1;
+    g_assert_false(hidpp_profile_timed(bad, size, 60, 300, timed));
+    g_assert_false(hidpp_profile_timed(k.profile, 16, 60, 300, timed));
+
+    /* Under software control the helper turns the lights off itself, the
+     * profile's lights-off time after its dim time: at once when that's
+     * sooner, never for times Lares doesn't set. */
+    g_assert_cmpint(hidpp_dark_after(60, 300), ==, 240);
+    g_assert_cmpint(hidpp_dark_after(30, 60), ==, 30);
+    g_assert_cmpint(hidpp_dark_after(300, 60), ==, 0);
+    g_assert_cmpint(hidpp_dark_after(60, 60), ==, 0);
+    g_assert_cmpint(hidpp_dark_after(0, 300), ==, -1);
+    g_assert_cmpint(hidpp_dark_after(60, 0), ==, -1);
+    g_assert_cmpint(hidpp_dark_after(60, HIDPP_TIMER_MAX + 1), ==, -1);
+    g_assert_cmpint(hidpp_dark_after(0xffff, 300), ==, -1);
+
+    /* As the Keyboard section sees them, with the effects as the G715 came. */
+    KeyboardSettings s;
+    hidpp_decode(&k, NULL, &s);
+    g_assert_true(s.has_timers);
+    g_assert_cmpint(s.dim_s, ==, 60);
+    g_assert_cmpint(s.off_s, ==, 300);
+    g_assert_true(s.has_startup);
+    g_assert_true(s.startup);
+    g_assert_true(s.has_shutdown);
+    g_assert_false(s.shutdown);
+    HidppKeyboard none = { 0 };
+    hidpp_decode(&none, NULL, &s);
+    g_assert_false(s.has_timers);
+    g_assert_false(s.has_startup);
+    g_assert_false(s.has_shutdown);
+}
+
 /* A live keyboard lighting keeps the helper running, unless it may not run. */
 static void test_live_needs_helper(void)
 {
@@ -1160,6 +1312,8 @@ int main(int argc, char **argv)
     g_test_add_func("/devices/hidpp-effects", test_hidpp_effects);
     g_test_add_func("/devices/hidpp-slots", test_hidpp_slots);
     g_test_add_func("/devices/hidpp-profile-write", test_hidpp_profile_write);
+    g_test_add_func("/devices/hidpp-nv", test_hidpp_nv);
+    g_test_add_func("/devices/hidpp-timers", test_hidpp_timers);
     g_test_add_func("/devices/hidpp-keyboard", test_hidpp_keyboard);
     g_test_add_func("/devices/live-needs-helper", test_live_needs_helper);
     g_test_add_func("/picture/map-parse", test_map_parse);

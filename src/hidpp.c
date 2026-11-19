@@ -12,11 +12,12 @@
  * Written from the behaviour Logitech documents for HID++ 2.0 and what
  * issue #23 found on a real G715; libratbag (MIT) and Solaar (GPL-2.0 or
  * later) were read for the onboard profiles' layout and the effects'
- * parameters, and no code is taken from either. Lares never takes the
- * lighting into software control: the keyboard would then stop dimming
- * itself, and Lares would have to keep running to do it. It changes the
- * lighting the onboard profile holds instead, which the keyboard keeps and
- * plays by itself (issue #57). */
+ * parameters, and no code is taken from either. The window changes what
+ * the onboard profile holds, which the keyboard keeps and plays by itself:
+ * the lighting it can keep, and its dim and lights-off timers (issues #57
+ * and #68). It also turns the startup and shutdown effects on or off. The
+ * helper plays the lighting the profile can't keep, under software control
+ * as Logitech G HUB does, and dims and darkens it itself. */
 #include "hidpp.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -35,6 +36,7 @@
 #define BRIGHTNESS_LIGHT 3   /* getIllumination */
 #define RGB_INFO         0   /* <group or ff> <effect or ff> 00 -> what it has */
 #define RGB_SET_EFFECT   1   /* SetEffectByIndex: <group> <index> <10 parameters> <01> */
+#define RGB_NV_CONFIG    3   /* 00 <cap:2> gets <on or off> <colours>; 01 <cap:2> <on or off> <colours> sets them */
 #define RGB_SW_CONTROL   5   /* 00 gets <sub-op> <mode> <flags>; 01 sets mode 3 (software) or 0 (the firmware's own) */
 #define PROFILES_INFO    0   /* [7..8] the sector size */
 #define PROFILES_MODE    2   /* 1 onboard, 2 host: an app sends the settings */
@@ -45,6 +47,11 @@
 #define PROFILES_END     8   /* memoryWriteEnd: the keyboard checks the CRC and stores it */
 #define KEYS_SLOT        0xd0 /* the keys' lighting while in use */
 #define SAVING_SLOT      0xe6 /* and once they dim after a minute alone */
+#define TIMERS_AT        0x1c /* the seconds before the lights dim, then before they go off, little-endian */
+#define NV_GET           0x00
+#define NV_SET           0x01
+#define NV_ON            0x01
+#define NV_OFF           0x02
 
 /* Effects by their ID. Colour cycle, wave and ripple each have an older ID
  * and the one the G715 lists, which adds a saturation; Lares writes the
@@ -78,7 +85,16 @@ enum {
  * goes on playing its own effect (issue #68). */
 #define SW_FIRMWARE   0
 #define SW_SOFTWARE   3
-static const guint8 SW_FLAGS[] = { [HIDPP_LIVE_TAKE] = 6, [HIDPP_LIVE_IDLE] = 3, [HIDPP_LIVE_ACTIVE] = 5 };
+static const guint8 SW_FLAGS[] = {
+    [HIDPP_LIVE_TAKE] = 6, [HIDPP_LIVE_IDLE] = 3, [HIDPP_LIVE_ACTIVE] = 5,
+    [HIDPP_LIVE_DARK] = 3,   /* still idle, which answers its idle event, so its next key says it's used again */
+};
+
+/* The colours of the G715's startup effect as it comes, and those Logitech
+ * G HUB gave its shutdown effect, which it had never had (issue #68): for an
+ * effect turned on that has none. */
+static const guint8 STARTUP_COLOURS[HIDPP_NV_COLOURS] = { 0xff, 0x8d, 0xaa, 0x8b, 0xe4, 0xe9 };
+static const guint8 SHUTDOWN_COLOURS[HIDPP_NV_COLOURS] = { 0xfe, 0x83, 0x85, 0xcb, 0xe8, 0xce };
 
 #define CONNECTION       0x41 /* a receiver's notice that a device's link came up or went down */
 #define LINK_DOWN        0x40 /* in its flags */
@@ -223,6 +239,17 @@ static gboolean sw_control(const guint8 *p, gsize n)
     return FALSE;
 }
 
+/* The startup or shutdown effect's NV config, read, or set on or off with
+ * its colours: never another cap. */
+static gboolean nv_config(const guint8 *p, gsize n)
+{
+    if (n < 3) return FALSE;
+    guint cap = p[1] << 8 | p[2];
+    if (cap != HIDPP_NV_STARTUP && cap != HIDPP_NV_SHUTDOWN) return FALSE;
+    if (p[0] == NV_GET) return n == 3;
+    return p[0] == NV_SET && n == HIDPP_NV_LEN && (p[3] == NV_ON || p[3] == NV_OFF);
+}
+
 static const struct {
     guint16 feature;
     guint8 function;
@@ -236,6 +263,7 @@ static const struct {
     { HIDPP_BRIGHTNESS, BRIGHTNESS_LIGHT, NULL },
     { HIDPP_RGB_EFFECTS, RGB_INFO, NULL },
     { HIDPP_RGB_EFFECTS, RGB_SET_EFFECT, one_group },
+    { HIDPP_RGB_EFFECTS, RGB_NV_CONFIG, nv_config },
     { HIDPP_RGB_EFFECTS, RGB_SW_CONTROL, sw_control },
     { HIDPP_PROFILES, PROFILES_INFO, NULL },
     { HIDPP_PROFILES, PROFILES_MODE, NULL },
@@ -396,6 +424,51 @@ gboolean hidpp_profile_lit(const guint8 *sector, gsize size, const HidppLighting
     return TRUE;
 }
 
+static guint get_le16(const guint8 *at)
+{
+    return at[0] | at[1] << 8;
+}
+
+gboolean hidpp_profile_timed(const guint8 *sector, gsize size, int dim_s, int off_s, guint8 *out)
+{
+    if (size > HIDPP_SECTOR_MAX || size < TIMERS_AT + 4 + 2 || !hidpp_sector_valid(sector, size)
+        || dim_s < 1 || dim_s > HIDPP_TIMER_MAX || off_s < 1 || off_s > HIDPP_TIMER_MAX)
+        return FALSE;
+    memmove(out, sector, size);
+    const guint8 times[] = { dim_s & 0xff, dim_s >> 8, off_s & 0xff, off_s >> 8 };
+    memcpy(out + TIMERS_AT, times, sizeof times);
+    put16(out + size - 2, hidpp_crc(out, size - 2));
+    return TRUE;
+}
+
+int hidpp_dark_after(int dim_s, int off_s)
+{
+    if (dim_s < 1 || dim_s > HIDPP_TIMER_MAX || off_s < 1 || off_s > HIDPP_TIMER_MAX) return -1;
+    return MAX(off_s - dim_s, 0);
+}
+
+gboolean hidpp_nv_decode(guint16 cap, const guint8 *a, gsize n, HidppNv *out)
+{
+    memset(out, 0, sizeof *out);
+    if (n < 4 + HIDPP_NV_COLOURS || a[0] != NV_GET || (a[1] << 8 | a[2]) != cap || (a[3] != NV_ON && a[3] != NV_OFF))
+        return FALSE;
+    out->known = TRUE;
+    out->on = a[3] == NV_ON;
+    memcpy(out->colours, a + 4, HIDPP_NV_COLOURS);
+    return TRUE;
+}
+
+void hidpp_nv_encode(guint16 cap, gboolean on, const HidppNv *was, guint8 out[HIDPP_NV_LEN])
+{
+    static const guint8 none[HIDPP_NV_COLOURS] = { 0 };
+    const guint8 *colours = was->known && memcmp(was->colours, none, sizeof none) != 0 ? was->colours
+                          : cap == HIDPP_NV_STARTUP ? STARTUP_COLOURS : SHUTDOWN_COLOURS;
+    out[0] = NV_SET;
+    put16(out + 1, cap);
+    out[3] = on ? NV_ON : NV_OFF;
+    memcpy(out + 4, colours, HIDPP_NV_COLOURS);
+}
+
 int hidpp_effect_index(const HidppEffects *fx, int cluster, guint16 id)
 {
     if (cluster < 0 || cluster >= fx->clusters) return -1;
@@ -424,6 +497,8 @@ void hidpp_decode_profile(const guint8 *sector, gsize size, HidppKeyboard *out)
     memcpy(out->profile, sector, size);
     out->profile_size = size;
     hidpp_slot_decode(sector + slot, &out->light);
+    out->dim_s = (int)get_le16(sector + TIMERS_AT);
+    out->off_s = (int)get_le16(sector + TIMERS_AT + 2);
 }
 
 static int percent_of(const HidppKeyboard *k, int value)
@@ -447,6 +522,13 @@ void hidpp_decode(const HidppKeyboard *k, const HidppModel *model, KeyboardSetti
     out->app_controls = k->app_controls;
     out->light = k->has_profile ? k->light.effect : KEY_LIGHT_OWN;
     memcpy(out->rgb, k->light.rgb, 3);
+    out->has_timers = k->has_profile;
+    out->dim_s = k->dim_s;
+    out->off_s = k->off_s;
+    out->has_startup = k->startup.known;
+    out->startup = k->startup.on;
+    out->has_shutdown = k->shutdown.known;
+    out->shutdown = k->shutdown.on;
 }
 
 int hidpp_brightness_value(const HidppKeyboard *k, int percent)
@@ -456,8 +538,8 @@ int hidpp_brightness_value(const HidppKeyboard *k, int percent)
 }
 
 /* The G715's factory profile, as its ROM holds it (issue #23): 1000 Hz,
- * F1 to F12 as themselves, lights dimmed after 60 s and off after 300 s,
- * and its own effect on the keys. */
+ * F1 to F12 as themselves, lights dimmed after 60 s and off after 300 s
+ * (0x1c and 0x1e), and its own effect on the keys. */
 static const guint8 G715_PROFILE[255] = {
     0x01, 0x01, 0x00, 0x90, 0x01, 0x20, 0x03, 0x40, 0x06, 0x80, 0x0c, 0x00, 0x00, 0xff, 0xff, 0xff,
     0xff, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3c, 0x00, 0x2c, 0x01,
@@ -477,6 +559,10 @@ void hidpp_sample(HidppKeyboard *out)
     hidpp_decode_brightness(info, now, out);
     out->sector = 0x0001;
     hidpp_decode_profile(G715_PROFILE, sizeof G715_PROFILE, out);
+    /* Its startup effect on, and no shutdown effect ever set, which reads as off. */
+    out->startup = (HidppNv){ .known = TRUE, .on = TRUE };
+    memcpy(out->startup.colours, STARTUP_COLOURS, HIDPP_NV_COLOURS);
+    out->shutdown = (HidppNv){ .known = TRUE };
     out->status_index = 0x04;
     out->rgb_index = 0x08;
     out->brightness_index = 0x0f;
@@ -528,6 +614,7 @@ gboolean hidpp_event(const guint8 *r, gsize len, guint8 index, const HidppKeyboa
 typedef struct {
     int fd;
     guint8 index, sw;
+    guint8 refused;   /* the error code of the last request the device refused */
 } Link;
 
 static gboolean fail(GError **error, int code, const char *message)
@@ -579,6 +666,7 @@ static gboolean call_for(Link *l, int ms, guint16 feature, guint8 feature_index,
             memcpy(out, r + 4, MIN((gsize)got - 4, (gsize)HIDPP_PARAMS));
             return TRUE;
         case HIDPP_ERROR:
+            l->refused = r[5];
             g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, "It refused the request (error %d).", r[5]);
             return FALSE;
         case HIDPP_RECEIVER_ERROR:
@@ -631,6 +719,29 @@ static gboolean read_profile(Link *l, guint8 fi, HidppKeyboard *out, GError **er
     return TRUE;
 }
 
+/* A startup or shutdown effect. One never set is refused with error 1,
+ * HID++'s "unknown": it's off. Another refusal means the keyboard hasn't it. */
+#define NEVER_SET 1
+static gboolean read_nv(Link *l, guint8 fi, guint16 cap, HidppNv *out, GError **error)
+{
+    const guint8 get[] = { NV_GET, cap >> 8, cap & 0xff };
+    guint8 a[HIDPP_PARAMS];
+    GError *e = NULL;
+    memset(out, 0, sizeof *out);
+    l->refused = 0;
+    if (call(l, HIDPP_RGB_EFFECTS, fi, RGB_NV_CONFIG, get, sizeof get, a, &e)) {
+        hidpp_nv_decode(cap, a, sizeof a, out);
+        return TRUE;
+    }
+    if (!g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED)) {
+        g_propagate_error(error, e);
+        return FALSE;
+    }
+    out->known = l->refused == NEVER_SET;
+    g_error_free(e);
+    return TRUE;
+}
+
 static gboolean read_all(Link *l, HidppKeyboard *out, GError **error)
 {
     guint8 bi, pi, ri, info[HIDPP_PARAMS], now[HIDPP_PARAMS];
@@ -655,6 +766,9 @@ static gboolean read_all(Link *l, HidppKeyboard *out, GError **error)
         guint8 a[HIDPP_PARAMS];
         if (!call(l, HIDPP_RGB_EFFECTS, ri, RGB_SW_CONTROL, get, sizeof get, a, error)) return FALSE;
         if (a[1] != 0) out->app_controls = TRUE;
+        if (!read_nv(l, ri, HIDPP_NV_STARTUP, &out->startup, error)
+            || !read_nv(l, ri, HIDPP_NV_SHUTDOWN, &out->shutdown, error))
+            return FALSE;
     }
     return TRUE;
 }
@@ -721,34 +835,61 @@ static gboolean write_profile(Link *l, guint8 fi, guint16 sector, const guint8 *
     return call_for(l, SAVED_MS, HIDPP_PROFILES, fi, PROFILES_END, NULL, 0, a, error);
 }
 
-static gboolean set_lighting(Link *l, const HidppLighting *want, HidppKeyboard *out, GError **error)
+/* The profile with what `c` asks of it, in `out`; FALSE when it can't
+ * hold that. */
+static gboolean profile_changed(const HidppKeyboard *k, const HidppChange *c, guint8 *out)
+{
+    memcpy(out, k->profile, k->profile_size);
+    if (c->light && !hidpp_profile_lit(out, k->profile_size, c->light, out)) return FALSE;
+    if (c->dim_s < 0 && c->off_s < 0) return TRUE;
+    return hidpp_profile_timed(out, k->profile_size, c->dim_s < 0 ? k->dim_s : c->dim_s,
+                               c->off_s < 0 ? k->off_s : c->off_s, out);
+}
+
+static gboolean set_nv(Link *l, guint8 fi, guint16 cap, const HidppNv *now, int want, GError **error)
+{
+    if (want < 0 || (now->known && now->on == want)) return TRUE;
+    if (!now->known) return fail(error, G_IO_ERROR_NOT_SUPPORTED, "It has no such effect.");
+    guint8 set[HIDPP_NV_LEN], a[HIDPP_PARAMS];
+    hidpp_nv_encode(cap, want, now, set);
+    return call(l, HIDPP_RGB_EFFECTS, fi, RGB_NV_CONFIG, set, sizeof set, a, error);
+}
+
+static gboolean change(Link *l, const HidppChange *c, HidppKeyboard *out, GError **error)
 {
     HidppKeyboard k;
-    guint8 sector[HIDPP_SECTOR_MAX];
     if (!read_all(l, &k, error)) return FALSE;
-    if (!k.profiles_index || !k.has_profile || !hidpp_profile_lit(k.profile, k.profile_size, want, sector))
-        return fail(error, G_IO_ERROR_NOT_SUPPORTED, "Its lighting can't be changed.");
-    if (k.sector != HIDPP_SECTOR)
-        return fail(error, G_IO_ERROR_NOT_SUPPORTED, "It's using a profile Lares doesn't change.");
-    if (memcmp(sector, k.profile, k.profile_size) != 0) {
-        if (!write_profile(l, k.profiles_index, k.sector, sector, k.profile_size, error) || !read_all(l, &k, error))
-            return FALSE;
-        if (!k.has_profile || memcmp(k.profile, sector, k.profile_size) != 0)
-            return fail(error, G_IO_ERROR_FAILED, "It didn't keep the new lighting.");
+    gboolean profile = c->light || c->dim_s >= 0 || c->off_s >= 0;
+    guint8 sector[HIDPP_SECTOR_MAX];
+    if (profile) {
+        if (!k.profiles_index || !k.has_profile || !profile_changed(&k, c, sector))
+            return fail(error, G_IO_ERROR_NOT_SUPPORTED, "Its profile can't be changed.");
+        if (k.sector != HIDPP_SECTOR)
+            return fail(error, G_IO_ERROR_NOT_SUPPORTED, "It's using a profile Lares doesn't change.");
+        profile = memcmp(sector, k.profile, k.profile_size) != 0;
+        if (profile && !write_profile(l, k.profiles_index, k.sector, sector, k.profile_size, error)) return FALSE;
     }
+    if (!set_nv(l, k.rgb_index, HIDPP_NV_STARTUP, &k.startup, c->startup, error)
+        || !set_nv(l, k.rgb_index, HIDPP_NV_SHUTDOWN, &k.shutdown, c->shutdown, error))
+        return FALSE;
+    gsize size = k.profile_size;
+    if (!read_all(l, &k, error)) return FALSE;
+    if (profile && (!k.has_profile || memcmp(k.profile, sector, size) != 0))
+        return fail(error, G_IO_ERROR_FAILED, "It didn't keep the change.");
+    if ((c->startup >= 0 && k.startup.on != c->startup) || (c->shutdown >= 0 && k.shutdown.on != c->shutdown))
+        return fail(error, G_IO_ERROR_FAILED, "It didn't keep the change.");
     *out = k;
     return TRUE;
 }
 
-gboolean hidpp_set_lighting(const char *node, guint8 index, const HidppLighting *l, HidppKeyboard *out,
-                            GError **error)
+gboolean hidpp_change(const char *node, guint8 index, const HidppChange *c, HidppKeyboard *out, GError **error)
 {
     Link link;
     HidppKeyboard k;
     g_mutex_lock(&turns);
     gboolean ok = link_open(&link, node, index, HIDPP_SW_ID, error);
     if (ok) {
-        ok = set_lighting(&link, l, &k, error);
+        ok = change(&link, c, &k, error);
         close(link.fd);
     }
     g_mutex_unlock(&turns);
@@ -791,8 +932,9 @@ static gboolean sw_set(Link *l, const HidppEffects *fx, guint8 mode, guint8 flag
 static gboolean live_play(Link *l, const HidppEffects *fx, const HidppLighting *light, HidppLive state,
                           GError **error)
 {
+    static const HidppLighting dark = { KEY_LIGHT_OFF, { 0 } };
     guint8 params[10];
-    int id = hidpp_effect(light, state == HIDPP_LIVE_IDLE, params);
+    int id = hidpp_effect(state == HIDPP_LIVE_DARK ? &dark : light, state == HIDPP_LIVE_IDLE, params);
     if (id < 0 || hidpp_kept(light->effect)) return fail(error, G_IO_ERROR_INVALID_ARGUMENT, "Lares doesn't play that live.");
     if ((state == HIDPP_LIVE_TAKE && !sw_set(l, fx, SW_FIRMWARE, SW_FLAGS[state], error))
         || !sw_set(l, fx, SW_SOFTWARE, SW_FLAGS[state], error))
@@ -833,6 +975,33 @@ gboolean hidpp_live_effects(const char *node, guint8 index, HidppEffects *out, G
     HidppEffects fx;
     gboolean ok = with_link(node, index, error, do_effects, &fx);
     if (ok) *out = fx;
+    return ok;
+}
+
+/* The profile in use's timers, from the 16 bytes that hold them: no sector
+ * in use (0) has none. */
+static gboolean read_timers(Link *l, gpointer data, GError **error)
+{
+    int *t = data;
+    guint8 fi, current[HIDPP_PARAMS], chunk[HIDPP_PARAMS];
+    t[0] = t[1] = 0;
+    if (!feature_index(l, HIDPP_PROFILES, &fi, error)) return FALSE;
+    if (!fi) return TRUE;
+    if (!call(l, HIDPP_PROFILES, fi, PROFILES_CURRENT, NULL, 0, current, error)) return FALSE;
+    if (!current[0] && !current[1]) return TRUE;
+    const guint8 where[] = { current[0], current[1], 0x00, TIMERS_AT & 0xf0 };
+    if (!call(l, HIDPP_PROFILES, fi, PROFILES_READ, where, sizeof where, chunk, error)) return FALSE;
+    t[0] = (int)get_le16(chunk + (TIMERS_AT & 0x0f));
+    t[1] = (int)get_le16(chunk + (TIMERS_AT & 0x0f) + 2);
+    return TRUE;
+}
+
+gboolean hidpp_live_timers(const char *node, guint8 index, int *dim_s, int *off_s, GError **error)
+{
+    int t[2];
+    gboolean ok = with_link(node, index, error, read_timers, t);
+    *dim_s = ok ? t[0] : 0;
+    *off_s = ok ? t[1] : 0;
     return ok;
 }
 

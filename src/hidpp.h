@@ -4,7 +4,8 @@
 
 /* Logitech's HID++ 2.0, through a receiver's HID++ interface: what Lares
  * reads and changes on a Logitech keyboard paired to it. Today: the G715's
- * brightness, the lighting its onboard profile keeps, and the lighting the
+ * brightness, the lighting and the dim and lights-off timers its onboard
+ * profile keeps, its startup and shutdown effects, and the lighting the
  * helper plays live, for effects the keyboard can't keep. */
 
 #define HIDPP_SHORT      0x10
@@ -22,6 +23,11 @@
 #define HIDPP_SECTOR     0x0001 /* the one profile sector Lares ever writes */
 #define HIDPP_CLUSTERS   2      /* light groups Lares plays live: the G715's keys and its edge */
 #define HIDPP_EFFECTS    8      /* effects Lares looks up in each group's list */
+/* The RGB effects' NV config Lares changes: whether the keyboard plays its
+ * startup effect, and its shutdown effect. No other cap. */
+#define HIDPP_NV_STARTUP  0x0001
+#define HIDPP_NV_SHUTDOWN 0x0040
+#define HIDPP_NV_COLOURS  6     /* an effect's two colours, which Lares keeps as the keyboard has them */
 
 enum {
     HIDPP_ROOT        = 0x0000,
@@ -58,9 +64,18 @@ typedef struct {
     guint16 effect[HIDPP_CLUSTERS][HIDPP_EFFECTS];
 } HidppEffects;
 
+/* A startup or shutdown effect, as the keyboard keeps it. One never set
+ * reads as off. */
+typedef struct {
+    gboolean known;         /* the keyboard has it */
+    gboolean on;
+    guint8 colours[HIDPP_NV_COLOURS];
+} HidppNv;
+
 /* What the keyboard was last told while the helper plays its lighting:
- * that software takes it, or that the keyboard is idle or in use again. */
-typedef enum { HIDPP_LIVE_TAKE, HIDPP_LIVE_IDLE, HIDPP_LIVE_ACTIVE } HidppLive;
+ * that software takes it, that the keyboard is idle or in use again, or
+ * that its lights are off, once idle past its lights-off time. */
+typedef enum { HIDPP_LIVE_TAKE, HIDPP_LIVE_IDLE, HIDPP_LIVE_ACTIVE, HIDPP_LIVE_DARK } HidppLive;
 
 /* A keyboard's state, as its own answers. */
 typedef struct {
@@ -70,6 +85,8 @@ typedef struct {
     gboolean has_profile;   /* the lighting below comes from its onboard profile */
     gboolean app_controls;  /* an app holds the lighting: the profile isn't what shows */
     HidppLighting light;    /* the keys, while in use */
+    int dim_s, off_s;       /* the profile's seconds without a key before the lights dim, and go off */
+    HidppNv startup, shutdown;
     guint16 sector;         /* the profile in use */
     gsize profile_size;
     guint8 profile[HIDPP_SECTOR_MAX];  /* kept whole, so a change rewrites only its slots */
@@ -110,10 +127,11 @@ char *hidpp_find(guint8 *index, const HidppModel **model);
 
 /* Whether Lares may send function `function` of feature `feature` with
  * these parameters: the reads it needs, setBrightness, a write of the whole
- * profile in HIDPP_SECTOR, and the live lighting: an effect for one light
- * group, and taking the lights into software control or giving them back.
- * Everything else, such as other sectors, firmware updates, resets or the
- * keyboard's test modes, is refused before it's sent. */
+ * profile in HIDPP_SECTOR, the startup and shutdown effects on or off, and
+ * the live lighting: an effect for one light group, and taking the lights
+ * into software control or giving them back. Everything else, such as other
+ * sectors or NV settings, firmware updates, resets or the keyboard's test
+ * modes, is refused before it's sent. */
 gboolean hidpp_allowed(guint16 feature, guint8 function, const guint8 *params, gsize n);
 
 /* Builds a request from software ID `sw` in `out`, short when the
@@ -156,6 +174,27 @@ gboolean hidpp_slot_encode(const HidppLighting *l, gboolean saving, guint8 slot[
  * `sector` isn't a whole profile or the keyboard doesn't keep `l`. */
 gboolean hidpp_profile_lit(const guint8 *sector, gsize size, const HidppLighting *l, guint8 *out);
 
+/* The timers in a profile: seconds without a key before the lights dim,
+ * and before they go off, little-endian at 0x1c and 0x1e. hidpp_profile_timed
+ * puts them in a copy of `sector`, `out`, with its CRC made again; FALSE
+ * when it isn't a whole profile or a time is out of range. */
+#define HIDPP_TIMER_MAX 3600   /* the longest Lares sets, an hour, in seconds */
+gboolean hidpp_profile_timed(const guint8 *sector, gsize size, int dim_s, int off_s, guint8 *out);
+
+/* Under software control the keyboard says it's idle after its dim time,
+ * but never turns its lights off (issue #68): the helper does, this many
+ * seconds after it says so. -1 when the times aren't ones Lares sets. */
+int hidpp_dark_after(int dim_s, int off_s);
+
+/* A startup or shutdown effect from the keyboard's answer to reading cap
+ * `cap`: 00, the cap, 01 on or 02 off, then its two colours. FALSE when it
+ * isn't one. */
+gboolean hidpp_nv_decode(guint16 cap, const guint8 *answer, gsize n, HidppNv *out);
+/* The request that sets it: 01, the cap, on or off, its colours. One never
+ * set takes the colours Logitech G HUB gives it. */
+#define HIDPP_NV_LEN 10
+void hidpp_nv_encode(guint16 cap, gboolean on, const HidppNv *was, guint8 out[HIDPP_NV_LEN]);
+
 /* The index of effect `id` in light group `cluster`'s list, or -1. */
 int hidpp_effect_index(const HidppEffects *fx, int cluster, guint16 id);
 
@@ -188,18 +227,30 @@ void hidpp_sample(HidppKeyboard *out);
 gboolean hidpp_read(const char *node, guint8 index, HidppKeyboard *out, GError **error);
 /* Sets the brightness, then reads it back into `now`. */
 gboolean hidpp_set_brightness(const char *node, guint8 index, int value, int *now, GError **error);
-/* Writes `l` into the onboard profile in use, which must be HIDPP_SECTOR:
- * reads the profile, changes its lighting slots, writes it whole with a new
- * CRC, and reads it back, which fills `out`. Nothing is written when it
- * already holds `l`. */
-gboolean hidpp_set_lighting(const char *node, guint8 index, const HidppLighting *l, HidppKeyboard *out,
-                            GError **error);
+/* What a change asks of the onboard profile and the NV config: the keys'
+ * lighting (NULL keeps it), the timers in seconds and the startup and
+ * shutdown effects, 0 or 1 (-1 keeps each). */
+typedef struct {
+    const HidppLighting *light;
+    int dim_s, off_s;
+    int startup, shutdown;
+} HidppChange;
+
+/* Makes `c`: the lighting and timers go into the onboard profile in use,
+ * which must be HIDPP_SECTOR, read, changed, written whole with a new CRC
+ * and read back; the effects through the NV config, their colours as they
+ * were. Then reads everything back into `out`. Nothing is written that the
+ * keyboard already holds. */
+gboolean hidpp_change(const char *node, guint8 index, const HidppChange *c, HidppKeyboard *out, GError **error);
 
 /* For the helper, with its own software ID. They block too. Reads what the
- * RGB effects feature offers; plays `l` on every light group that has it,
- * under software control, telling the keyboard `state` (dimmed when idle);
- * or gives the lights back to the keyboard, which plays its profile's. */
+ * RGB effects feature offers; reads the dim and lights-off times of the
+ * profile in use (0 when it has none); plays `l` on every light group that
+ * has it, under software control, telling the keyboard `state` (dimmed when
+ * idle, off when dark); or gives the lights back to the keyboard, which
+ * plays its profile's. */
 gboolean hidpp_live_effects(const char *node, guint8 index, HidppEffects *out, GError **error);
+gboolean hidpp_live_timers(const char *node, guint8 index, int *dim_s, int *off_s, GError **error);
 gboolean hidpp_live_play(const char *node, guint8 index, const HidppEffects *fx, const HidppLighting *l,
                          HidppLive state, GError **error);
 gboolean hidpp_live_release(const char *node, guint8 index, const HidppEffects *fx, GError **error);
