@@ -36,7 +36,32 @@
 #define PROFILES_READ    5   /* <sector:2> <offset:2> -> 16 bytes */
 #define KEYS_SLOT        0xd0 /* the keys' lighting while in use; 0xe6 while saving power */
 
+#define CONNECTION       0x41 /* a receiver's notice that a device's link came up or went down */
+#define LINK_DOWN        0x40 /* in its flags */
+#define STATUS_RECONNECT 1    /* wireless device status: it reconnected, and may have lost its settings */
+
 static GMutex turns;   /* one exchange with a receiver at a time */
+
+static const HidppModel MODELS[] = {
+    /* G715, on its Lightspeed receiver, whose HID++ interface is the third */
+    { 0xc547, 0x40a2, 2 },
+};
+
+const HidppModel *hidpp_model(guint16 receiver, guint16 product)
+{
+    for (guint i = 0; i < G_N_ELEMENTS(MODELS); i++)
+        if (MODELS[i].receiver == receiver && MODELS[i].product == product) return &MODELS[i];
+    return NULL;
+}
+
+int hidpp_phys_index(const char *phys)
+{
+    const char *colon = phys ? strrchr(phys, ':') : NULL;
+    if (!colon || !g_ascii_isdigit(colon[1])) return -1;
+    char *end;
+    guint64 n = g_ascii_strtoull(colon + 1, &end, 10);
+    return *end == '\0' && n >= 1 && n <= 6 ? (int)n : -1;   /* a receiver pairs up to six */
+}
 
 /* ------------------------------------------------------------ requests */
 
@@ -125,15 +150,15 @@ void hidpp_slot_decode(const guint8 *slot, HidppLighting *out)
 {
     memset(out, 0, sizeof *out);
     switch (slot[0]) {
-    case 0x00: out->effect = HIDPP_LIGHT_OFF; break;
-    case 0x01: out->effect = HIDPP_LIGHT_SOLID; break;
-    case 0x0a: out->effect = HIDPP_LIGHT_BREATHING; break;
-    case 0x03: case 0x15: out->effect = HIDPP_LIGHT_CYCLE; break;
-    case 0x04: case 0x16: out->effect = HIDPP_LIGHT_WAVE; break;
-    case 0x0b: case 0x17: out->effect = HIDPP_LIGHT_RIPPLE; break;
-    default: out->effect = HIDPP_LIGHT_OWN; return;
+    case 0x00: out->effect = KEY_LIGHT_OFF; break;
+    case 0x01: out->effect = KEY_LIGHT_SOLID; break;
+    case 0x0a: out->effect = KEY_LIGHT_BREATHING; break;
+    case 0x03: case 0x15: out->effect = KEY_LIGHT_CYCLE; break;
+    case 0x04: case 0x16: out->effect = KEY_LIGHT_WAVE; break;
+    case 0x0b: case 0x17: out->effect = KEY_LIGHT_RIPPLE; break;
+    default: out->effect = KEY_LIGHT_OWN; return;
     }
-    if (out->effect == HIDPP_LIGHT_SOLID || out->effect == HIDPP_LIGHT_BREATHING || out->effect == HIDPP_LIGHT_RIPPLE)
+    if (out->effect == KEY_LIGHT_SOLID || out->effect == KEY_LIGHT_BREATHING || out->effect == KEY_LIGHT_RIPPLE)
         memcpy(out->rgb, slot + 1, 3);
 }
 
@@ -159,6 +184,26 @@ void hidpp_decode_profile(const guint8 *sector, gsize size, HidppKeyboard *out)
     hidpp_slot_decode(sector + slot, &out->light);
 }
 
+void hidpp_decode(const HidppKeyboard *k, KeyboardSettings *out)
+{
+    memset(out, 0, sizeof *out);
+    out->has_brightness = k->has_brightness;
+    if (k->has_brightness) {
+        int range = k->brightness_max - k->brightness_min;
+        out->brightness = CLAMP((int)((k->brightness - k->brightness_min) * 100.0 / range + 0.5), 0, 100);
+    }
+    out->has_lighting = k->has_profile;
+    out->app_controls = k->app_controls;
+    out->light = k->has_profile ? k->light.effect : KEY_LIGHT_OWN;
+    memcpy(out->rgb, k->light.rgb, 3);
+}
+
+int hidpp_brightness_value(const HidppKeyboard *k, int percent)
+{
+    int range = k->brightness_max - k->brightness_min;
+    return k->brightness_min + (int)(CLAMP(percent, 0, 100) * range / 100.0 + 0.5);
+}
+
 /* The G715's factory profile, as its ROM holds it (issue #23): 1000 Hz,
  * F1 to F12 as themselves, lights dimmed after 60 s and off after 300 s,
  * and its own effect on the keys. */
@@ -181,6 +226,35 @@ void hidpp_sample(HidppKeyboard *out)
     hidpp_decode_brightness(info, now, out);
     out->sector = 0x0001;
     hidpp_decode_profile(G715_PROFILE, sizeof G715_PROFILE, out);
+    out->status_index = 0x04;
+    out->brightness_index = 0x0f;
+    out->profiles_index = 0x10;
+}
+
+/* ------------------------------------------------------------ events */
+
+gboolean hidpp_event(const guint8 *r, gsize len, guint8 index, const HidppKeyboard *k, HidppEvent *out)
+{
+    if (len < HIDPP_SHORT_LEN || (r[0] != HIDPP_SHORT && r[0] != HIDPP_LONG) || r[1] != index) return FALSE;
+    /* The receiver's own notice, in HID++ 1.0. */
+    if (r[0] == HIDPP_SHORT && r[2] == CONNECTION) {
+        out->kind = HIDPP_LINK;
+        out->linked = !(r[4] & LINK_DOWN);
+        return TRUE;
+    }
+    /* The device's, in HID++ 2.0: software ID 0, which no request uses. */
+    if (r[2] == 0 || r[2] == 0xff || r[2] == 0x8f || (r[3] & 0x0f) != 0) return FALSE;
+    if (k->status_index && r[2] == k->status_index) {
+        if (r[4] != STATUS_RECONNECT) return FALSE;
+        out->kind = HIDPP_LINK;
+        out->linked = TRUE;
+        return TRUE;
+    }
+    if ((k->brightness_index && r[2] == k->brightness_index) || (k->profiles_index && r[2] == k->profiles_index)) {
+        out->kind = HIDPP_CHANGED;
+        return TRUE;
+    }
+    return FALSE;
 }
 
 /* ------------------------------------------------------------ the link */
@@ -289,8 +363,10 @@ static gboolean read_all(Link *l, HidppKeyboard *out, GError **error)
     guint8 bi, pi, ri, info[HIDPP_PARAMS], now[HIDPP_PARAMS];
     memset(out, 0, sizeof *out);
     if (!feature_index(l, HIDPP_BRIGHTNESS, &bi, error) || !feature_index(l, HIDPP_PROFILES, &pi, error)
-        || !feature_index(l, HIDPP_RGB_EFFECTS, &ri, error))
+        || !feature_index(l, HIDPP_RGB_EFFECTS, &ri, error) || !feature_index(l, HIDPP_STATUS, &out->status_index, error))
         return FALSE;
+    out->brightness_index = bi;
+    out->profiles_index = pi;
     if (bi) {
         if (!call(l, HIDPP_BRIGHTNESS, bi, BRIGHTNESS_INFO, NULL, 0, info, error)
             || !call(l, HIDPP_BRIGHTNESS, bi, BRIGHTNESS_GET, NULL, 0, now, error))
@@ -352,4 +428,21 @@ gboolean hidpp_set_brightness(const char *node, guint8 index, int value, int *no
     }
     g_mutex_unlock(&turns);
     return ok;
+}
+
+/* ------------------------------------------------------------ the rules */
+
+char *hidpp_udev_rules(void)
+{
+    GString *s = g_string_new("");
+    for (guint i = 0; i < G_N_ELEMENTS(MODELS); i++) {
+        gboolean seen = FALSE;   /* one rule a receiver */
+        for (guint j = 0; j < i; j++) seen |= MODELS[j].receiver == MODELS[i].receiver;
+        if (seen) continue;
+        g_string_append_printf(s, "SUBSYSTEM==\"hidraw\", ENV{ID_USB_VENDOR_ID}==\"046d\", "
+                               "ENV{ID_USB_MODEL_ID}==\"%04x\", ENV{ID_USB_INTERFACE_NUM}==\"%02d\", "
+                               "DEVPATH==\"*/0003:046D:%04X.\?\?\?\?/hidraw/hidraw*\", TAG+=\"uaccess\"\n",
+                               MODELS[i].receiver, MODELS[i].interface, MODELS[i].receiver);
+    }
+    return g_string_free(s, FALSE);
 }

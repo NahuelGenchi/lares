@@ -1,5 +1,6 @@
 #pragma once
 #include <gio/gio.h>
+#include "devices.h"
 
 /* Logitech's HID++ 2.0, through a receiver's HID++ interface: what Lares
  * reads and changes on a Logitech keyboard paired to it. Today: the G715's
@@ -20,24 +21,22 @@
 enum {
     HIDPP_ROOT        = 0x0000,
     HIDPP_FEATURE_SET = 0x0001,
+    HIDPP_STATUS      = 0x1d4b,   /* wireless device status: it says when it reconnects */
     HIDPP_BRIGHTNESS  = 0x8040,
     HIDPP_RGB_EFFECTS = 0x8071,
     HIDPP_PROFILES    = 0x8100,
 };
 
-/* The lighting a profile slot holds, as Lares names it. */
-typedef enum {
-    HIDPP_LIGHT_OFF,
-    HIDPP_LIGHT_SOLID,
-    HIDPP_LIGHT_BREATHING,
-    HIDPP_LIGHT_CYCLE,
-    HIDPP_LIGHT_WAVE,
-    HIDPP_LIGHT_RIPPLE,
-    HIDPP_LIGHT_OWN,        /* one of the keyboard's own, such as the G715's factory effect */
-} HidppLight;
-
+/* A keyboard Lares knows, by its receiver's USB product and its own
+ * wireless one, both Logitech's. Others wait until one has been tried. */
 typedef struct {
-    HidppLight effect;
+    guint16 receiver, product;
+    int interface;          /* the receiver's HID++ interface */
+} HidppModel;
+
+/* The lighting in a profile slot. */
+typedef struct {
+    KeyLight effect;
     guint8 rgb[3];          /* Solid, Breathing and Ripple */
 } HidppLighting;
 
@@ -52,10 +51,29 @@ typedef struct {
     guint16 sector;         /* the profile in use */
     gsize profile_size;
     guint8 profile[HIDPP_SECTOR_MAX];  /* kept whole, so a change rewrites only its slots */
+    /* Where its features sit, 0 when it hasn't them, to tell its events apart. */
+    guint8 status_index, brightness_index, profiles_index;
 } HidppKeyboard;
 
 /* What an input report is to a request. */
 typedef enum { HIDPP_OTHER, HIDPP_ANSWER, HIDPP_ERROR, HIDPP_RECEIVER_ERROR } HidppMatch;
+
+/* Something a keyboard or its receiver says unasked: the receiver lost or
+ * found it, or it reconnected, or one of its settings changed, such as its
+ * brightness by its own key. */
+typedef enum { HIDPP_LINK, HIDPP_CHANGED } HidppEventKind;
+
+typedef struct {
+    HidppEventKind kind;
+    gboolean linked;        /* HIDPP_LINK: awake, or asleep and off */
+} HidppEvent;
+
+/* The model with this receiver and wireless product, or NULL. */
+const HidppModel *hidpp_model(guint16 receiver, guint16 product);
+
+/* A device's index on its receiver, from the HID_PHYS of its uevent, such
+ * as "usb-0000:00:14.0-8.4/input2:1"; -1 when it has none. */
+int hidpp_phys_index(const char *phys);
 
 /* Whether Lares may send function `function` of feature `feature` with
  * these parameters: the reads it needs, and setBrightness. Everything
@@ -91,6 +109,15 @@ int hidpp_keys_slot(gsize profile_size);
 void hidpp_decode_brightness(const guint8 *info, const guint8 *now, HidppKeyboard *out);
 void hidpp_decode_profile(const guint8 *sector, gsize size, HidppKeyboard *out);
 
+/* `k` in plain units, and back: the brightness value that is `percent`. */
+void hidpp_decode(const HidppKeyboard *k, KeyboardSettings *out);
+int hidpp_brightness_value(const HidppKeyboard *k, int percent);
+
+/* Whether `report` is something the device at `index` behind this receiver
+ * says unasked (`k` holds where its features sit). Answers to anyone's
+ * requests, Lares' or the kernel's, aren't. */
+gboolean hidpp_event(const guint8 *report, gsize len, guint8 index, const HidppKeyboard *k, HidppEvent *out);
+
 /* How a G715 comes, for a dry run without one: its factory profile, at the
  * brightness key's second-lowest step. */
 void hidpp_sample(HidppKeyboard *out);
@@ -101,3 +128,9 @@ void hidpp_sample(HidppKeyboard *out);
 gboolean hidpp_read(const char *node, guint8 index, HidppKeyboard *out, GError **error);
 /* Sets the brightness, then reads it back into `now`. */
 gboolean hidpp_set_brightness(const char *node, guint8 index, int value, int *now, GError **error);
+
+/* The udev rules that let the person at the screen open each known
+ * receiver's HID++ node, and nothing else of it. The keyboard's own node
+ * sits under the receiver's interface too, and carries its keystrokes:
+ * DEVPATH leaves it out. */
+char *hidpp_udev_rules(void);

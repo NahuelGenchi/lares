@@ -2,9 +2,9 @@
  * battery, who made it and how it's connected, and, for Bluetooth ones, a
  * button to connect or disconnect it. AirPods show up in Headphones. A
  * keyboard or mouse plugged in by USB, wired or on its own receiver, has no
- * button, unless its battery needs the person's permission once: then the
- * button allows it. A mouse whose own protocol reports its settings shows
- * them under its details, and changes them. */
+ * button, unless its battery or settings need the person's permission once:
+ * then the button allows it. A mouse or keyboard whose own protocol reports
+ * its settings shows them under its details, and changes them. */
 #include "lares.h"
 
 #define DPI_STEP  100   /* each − or + */
@@ -20,6 +20,8 @@ typedef struct {
     GtkWidget *root, *status, *battery, *battery_text, *connection, *error;
     GtkWidget *waiting;            /* until the mouse's settings are known */
     GtkWidget *dpi, *minus, *plus, *light_slot, *light_note, *colours, *bright, *bright_text;
+    GtkWidget *effect, *effect_swatch, *effect_note;   /* a keyboard's lighting, shown only */
+    guint32 effect_rgb;            /* the swatch's colour, G_MAXUINT32 until it has one */
     GPtrArray *rows;               /* the settings, greyed out while the mouse sleeps */
     GPtrArray *chips;              /* every choice, with its Pick and value */
 } Card;
@@ -33,11 +35,13 @@ typedef struct {
     char *error_id, *error;
     guint update_idle;
     gboolean syncing;    /* the view sets its own controls; their handlers stay out */
-    /* A mouse's settings as the person sets them: shown at once, and
-     * written one change at a time, the latest last. Only what differs
-     * from `base`, what the mouse held when they began, is written. */
+    /* A mouse's or keyboard's settings as the person sets them: shown at
+     * once, and written one change at a time, the latest last. Only what
+     * differs from `base`, what the device held when they began, is
+     * written. A section holds one kind, so one pair is in use. */
     char *want_id;
     MouseSettings base, want;
+    KeyboardSettings key_base, key_want;
     gboolean pending;    /* `want` waits to be written */
     gboolean writing;
     guint settle;
@@ -166,11 +170,22 @@ static gboolean has_colour(LightEffect light)
 }
 
 /* The settings to show: the person's while they're on their way to the
- * mouse, else what the mouse last said. */
+ * device, else what the device last said. */
+static gboolean changing(DeviceView *v, Device *d)
+{
+    return v->want_id && g_str_equal(v->want_id, d->id) && (v->pending || v->writing);
+}
+
 static const MouseSettings *shown(DeviceView *v, Device *d)
 {
-    gboolean mine = v->want_id && g_str_equal(v->want_id, d->id) && (v->pending || v->writing);
-    return mine ? &v->want : d->mouse;
+    if (v->kind != DEV_MOUSE) return NULL;
+    return changing(v, d) ? &v->want : d->mouse;
+}
+
+static const KeyboardSettings *key_shown(DeviceView *v, Device *d)
+{
+    if (v->kind != DEV_KEYBOARD) return NULL;
+    return changing(v, d) ? &v->key_want : d->keyboard;
 }
 
 static void written(gboolean ok, const char *message, gpointer user)
@@ -192,7 +207,8 @@ static void commit(DeviceView *v)
     if (v->writing || !v->pending) return;
     v->pending = FALSE;
     v->writing = TRUE;
-    devices_set_mouse(v->app->devices, v->want_id, &v->base, &v->want, written, v);
+    if (v->kind == DEV_KEYBOARD) devices_set_keyboard(v->app->devices, v->want_id, &v->key_base, &v->key_want, written, v);
+    else devices_set_mouse(v->app->devices, v->want_id, &v->base, &v->want, written, v);
 }
 
 static gboolean settled(gpointer user)
@@ -203,20 +219,34 @@ static gboolean settled(gpointer user)
     return G_SOURCE_REMOVE;
 }
 
-/* The settings a change starts from, for the device a control belongs to. */
-static MouseSettings *wanting(DeviceView *v, GtkWidget *control)
+/* Starts or goes on with a change to the device a control belongs to,
+ * from what it holds; FALSE when it can't be changed now. */
+static gboolean begin(DeviceView *v, GtkWidget *control)
 {
     Device *d = find(v, g_object_get_data(G_OBJECT(control), "device"));
-    if (v->syncing || !d || !shown(v, d)) return NULL;
-    if (!v->want_id || !g_str_equal(v->want_id, d->id) || !(v->pending || v->writing)) {
-        if (v->want_id && !g_str_equal(v->want_id, d->id)) commit(v);  /* another mouse's change goes first */
+    gboolean keys = v->kind == DEV_KEYBOARD;
+    if (v->syncing || !d || (keys ? !key_shown(v, d) : !shown(v, d))) return FALSE;
+    if (!changing(v, d)) {
+        if (v->want_id && !g_str_equal(v->want_id, d->id)) commit(v);  /* another device's change goes first */
         g_free(v->want_id);
         v->want_id = g_strdup(d->id);
-        v->base = v->want = *d->mouse;
+        if (keys) v->key_base = v->key_want = *d->keyboard;
+        else v->base = v->want = *d->mouse;
     }
     set_error(v, NULL, NULL);
     v->pending = TRUE;
-    return &v->want;
+    return TRUE;
+}
+
+/* The settings a change starts from, for the device a control belongs to. */
+static MouseSettings *wanting(DeviceView *v, GtkWidget *control)
+{
+    return begin(v, control) ? &v->want : NULL;
+}
+
+static KeyboardSettings *key_wanting(DeviceView *v, GtkWidget *control)
+{
+    return begin(v, control) ? &v->key_want : NULL;
 }
 
 /* A choice is written at once; steps and drags once they stop. */
@@ -276,6 +306,15 @@ static void on_brightness(LaresMeter *meter, double fraction, gpointer user)
     MouseSettings *m = wanting(v, GTK_WIDGET(meter));
     if (!m) return;
     m->brightness = (int)lround(fraction * 100);
+    changed(v, FALSE);
+}
+
+static void on_key_brightness(LaresMeter *meter, double fraction, gpointer user)
+{
+    DeviceView *v = user;
+    KeyboardSettings *k = key_wanting(v, GTK_WIDGET(meter));
+    if (!k) return;
+    k->brightness = (int)lround(fraction * 100);
     changed(v, FALSE);
 }
 
@@ -359,6 +398,22 @@ static GtkWidget *step_button(DeviceView *v, Card *c, const char *text, int step
     return b;
 }
 
+static void brightness_row(DeviceView *v, Card *c, GtkWidget *card, LaresMeterChanged fn)
+{
+    GtkWidget *head;
+    setting_row(c, card, "Brightness", NULL, &head);
+    c->bright = lares_meter_new(10, 3);
+    lares_meter_set_interactive(LARES_METER(c->bright), fn, v);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(c->bright), GTK_ACCESSIBLE_PROPERTY_LABEL, "Brightness", -1);
+    g_object_set_data_full(G_OBJECT(c->bright), "device", g_strdup(c->id), g_free);
+    c->bright_text = ui_label("", "value");
+    gtk_widget_set_size_request(c->bright_text, 54, -1);
+    gtk_label_set_xalign(GTK_LABEL(c->bright_text), 1);
+    gtk_widget_set_valign(c->bright_text, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(head), c->bright);
+    gtk_box_append(GTK_BOX(head), c->bright_text);
+}
+
 static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseSettings *m)
 {
     GtkWidget *head;
@@ -417,24 +472,40 @@ static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseS
         gtk_accessible_update_property(GTK_ACCESSIBLE(t), GTK_ACCESSIBLE_PROPERTY_LABEL, COLOURS[i].name, -1);
     }
 
-    setting_row(c, card, "Brightness", NULL, &head);
-    c->bright = lares_meter_new(10, 3);
-    lares_meter_set_interactive(LARES_METER(c->bright), on_brightness, v);
-    gtk_accessible_update_property(GTK_ACCESSIBLE(c->bright), GTK_ACCESSIBLE_PROPERTY_LABEL, "Brightness", -1);
-    g_object_set_data_full(G_OBJECT(c->bright), "device", g_strdup(c->id), g_free);
-    c->bright_text = ui_label("", "value");
-    gtk_widget_set_size_request(c->bright_text, 54, -1);
-    gtk_label_set_xalign(GTK_LABEL(c->bright_text), 1);
-    gtk_widget_set_valign(c->bright_text, GTK_ALIGN_CENTER);
-    gtk_box_append(GTK_BOX(head), c->bright);
-    gtk_box_append(GTK_BOX(head), c->bright_text);
+    brightness_row(v, c, card, on_brightness);
+}
+
+/* A keyboard's brightness, which it sets, and its lighting, which shows
+ * here for now: what its onboard profile holds, which it plays by itself. */
+static void build_keys(DeviceView *v, Card *c, GtkWidget *card, const KeyboardSettings *k)
+{
+    if (k->has_brightness) brightness_row(v, c, card, on_key_brightness);
+    if (!k->has_lighting) return;
+    GtkWidget *head;
+    GtkWidget *row = setting_row(c, card, "Lighting", NULL, &head);
+    c->effect_swatch = gtk_drawing_area_new();
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(c->effect_swatch), 18);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(c->effect_swatch), 18);
+    gtk_widget_set_valign(c->effect_swatch, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(head), c->effect_swatch);
+    c->effect = ui_label("", "value");
+    gtk_label_set_xalign(GTK_LABEL(c->effect), 1);
+    gtk_widget_set_valign(c->effect, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(head), c->effect);
+    c->effect_note = ui_paragraph("Another app holds its lighting now, so what shows may differ.", "muted");
+    gtk_box_append(GTK_BOX(row), c->effect_note);
 }
 
 /* -------------------------------------------------------------- cards */
 
+static gboolean locked(Device *d)
+{
+    return d->battery_locked || d->settings_locked;
+}
+
 static gboolean settings_shown(Device *d)
 {
-    return d->connected && d->has_settings && !d->battery_locked;
+    return d->connected && d->has_settings && !locked(d);
 }
 
 /* What a card's widgets are made for. Everything else is updated in place. */
@@ -442,9 +513,12 @@ static char *shape_of(DeviceView *v, Device *d)
 {
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     const MouseSettings *m = settings_shown(d) ? shown(v, d) : NULL;
-    return g_strdup_printf("%s\n%s\n%s\n%d %d %d %d %d %d %d %d %d", d->id, d->name, d->model ? d->model : "",
-                           d->link, d->bluetooth, d->connected, d->connected && d->battery >= 0, d->battery_locked,
-                           busy, d->has_settings, m ? m->stages : -1, m ? m->rate_max : 0);
+    const KeyboardSettings *k = settings_shown(d) ? key_shown(v, d) : NULL;
+    return g_strdup_printf("%s\n%s\n%s\n%d %d %d %d %d %d %d %d %d %d %d %d", d->id, d->name,
+                           d->model ? d->model : "", d->link, d->bluetooth, d->connected,
+                           d->connected && d->battery >= 0, d->battery_locked, d->settings_locked, busy,
+                           d->has_settings, m ? m->stages : -1, m ? m->rate_max : 0,
+                           k ? k->has_brightness : -1, k ? k->has_lighting : -1);
 }
 
 static Card *build_card(DeviceView *v, Device *d)
@@ -454,6 +528,7 @@ static Card *build_card(DeviceView *v, Device *d)
     c->shape = shape_of(v, d);
     c->rows = g_ptr_array_new();
     c->chips = g_ptr_array_new();
+    c->effect_rgb = G_MAXUINT32;
     GtkWidget *card = c->root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     gtk_widget_add_css_class(card, "card");
     gtk_widget_add_css_class(card, "padded");
@@ -488,11 +563,13 @@ static Card *build_card(DeviceView *v, Device *d)
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     /* Allow sits under what it allows, which leaves the name its room. The
      * hint stays while it waits, so Allow doesn't move. */
-    if (d->connected && d->battery_locked) {
-        GtkWidget *hint = ui_label(d->has_settings ? "Lares can show its battery and settings once you allow it. "
-                                                     "That asks for your password, one time."
-                                                   : "Lares can show its battery once you allow it. That asks for "
-                                                     "your password, one time.", "muted");
+    if (d->connected && locked(d)) {
+        const char *what = !d->battery_locked ? "Lares can show its settings once you allow it. "
+                         : d->has_settings    ? "Lares can show its battery and settings once you allow it. "
+                                              : "Lares can show its battery once you allow it. ";
+        char *text = g_strconcat(what, "That asks for your password, one time.", NULL);
+        GtkWidget *hint = ui_label(text, "muted");
+        g_free(text);
         gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
         gtk_box_append(GTK_BOX(texts), hint);
         GtkWidget *allow = action_button(v, d, busy);
@@ -506,7 +583,10 @@ static Card *build_card(DeviceView *v, Device *d)
     c->connection = detail(card, "Connection", link_text(d->link));
     if (settings_shown(d)) {
         const MouseSettings *m = shown(v, d);
-        if (m) {
+        const KeyboardSettings *k = key_shown(v, d);
+        if (k) {
+            build_keys(v, c, card, k);
+        } else if (m) {
             build_settings(v, c, card, m);
         } else {
             GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -574,6 +654,41 @@ static void update_settings(Card *c, Device *d, const MouseSettings *m)
     }
 }
 
+static const char *key_light_text(KeyLight light)
+{
+    switch (light) {
+    case KEY_LIGHT_OFF:       return "Off";
+    case KEY_LIGHT_SOLID:     return "Solid";
+    case KEY_LIGHT_BREATHING: return "Breathing";
+    case KEY_LIGHT_CYCLE:     return "Colour cycle";
+    case KEY_LIGHT_WAVE:      return "Wave";
+    case KEY_LIGHT_RIPPLE:    return "Ripple";
+    default:                  return "Built-in effect";
+    }
+}
+
+static void update_keys(Card *c, Device *d, const KeyboardSettings *k)
+{
+    for (guint i = 0; i < c->rows->len; i++) gtk_widget_set_sensitive(c->rows->pdata[i], !d->asleep);
+    if (c->bright) {
+        gboolean lit = !(k->has_lighting && k->light == KEY_LIGHT_OFF);
+        gtk_widget_set_sensitive(c->bright, lit);
+        gtk_widget_set_sensitive(c->bright_text, lit);
+        lares_meter_set(LARES_METER(c->bright), k->brightness / 100.0);
+        set_number(c->bright_text, "%d%%", k->brightness);
+    }
+    if (!c->effect) return;
+    set_text(c->effect, key_light_text(k->light));
+    gboolean coloured = k->light == KEY_LIGHT_SOLID || k->light == KEY_LIGHT_BREATHING || k->light == KEY_LIGHT_RIPPLE;
+    guint32 rgb = (guint32)k->rgb[0] << 16 | k->rgb[1] << 8 | k->rgb[2];
+    if (coloured && rgb != c->effect_rgb) {
+        c->effect_rgb = rgb;
+        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(c->effect_swatch), draw_swatch, GUINT_TO_POINTER(rgb), NULL);
+    }
+    gtk_widget_set_visible(c->effect_swatch, coloured);
+    gtk_widget_set_visible(c->effect_note, k->app_controls);
+}
+
 static void update_card(DeviceView *v, Card *c, Device *d)
 {
     v->syncing = TRUE;
@@ -599,9 +714,13 @@ static void update_card(DeviceView *v, Card *c, Device *d)
         g_free(link);
     }
     if (c->waiting)
-        set_text(c->waiting, d->asleep ? "Move the mouse to wake it, and its settings show here." : "Reading its settings…");
+        set_text(c->waiting, !d->asleep ? "Reading its settings…"
+                           : d->kind == DEV_KEYBOARD ? "Press a key to wake it, and its settings show here."
+                                                     : "Move the mouse to wake it, and its settings show here.");
     const MouseSettings *m = settings_shown(d) ? shown(v, d) : NULL;
     if (m && c->dpi) update_settings(c, d, m);
+    const KeyboardSettings *k = settings_shown(d) ? key_shown(v, d) : NULL;
+    if (k && !c->waiting) update_keys(c, d, k);
     gboolean failed = v->error_id && g_str_equal(v->error_id, d->id);
     set_text(c->error, failed ? v->error : "");
     gtk_widget_set_visible(c->error, failed);
@@ -656,13 +775,13 @@ GtkWidget *device_build(Lares *app, Section *self)
 
 /* Devices report changes by themselves, except what only their own
  * protocol reports: batteries are asked for while the section shows, and a
- * mouse's settings while Mouse shows. A change still settling is written
- * when the section goes. */
+ * mouse's or keyboard's settings while Mouse or Keyboard shows. A change
+ * still settling is written when the section goes. */
 void device_shown(Lares *app, Section *self, gboolean on)
 {
     DeviceView *v = self->view;
     devices_want_batteries(app->devices, on);
-    if (self->kind != DEV_MOUSE) return;
+    if (self->kind != DEV_MOUSE && self->kind != DEV_KEYBOARD) return;
     if (!on && v) commit(v);
-    devices_want_settings(app->devices, on);
+    devices_want_settings(app->devices, self->kind, on);
 }

@@ -542,7 +542,7 @@ static void test_hidpp_profile(void)
     g_assert_cmpuint(k.profile_size, ==, 255);
     g_assert_true(hidpp_sector_valid(k.profile, k.profile_size));
     g_assert_cmphex(hidpp_crc(k.profile, 253), ==, 0xa9f7);
-    g_assert_cmpint(k.light.effect, ==, HIDPP_LIGHT_OWN);
+    g_assert_cmpint(k.light.effect, ==, KEY_LIGHT_OWN);
     g_assert_true(k.has_brightness);
     g_assert_cmpint(k.brightness, ==, 12);
     g_assert_cmpint(k.brightness_max, ==, 100);
@@ -565,30 +565,115 @@ static void test_hidpp_profile(void)
     HidppLighting l;
     const guint8 solid[HIDPP_SLOT] = { 0x01, 0xff, 0x00, 0x00 };
     hidpp_slot_decode(solid, &l);
-    g_assert_cmpint(l.effect, ==, HIDPP_LIGHT_SOLID);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_SOLID);
     g_assert_cmpmem(l.rgb, 3, solid + 1, 3);
     const guint8 breathing[HIDPP_SLOT] = { 0x0a, 0x00, 0xff, 0x00, 0x11 };
     hidpp_slot_decode(breathing, &l);
-    g_assert_cmpint(l.effect, ==, HIDPP_LIGHT_BREATHING);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_BREATHING);
     g_assert_cmpint(l.rgb[1], ==, 0xff);
     const guint8 ripple[HIDPP_SLOT] = { 0x17, 0x80, 0x00, 0xff };
     hidpp_slot_decode(ripple, &l);
-    g_assert_cmpint(l.effect, ==, HIDPP_LIGHT_RIPPLE);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_RIPPLE);
     g_assert_cmpint(l.rgb[2], ==, 0xff);
     const guint8 cycle[HIDPP_SLOT] = { 0x15, 0xff, 0x13, 0x88 }, wave[HIDPP_SLOT] = { 0x16 }, off[HIDPP_SLOT] = { 0 };
     hidpp_slot_decode(cycle, &l);
-    g_assert_cmpint(l.effect, ==, HIDPP_LIGHT_CYCLE);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_CYCLE);
     g_assert_cmpint(l.rgb[0], ==, 0);
     hidpp_slot_decode(wave, &l);
-    g_assert_cmpint(l.effect, ==, HIDPP_LIGHT_WAVE);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_WAVE);
     hidpp_slot_decode(off, &l);
-    g_assert_cmpint(l.effect, ==, HIDPP_LIGHT_OFF);
+    g_assert_cmpint(l.effect, ==, KEY_LIGHT_OFF);
 
     /* Brightness: a device that says no range has none. */
     const guint8 none[] = { 0, 0, 0, 0, 0, 0 }, now[] = { 0x00, 0x32 };
     HidppKeyboard n = { 0 };
     hidpp_decode_brightness(none, now, &n);
     g_assert_false(n.has_brightness);
+}
+
+/* A G715 as the Keyboard section sees it: found behind its receiver,
+ * decoded to plain units, and listened to. */
+static void test_hidpp_keyboard(void)
+{
+    g_assert_nonnull(hidpp_model(0xc547, 0x40a2));
+    g_assert_null(hidpp_model(0xc547, 0x4099));   /* untried on this receiver */
+    g_assert_null(hidpp_model(0xc52b, 0x40a2));   /* or on another */
+    g_assert_cmpint(hidpp_phys_index("usb-0000:00:14.0-8.4/input2:1"), ==, 1);
+    g_assert_cmpint(hidpp_phys_index("usb-0000:00:14.0-8.4/input2:6"), ==, 6);
+    g_assert_cmpint(hidpp_phys_index("usb-0000:00:14.0-8.4/input2"), ==, -1);
+    g_assert_cmpint(hidpp_phys_index("usb-0000:00:14.0-8.4/input2:0"), ==, -1);
+    g_assert_cmpint(hidpp_phys_index("usb-0000:00:14.0-8.4/input2:1x"), ==, -1);
+    g_assert_cmpint(hidpp_phys_index(NULL), ==, -1);
+
+    HidppKeyboard k;
+    hidpp_sample(&k);
+    KeyboardSettings s;
+    hidpp_decode(&k, &s);
+    g_assert_true(s.has_brightness);
+    g_assert_cmpint(s.brightness, ==, 12);
+    g_assert_true(s.has_lighting);
+    g_assert_cmpint(s.light, ==, KEY_LIGHT_OWN);
+    g_assert_false(s.app_controls);
+    g_assert_cmpint(hidpp_brightness_value(&k, 50), ==, 50);
+    g_assert_cmpint(hidpp_brightness_value(&k, 140), ==, 100);
+    /* Another range scales both ways. */
+    HidppKeyboard r = k;
+    r.brightness_min = 10;
+    r.brightness_max = 210;
+    r.brightness = 110;
+    hidpp_decode(&r, &s);
+    g_assert_cmpint(s.brightness, ==, 50);
+    g_assert_cmpint(hidpp_brightness_value(&r, 25), ==, 60);
+    g_assert_cmpint(hidpp_brightness_value(&r, 0), ==, 10);
+
+    /* Events, from device 1 with its features where the G715 has them. */
+    HidppEvent ev;
+    const guint8 down[] = { 0x10, 0x01, 0x41, 0x0c, 0x42, 0xa2, 0x40 };
+    g_assert_true(hidpp_event(down, sizeof down, 1, &k, &ev));
+    g_assert_cmpint(ev.kind, ==, HIDPP_LINK);
+    g_assert_false(ev.linked);
+    const guint8 up[] = { 0x10, 0x01, 0x41, 0x0c, 0x02, 0xa2, 0x40 };
+    g_assert_true(hidpp_event(up, sizeof up, 1, &k, &ev));
+    g_assert_true(ev.linked);
+    g_assert_false(hidpp_event(up, sizeof up, 2, &k, &ev));   /* another device's */
+    guint8 status[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x04, 0x00, 0x01, 0x01, 0x01 };
+    g_assert_true(hidpp_event(status, sizeof status, 1, &k, &ev));
+    g_assert_cmpint(ev.kind, ==, HIDPP_LINK);
+    g_assert_true(ev.linked);
+    status[4] = 0x00;
+    g_assert_false(hidpp_event(status, sizeof status, 1, &k, &ev));
+    const guint8 bright[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x0f, 0x00, 0x00, 0x32 };
+    g_assert_true(hidpp_event(bright, sizeof bright, 1, &k, &ev));
+    g_assert_cmpint(ev.kind, ==, HIDPP_CHANGED);
+    /* Answers to Lares' requests or the kernel's, the battery's news, and
+     * errors aren't. */
+    const guint8 mine[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x0f, 0x1c, 0x00, 0x32 };
+    const guint8 kernel[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x0f, 0x11, 0x00, 0x32 };
+    const guint8 battery[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x07, 0x00, 0x32, 0x00 };
+    const guint8 error[HIDPP_LONG_LEN] = { 0x11, 0x01, 0xff, 0x0f, 0x1c, 0x05 };
+    g_assert_false(hidpp_event(mine, sizeof mine, 1, &k, &ev));
+    g_assert_false(hidpp_event(kernel, sizeof kernel, 1, &k, &ev));
+    g_assert_false(hidpp_event(battery, sizeof battery, 1, &k, &ev));
+    g_assert_false(hidpp_event(error, sizeof error, 1, &k, &ev));
+    g_assert_false(hidpp_event(bright, 4, 1, &k, &ev));
+
+    /* The rule opens the receiver's HID++ node to the person at the screen,
+     * and not the keyboard's own node under it, which carries keystrokes. */
+    char *rules = devices_udev_rules();
+    g_assert_nonnull(strstr(rules, "ENV{ID_USB_MODEL_ID}==\"0f98\""));   /* the mouse's stays */
+    const char *line = strstr(rules, "ENV{ID_USB_MODEL_ID}==\"c547\"");
+    g_assert_nonnull(line);
+    g_assert_nonnull(strstr(rules, "ENV{ID_USB_VENDOR_ID}==\"046d\", ENV{ID_USB_MODEL_ID}==\"c547\", "
+                                   "ENV{ID_USB_INTERFACE_NUM}==\"02\", "
+                                   "DEVPATH==\"*/0003:046D:C547.\?\?\?\?/hidraw/hidraw*\", TAG+=\"uaccess\"\n"));
+    g_assert_null(strstr(rules, "MODE="));
+    const char *pattern = "*/0003:046D:C547.\?\?\?\?/hidraw/hidraw*";
+    const char *receiver = "/devices/pci0000:00/0000:00:14.0/usb1/1-8/1-8.4/1-8.4:1.2/0003:046D:C547.0007/hidraw/hidraw6";
+    const char *keyboard = "/devices/pci0000:00/0000:00:14.0/usb1/1-8/1-8.4/1-8.4:1.2/0003:046D:C547.0007/"
+                           "0003:046D:40A2.0009/hidraw/hidraw8";
+    g_assert_true(g_pattern_match_simple(pattern, receiver));
+    g_assert_false(g_pattern_match_simple(pattern, keyboard));
+    g_free(rules);
 }
 
 static void test_map_parse(void)
@@ -697,6 +782,7 @@ int main(int argc, char **argv)
     g_test_add_func("/devices/hidpp-packets", test_hidpp_packets);
     g_test_add_func("/devices/hidpp-allowed", test_hidpp_allowed);
     g_test_add_func("/devices/hidpp-profile", test_hidpp_profile);
+    g_test_add_func("/devices/hidpp-keyboard", test_hidpp_keyboard);
     g_test_add_func("/picture/map-parse", test_map_parse);
     g_test_add_func("/picture/map-paint", test_map_paint);
     g_test_add_func("/picture/map-shipped", test_map_shipped);
