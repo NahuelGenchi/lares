@@ -43,6 +43,9 @@ void ui_button_labels(GtkWidget *button, const char *const *labels)
     GtkWidget *stack = gtk_stack_new();
     for (int i = 0; labels[i]; i++) gtk_stack_add_named(GTK_STACK(stack), gtk_label_new(labels[i]), labels[i]);
     gtk_button_set_child(GTK_BUTTON(button), stack);
+    /* A button made with a label stays "labelled by" it once it's gone,
+     * which leaves it nameless: it's named by ui_button_label instead. */
+    gtk_accessible_reset_relation(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_RELATION_LABELLED_BY);
     ui_button_label(button, labels[0]);
 }
 
