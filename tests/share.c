@@ -45,8 +45,9 @@ static void test_link_local(void)
     g_assert_nonnull(ia);
     g_object_unref(ia);
     g_free(a);
-    a = share_link_local("a8:5b:78:12:34:56", "awdl0");
-    g_assert_cmpstr(a, ==, "fe80::aa5b:78ff:fe12:3456%awdl0");
+    /* A universally administered address gets the bit set. */
+    a = share_link_local("00:00:5e:00:53:02", "awdl0");
+    g_assert_cmpstr(a, ==, "fe80::200:5eff:fe00:5302%awdl0");
     g_free(a);
     g_assert_null(share_link_local("not a mac", "awdl0"));
 }
