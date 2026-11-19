@@ -58,6 +58,11 @@ void lares_nav_select(LaresNav *self, const char *id, gboolean animate);
 #define LARES_TYPE_CLAMP (lares_clamp_get_type())
 G_DECLARE_FINAL_TYPE(LaresClamp, lares_clamp, LARES, CLAMP, GtkWidget)
 GtkWidget *lares_clamp_new(GtkWidget *child, int max_width, int max_lead);
+/* Keeps the page at least as tall as it is now. */
+void lares_clamp_hold(LaresClamp *clamp);
+/* Lets it shorten again, once its own height reaches `seen`, the bottom of
+ * what shows, so nothing in sight moves; with `seen` -1, at once. */
+void lares_clamp_release(LaresClamp *clamp, int seen);
 
 /* A row of pixel blocks filled to a fraction, for batteries and load. */
 #define LARES_TYPE_METER (lares_meter_get_type())
