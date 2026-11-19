@@ -13,7 +13,7 @@ typedef struct {
     Lares *app;
     Share *share;
     GtkWidget *setup_box, *allow, *allow_error;
-    GtkWidget *ready_box, *sw_receive, *receive_status, *send_button, *link_status;
+    GtkWidget *ready_box, *sw_receive, *receive_status, *send_button, *link_status, *quiet_hint;
     GtkWidget *incoming_group, *incoming_box;
     GtkWidget *nearby_group, *nearby_box;
     GtkWidget *card_value, *card_note;
@@ -402,6 +402,7 @@ static void update(ShareView *v)
                      : st->link == LINK_UP && st->link_error ? st->link_error : NULL;
     gtk_label_set_text(GTK_LABEL(v->link_status), link ? link : "");
     gtk_widget_set_visible(v->link_status, link != NULL);
+    gtk_widget_set_visible(v->quiet_hint, st->quiet && st->link == LINK_UP);
 
     char *shape = incoming_shape(st);
     if (g_strcmp0(shape, v->incoming_shape)) {
@@ -489,6 +490,10 @@ GtkWidget *share_build(Lares *app, Section *self)
     gtk_box_append(GTK_BOX(send), v->send_button);
     v->link_status = ui_paragraph("", "warn");
     gtk_box_append(GTK_BOX(v->ready_box), v->link_status);
+    v->quiet_hint = ui_paragraph("No Apple device heard yet. On the iPhone, open the share sheet with AirDrop set to "
+                                 "Everyone for 10 Minutes. If it still isn't heard, unplug the Wi-Fi adapter and plug "
+                                 "it back in.", "muted");
+    gtk_box_append(GTK_BOX(v->ready_box), v->quiet_hint);
     gtk_box_append(GTK_BOX(group), v->ready_box);
 
     v->incoming_group = ui_group(page, "Incoming");

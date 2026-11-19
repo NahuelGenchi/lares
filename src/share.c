@@ -67,6 +67,9 @@ struct Share {
     guint dry_timer;
 
     gboolean looking;         /* finding devices while files are being picked */
+    guint valid_peers;        /* AWDL peers the link counts as valid now */
+    gboolean heard;           /* one was, since this use began */
+    guint quiet_timer;
     guint linger;
     FILE *log;                /* ~/.cache/lares/share.log: when each step happened */
     gint64 log_start;
@@ -84,6 +87,47 @@ static void changed(Share *s)
 static gboolean finding(Share *s)
 {
     return s->st.sending || s->looking;
+}
+
+/* s the link waits, while receiving or looking, before saying it has heard
+ * no Apple device: an iPhone with its share sheet open is heard within a few
+ * seconds even on channel 6, so silence this long means AirDrop is off or
+ * not in Everyone mode on the phone, or the Wi-Fi adapter isn't receiving. */
+#define QUIET_SECONDS 20
+
+static gboolean quiet_over(gpointer data)
+{
+    Share *s = data;
+    s->quiet_timer = 0;
+    if (!s->heard && s->st.link == LINK_UP && (s->st.receiving || finding(s))) {
+        s->st.quiet = TRUE;
+        changed(s);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+/* Starts the wait for a first Apple device when the link is up for a use,
+ * and drops the hint once one is heard or the use ends. */
+static void quiet_watch(Share *s)
+{
+    gboolean waiting = s->st.link == LINK_UP && (s->st.receiving || finding(s)) && !s->heard;
+    if (waiting && !s->quiet_timer && !s->st.quiet)
+        s->quiet_timer = g_timeout_add_seconds(QUIET_SECONDS, quiet_over, s);
+    if (!waiting) {
+        g_clear_handle_id(&s->quiet_timer, g_source_remove);
+        if (s->st.quiet) {
+            s->st.quiet = FALSE;
+            changed(s);
+        }
+    }
+}
+
+/* A new use starts its wait afresh, unless a device is already in range. */
+static void quiet_restart(Share *s)
+{
+    g_clear_handle_id(&s->quiet_timer, g_source_remove);
+    s->heard = s->valid_peers > 0;
+    s->st.quiet = FALSE;
 }
 
 /* When each step of finding and sending happened, in seconds from the
@@ -109,6 +153,7 @@ static void log_session(Share *s, const char *what)
 {
     if (!s->log || s->st.link == LINK_OFF || s->st.link == LINK_FAILED) log_open(s);
     share_log(s, "%s", what);
+    quiet_restart(s);
 }
 
 static void log_open(Share *s)
@@ -319,6 +364,14 @@ static void find_card(Share *s)
     if (s->dry) {
         s->st.card = g_strdup("wlan0");
         s->st.card_text = g_strdup("USB Wi-Fi adapter, 2.4 GHz only");
+        return;
+    }
+    /* For testing with another lares-awdl (LARES_AWDL), which may need no
+     * card at all: the card it's handed, whatever is plugged in. */
+    const char *forced = g_getenv("LARES_AWDL") ? g_getenv("LARES_WIFI") : NULL;
+    if (forced && *forced) {
+        s->st.card = g_strdup(forced);
+        s->st.card_text = g_strdup("Wi-Fi card for testing");
         return;
     }
     GDir *d = g_dir_open("/sys/class/net", 0, NULL);
@@ -809,10 +862,20 @@ static void link_event(Share *s, GHashTable *ev)
         s->st.link = LINK_UP;
         share_log(s, "link up on channel %s", (const char *)g_hash_table_lookup(ev, "channel"));
         g_clear_pointer(&s->st.link_error, g_free);
+        s->valid_peers = 0;
+        s->heard = FALSE;
         parts_apply(s);
+        quiet_watch(s);
     } else if (g_str_equal(kind, "peer")) {
         const char *state = g_hash_table_lookup(ev, "state");
         share_log(s, "AWDL peer %s", state ? state : "?");
+        if (state && g_str_equal(state, "valid")) {
+            s->valid_peers++;
+            s->heard = TRUE;
+            quiet_watch(s);
+        } else if (state && g_str_equal(state, "gone") && s->valid_peers > 0) {
+            s->valid_peers--;
+        }
         if (!s->iface || !finding(s)) return;
         const char *mac = g_hash_table_lookup(ev, "address");
         if (!mac || !state) return;
@@ -882,7 +945,9 @@ static void on_link_exit(GObject *src, GAsyncResult *res, gpointer data)
     parts_stop(s);
     g_clear_pointer(&s->iface, g_free);
     g_clear_pointer(&s->address, g_free);
+    s->valid_peers = 0;
     s->st.link = expected || status == 0 ? LINK_OFF : LINK_FAILED;
+    quiet_watch(s);
     if (s->st.link == LINK_FAILED && !s->st.link_error)
         s->st.link_error = g_strdup(status == 3 ? "The Wi-Fi card can't run AirDrop." : "The AirDrop link stopped.");
     if (s->st.link == LINK_FAILED) {
@@ -1035,6 +1100,7 @@ static void update_link(Share *s)
     } else if (s->st.link == LINK_UP) {
         parts_apply(s);
     }
+    quiet_watch(s);
 }
 
 /* -------------------------------------------------------------- dry run */
@@ -1047,6 +1113,7 @@ static gboolean pretend_link(gpointer data)
     if (s->st.link != LINK_STARTING) return G_SOURCE_REMOVE;
     s->st.link = LINK_UP;
     changed(s);
+    quiet_watch(s);
     return G_SOURCE_REMOVE;
 }
 
@@ -1054,7 +1121,9 @@ static gboolean pretend_device(gpointer data)
 {
     Share *s = data;
     s->dry_timer = 0;
-    if (!finding(s) || device_find(s, "dry")) return G_SOURCE_REMOVE;
+    if (!finding(s) || device_find(s, "dry") || g_getenv("LARES_DRY_QUIET")) return G_SOURCE_REMOVE;
+    s->heard = TRUE;
+    quiet_watch(s);
     ShareDevice *d = g_new0(ShareDevice, 1);
     d->key = g_strdup("dry");
     d->name = g_strdup("iPhone");
@@ -1068,7 +1137,9 @@ static gboolean pretend_device(gpointer data)
 static gboolean pretend_offer(gpointer data)
 {
     Share *s = data;
-    if (!s->st.receiving || s->st.incoming) return G_SOURCE_REMOVE;
+    if (!s->st.receiving || s->st.incoming || g_getenv("LARES_DRY_QUIET")) return G_SOURCE_REMOVE;
+    s->heard = TRUE;
+    quiet_watch(s);
     ShareIncoming *in = g_new0(ShareIncoming, 1);
     in->id = 1;
     in->state = INCOMING_ASKING;

@@ -62,6 +62,10 @@ owly reports the same pattern and its cost: a 2.4 GHz-only Realtek USB adapter r
 
 owly's driver table is the best list of cards known to work: dual-band Realtek `rtw88`/`rtw89` and MediaTek `mt76` cards work best; Intel cards work on channel 6 only, with Wi-Fi off during a session (reported).
 
+**The development PC's adapter failed** (2026-11-19). After a first session that sent and received with the iPhone, its USB link broke at the moment `lares-awdl` gave the card back (`usbctrl_vendorreq TimeOut`, then `rtl_usb: Urb has error status 0xFFFFFFB9`, EPROTO, for every request). From then on it neither received nor sent, even as a plain Wi-Fi card scanning for networks, and a replug into the same port didn't bring it back. It sat on a bus-powered USB 2.0 hub, and `rtl8192cu` is known for such timeouts when it powers the radio off and on. Which of the two caused it isn't known yet. A card that stops receiving shows in `~/.cache/lares/lares-awdl.log` as `rx action 0`, and in the kernel log; Share says *No Apple device heard yet* after 20 s of silence.
+
+USB adapters owly reports working both ways with an iPhone, which `lares-awdl` drives: the TP-Link Archer T3U Plus (RTL8812BU, `rtw88_8822bu`, ad-hoc cell on channel 44) and MediaTek MT7612U adapters (`mt76x2u`, active monitor, a 3 MB photo in about 5 s on channel 149). 5 GHz needs the PC's regulatory domain set to its country: under the world domain (`00`) a card may not transmit there and falls back to channel 6.
+
 AWDL takes the Wi-Fi card for itself while it runs, unless the card can inject while connected. On the development PC that costs nothing: it is on Ethernet, and the USB adapter is used for nothing else.
 
 ## Design for Lares

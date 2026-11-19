@@ -52,7 +52,7 @@ Tailscale asks for your password once before Lares can switch it. The Remote sec
 
 ## Trying it without changing anything
 
-`LARES_DRY_RUN=1 lares` pretends every change (screen, services, Bluetooth) and keeps its own settings file. `LARES_DRY_STREAM=1` adds a pretend Moonlight stream, Share pretends its Wi-Fi card, link and a nearby iPhone (`LARES_DRY_FILES=a.jpg:b.jpg` picks files to send without the file dialog), `LARES_COLOR_SCHEME=dark` forces dark, `LARES_SECTION=hardware` opens on a section, and `LARES_CSS=data/style.css` loads the stylesheet from disk so it can be edited without rebuilding.
+`LARES_DRY_RUN=1 lares` pretends every change (screen, services, Bluetooth) and keeps its own settings file. `LARES_DRY_STREAM=1` adds a pretend Moonlight stream, Share pretends its Wi-Fi card, link and a nearby iPhone (`LARES_DRY_FILES=a.jpg:b.jpg` picks files to send without the file dialog, and `LARES_DRY_QUIET=1` leaves no Apple device nearby), `LARES_COLOR_SCHEME=dark` forces dark, `LARES_SECTION=hardware` opens on a section, and `LARES_CSS=data/style.css` loads the stylesheet from disk so it can be edited without rebuilding.
 
 ## Contributing
 

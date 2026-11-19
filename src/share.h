@@ -76,6 +76,7 @@ typedef struct {
 
     ShareLink link;
     char *link_error;
+    gboolean quiet;       /* the link has been up a while and has heard no Apple device */
     char *name;           /* how others see this PC */
 
     gboolean receiving;
