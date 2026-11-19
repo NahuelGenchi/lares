@@ -226,6 +226,10 @@ modeswitch > button.selected:focus-visible {
   line-height: 1.5;
 }
 
+/* The pairing hint keeps room for three of those lines, so the button under
+   it stays put as the hint changes (src/pad_view.c). */
+.pair-status { min-height: 81px; }
+
 /* A Remote row's drift or error line, under its choices and level with
    them (src/remote_view.c). */
 .hint.row-hint {
