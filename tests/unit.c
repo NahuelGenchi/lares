@@ -532,6 +532,28 @@ static void test_hyperx_merge(void)
     g_assert_cmpint(hyperx_packets(&now, &out, 0, packets), ==, 0);
 }
 
+/* Only a Solid light's new brightness is streamed: the mouse's own effect
+ * takes it up late, and only a still colour can stand in for it. */
+static void test_hyperx_shows(void)
+{
+    HyperxState s;
+    hyperx_sample(&s);
+    MouseSettings was, now;
+    hyperx_decode(NULL, &s, &was);
+    was.light = LIGHT_SOLID;
+    now = was;
+    g_assert_false(hyperx_shows(&was, &now));
+    now.brightness = 40;
+    g_assert_true(hyperx_shows(&was, &now));
+    now.light = LIGHT_BREATHING;
+    g_assert_false(hyperx_shows(&was, &now));
+    now.light = LIGHT_CYCLE;
+    g_assert_false(hyperx_shows(&was, &now));
+    now = was;
+    now.rgb[1] = 0x80;               /* a new colour shows at once by itself */
+    g_assert_false(hyperx_shows(&was, &now));
+}
+
 static void test_usb_parent(void)
 {
     char *p = devices_usb_parent("/sys/devices/pci0000:00/0000:00:14.0/usb1/1-8/1-8.4/1-8.4:1.2/"
@@ -863,6 +885,7 @@ int main(int argc, char **argv)
     g_test_add_func("/devices/hyperx-real", test_hyperx_real);
     g_test_add_func("/devices/hyperx-events", test_hyperx_events);
     g_test_add_func("/devices/hyperx-merge", test_hyperx_merge);
+    g_test_add_func("/devices/hyperx-shows", test_hyperx_shows);
     g_test_add_func("/devices/usb-parent", test_usb_parent);
     g_test_add_func("/devices/hidpp-packets", test_hidpp_packets);
     g_test_add_func("/devices/hidpp-allowed", test_hidpp_allowed);

@@ -12,9 +12,11 @@
  * with report command + 1 and the same sub-command. Settings live in
  * profiles: 0 is what the mouse does now, 1 what it reloads when switched
  * on. Packets go at least 10 ms apart and each waits for its answer, or
- * the mouse drops some over the air. For about a tenth of a second after
- * storing a change in profile 1 it also drops questions, so one that goes
- * unanswered is asked again. Nothing here sends a factory reset. */
+ * the mouse drops some over the air. A change stored in profile 1 is the
+ * exception: on its cable the mouse never acknowledges one, and over the
+ * air it drops questions for about a tenth of a second after one, so what
+ * follows a store is a question, asked again until it's answered. Nothing
+ * here sends a factory reset. */
 #include "hyperx.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -30,6 +32,7 @@
 #define SENSOR        0x36   /* 36 01 / 36 02, the same way */
 #define BRIGHTNESS    0x40   /* 40 01 / 40 02 */
 #define LIGHTING      0x42   /* 42 02 <profile> <effect> writes, 42 03 <profile> reads */
+#define FRAME         0x44   /* 44 02 00 00 <RGB>: a colour streamed live */
 #define SET           0x01
 #define GET           0x02
 #define LIGHT_SET     0x02
@@ -212,6 +215,11 @@ void hyperx_merge(const HyperxState *now, const MouseSettings *base, const Mouse
         out->light = want->light;
         memcpy(out->rgb, want->rgb, 3);
     }
+}
+
+gboolean hyperx_shows(const MouseSettings *was, const MouseSettings *now)
+{
+    return now->light == LIGHT_SOLID && now->brightness != was->brightness;
 }
 
 static guint8 *packet(guint8 out[][HYPERX_REPORT], int *n, guint8 command, guint8 sub, guint16 slot)
@@ -453,6 +461,25 @@ static gboolean send_change(Port *p, const guint8 *packet)
     return port_send(p, packet) && port_wait(p, ANSWER_MS, is_ack, packet, NULL);
 }
 
+static gboolean show(Port *p, const guint8 rgb[3])
+{
+    const guint8 frame[HYPERX_REPORT] = { FRAME, 0x02, 0, 0, rgb[0], rgb[1], rgb[2] };
+    return send_change(p, frame);
+}
+
+gboolean hyperx_show(const char *node, const guint8 rgb[3], GError **error)
+{
+    Port p;
+    g_mutex_lock(&turns);
+    gboolean ok = port_open(&p, node, error);
+    if (ok) {
+        ok = show(&p, rgb) || fail(error, G_IO_ERROR_TIMED_OUT, "It didn't take the colour.");
+        close(p.fd);
+    }
+    g_mutex_unlock(&turns);
+    return ok;
+}
+
 gboolean hyperx_battery(const char *node, int *level, gboolean *charging, GError **error)
 {
     Port p;
@@ -495,8 +522,9 @@ static gboolean write_both(Port *p, const HyperxModel *model, const MouseSetting
                            HyperxState *state, GError **error)
 {
     HyperxState now;
-    MouseSettings merged;
+    MouseSettings was, merged;
     if (!reachable(p, model, error) || !read_state(p, &now, error)) return FALSE;
+    hyperx_decode(NULL, &now, &was);
     hyperx_merge(&now, base, want, &merged);
     /* Live first, then the profile it reloads when switched on, as NGENUITY
      * saves. */
@@ -506,13 +534,16 @@ static gboolean write_both(Port *p, const HyperxModel *model, const MouseSetting
         if (n < 0) return fail(error, G_IO_ERROR_INVALID_ARGUMENT, "The mouse can't hold that setting.");
         for (int i = 0; i < n; i++) {
             guint8 answer[HYPERX_REPORT];
-            if (!send_change(p, packets[i]))
+            if (slot == 0 ? !send_change(p, packets[i]) : !port_send(p, packets[i]))
                 return fail(error, G_IO_ERROR_TIMED_OUT, "It didn't take the change; it may have fallen asleep.");
-            /* Storing it, the mouse would drop the next packet too: wait
-             * until it answers again. */
+            /* A store goes unacknowledged: wait until the mouse answers
+             * again instead. */
             if (slot == 1 && !ask_live(p, DPI, GET, answer))
                 return fail(error, G_IO_ERROR_TIMED_OUT, "It didn't answer; it may have fallen asleep.");
         }
+        /* Shown now rather than once the mouse takes it up: see hyperx_shows.
+         * A frame it misses only shows it later. */
+        if (slot == 0 && hyperx_shows(&was, &merged)) show(p, merged.rgb);
     }
     if (!read_state(p, state, error)) return FALSE;
     MouseSettings got;
