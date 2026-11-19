@@ -72,7 +72,11 @@ enum {
 #define VOLATILE      1     /* the last byte of a live effect, as G HUB sends it */
 
 /* Taking the lights, and answering the keyboard's idle and active events,
- * as G HUB does: its flags in the second byte. */
+ * as G HUB does: its flags in the second byte. A take is two steps, the
+ * firmware's mode with the take's flags first: taken in one, while the
+ * keyboard's own lights-off is on, the keyboard says software has them and
+ * goes on playing its own effect (issue #68). */
+#define SW_FIRMWARE   0
 #define SW_SOFTWARE   3
 static const guint8 SW_FLAGS[] = { [HIDPP_LIVE_TAKE] = 6, [HIDPP_LIVE_IDLE] = 3, [HIDPP_LIVE_ACTIVE] = 5 };
 
@@ -213,7 +217,7 @@ static gboolean sw_control(const guint8 *p, gsize n)
 {
     if (n > 0 && p[0] == 0x00) return TRUE;
     if (n < 3 || p[0] != 0x01) return FALSE;
-    if (p[1] == 0) return p[2] == 0;
+    if (p[1] == SW_FIRMWARE) return p[2] == 0 || p[2] == SW_FLAGS[HIDPP_LIVE_TAKE];
     for (guint i = 0; i < G_N_ELEMENTS(SW_FLAGS); i++)
         if (p[1] == SW_SOFTWARE && p[2] == SW_FLAGS[i]) return TRUE;
     return FALSE;
@@ -790,7 +794,9 @@ static gboolean live_play(Link *l, const HidppEffects *fx, const HidppLighting *
     guint8 params[10];
     int id = hidpp_effect(light, state == HIDPP_LIVE_IDLE, params);
     if (id < 0 || hidpp_kept(light->effect)) return fail(error, G_IO_ERROR_INVALID_ARGUMENT, "Lares doesn't play that live.");
-    if (!sw_set(l, fx, SW_SOFTWARE, SW_FLAGS[state], error)) return FALSE;
+    if ((state == HIDPP_LIVE_TAKE && !sw_set(l, fx, SW_FIRMWARE, SW_FLAGS[state], error))
+        || !sw_set(l, fx, SW_SOFTWARE, SW_FLAGS[state], error))
+        return FALSE;
     gboolean any = FALSE;
     for (int c = 0; c < fx->clusters; c++) {
         int at = hidpp_effect_index(fx, c, (guint16)id);
@@ -845,7 +851,7 @@ gboolean hidpp_live_play(const char *node, guint8 index, const HidppEffects *fx,
     return with_link(node, index, error, do_play, &p);
 }
 
-static gboolean do_release(Link *l, gpointer data, GError **error) { return sw_set(l, data, 0, 0, error); }
+static gboolean do_release(Link *l, gpointer data, GError **error) { return sw_set(l, data, SW_FIRMWARE, 0, error); }
 
 gboolean hidpp_live_release(const char *node, guint8 index, const HidppEffects *fx, GError **error)
 {

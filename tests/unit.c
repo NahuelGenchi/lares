@@ -621,11 +621,13 @@ static void test_hidpp_allowed(void)
     const guint8 info[] = { 0xff, 0xff, 0x00 };
     g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 0, info, sizeof info));
 
-    /* Software control: taken with G HUB's flags, for the keyboard in use,
-     * idle or used again, and given back; no other mode or flags. */
-    const guint8 take[] = { 0x01, 0x03, 0x06 }, idle[] = { 0x01, 0x03, 0x03 }, active[] = { 0x01, 0x03, 0x05 };
-    const guint8 back[] = { 0x01, 0x00, 0x00 }, mode2[] = { 0x01, 0x02, 0x06 }, odd[] = { 0x01, 0x03, 0x07 };
-    const guint8 half[] = { 0x01, 0x00, 0x06 };
+    /* Software control: taken in G HUB's two steps, answered with its flags
+     * for the keyboard idle or used again, and given back; no other mode or
+     * flags. */
+    const guint8 first[] = { 0x01, 0x00, 0x06 }, take[] = { 0x01, 0x03, 0x06 };
+    const guint8 idle[] = { 0x01, 0x03, 0x03 }, active[] = { 0x01, 0x03, 0x05 }, back[] = { 0x01, 0x00, 0x00 };
+    const guint8 mode2[] = { 0x01, 0x02, 0x06 }, odd[] = { 0x01, 0x03, 0x07 }, half[] = { 0x01, 0x00, 0x05 };
+    g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, first, sizeof first));
     g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, take, sizeof take));
     g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, idle, sizeof idle));
     g_assert_true(hidpp_allowed(HIDPP_RGB_EFFECTS, 5, active, sizeof active));
