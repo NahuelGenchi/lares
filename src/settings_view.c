@@ -79,9 +79,11 @@ GtkWidget *settings_build(Lares *app, Section *self)
     ui_setting_saving(topbar, "Off saves 2 MB RAM");
     /* The heading isn't read with the switch, so its name says where. */
     v->sw_topbar = ui_setting_switch(topbar, "Show the icon in the top bar", &p->topbar, G_CALLBACK(on_switch), v);
+    /* Under the row rather than in it, so the switch doesn't move when the
+     * note comes or goes with a click on it. */
     v->topbar_note = ui_paragraph("Appears after you log out and back in.", "warn");
     gtk_widget_set_visible(v->topbar_note, FALSE);
-    gtk_box_append(GTK_BOX(gtk_widget_get_first_child(topbar)), v->topbar_note);
+    gtk_box_insert_child_after(GTK_BOX(v->top), v->topbar_note, topbar);
     v->sw_level = toggle(v, v->top, "Battery level beside the icon", "Shows the lowest if several are connected.",
                          &p->topbar_level);
     v->sw_hide = toggle(v, v->top, "Hide the icon without a controller", NULL, &p->topbar_hide);
