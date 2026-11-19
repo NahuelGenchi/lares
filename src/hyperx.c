@@ -37,6 +37,9 @@
 #define PACE_US       10000
 #define ANSWER_MS     500
 #define TRIES         3      /* for a question, as the mouse drops some while storing */
+#define LINK_MS       1500   /* how long a "not linked" may last before it counts: see linked() */
+#define LINK_ANSWER_MS 200   /* the receiver answers this at once, when it answers */
+#define LINK_WAIT_US  100000
 #define DPI_STEP      50
 #define DEFAULT_SPEED 50     /* of breathing and the colour cycle; lower is faster */
 
@@ -392,14 +395,28 @@ static gboolean ask_live(Port *p, guint8 command, guint8 sub, guint8 *answer)
     return FALSE;
 }
 
-/* The receiver answers this itself, asleep or not. */
+/* The receiver answers this itself, asleep or not. But as the mouse wakes
+ * or leaves its cable, it says so (fb 0a 01) before it says "linked" here,
+ * up to half a second before, and meanwhile it may not answer at all while
+ * it hands the mouse what it kept for it. An exchange begun on that event
+ * would find it "asleep", so a no, or no answer, is asked again for a
+ * second and a half before it counts. */
 static gboolean linked(Port *p, GError **error)
 {
     const guint8 q[HYPERX_REPORT] = { LINK, 0x01 };
     guint8 a[HYPERX_REPORT];
-    if (!ask(p, q, a)) return fail(error, G_IO_ERROR_TIMED_OUT, "Its receiver didn't answer.");
-    if (a[2] != 1) return fail(error, G_IO_ERROR_NOT_CONNECTED, "It's asleep. Move it to wake it.");
-    return TRUE;
+    gboolean answered = FALSE;
+    gint64 end = g_get_monotonic_time() + LINK_MS * 1000;
+    for (;;) {
+        if (port_send(p, q) && port_wait(p, LINK_ANSWER_MS, is_answer, q, a)) {
+            if (a[2] == 1) return TRUE;
+            answered = TRUE;
+        }
+        if (g_get_monotonic_time() >= end) break;
+        g_usleep(LINK_WAIT_US);
+    }
+    return answered ? fail(error, G_IO_ERROR_NOT_CONNECTED, "It's asleep. Move it to wake it.")
+                    : fail(error, G_IO_ERROR_TIMED_OUT, "Its receiver didn't answer.");
 }
 
 static gboolean read_state(Port *p, HyperxState *s, GError **error)

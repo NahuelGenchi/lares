@@ -60,7 +60,7 @@ typedef struct {
     gint64 answered;     /* monotonic time of the last answer, 0 for never */
     HyperxState state;   /* its settings, once `known` */
     gboolean known, asleep, reading, writing;
-    gboolean stale;      /* it changed while being read, so read it again */
+    gboolean stale;      /* asked for while being read or written, so read it after */
     int watch_fd;        /* open while its settings are on screen, -1 otherwise */
     guint watch;
 } HidState;
@@ -876,7 +876,12 @@ static void settings_read(GObject *src, GAsyncResult *res, gpointer user)
 
 static void ask_settings(Devices *d, HidState *s)
 {
-    if (s->reading || s->writing) return;
+    /* A wake or a rescan while it's being read or written may have changed
+     * it: read it once that's done, rather than not at all. */
+    if (s->reading || s->writing) {
+        s->stale = TRUE;
+        return;
+    }
     if (!hid_open(s)) {
         if (d->dry && d->dry_allowed && !s->known) { /* pretend, as nothing was really allowed */
             hyperx_sample(&s->state);
@@ -928,8 +933,7 @@ static gboolean on_report(int fd, GIOCondition cond, gpointer data)
         }
     }
     gboolean gone = got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR);
-    if (again && s->reading) s->stale = TRUE;
-    else if (again) ask_settings(s->d, s);
+    if (again) ask_settings(s->d, s);
     if (changed) schedule(s->d);
     if (!gone) return G_SOURCE_CONTINUE;
     close(fd); /* unplugged: the next scan finds it again, or not */
@@ -992,7 +996,11 @@ static void settings_written(GObject *src, GAsyncResult *res, gpointer user)
         } else if (g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED)) {
             s->asleep = TRUE;
         } else {
-            ask_settings(c->d, s); /* to show what it holds after all */
+            s->stale = TRUE; /* to show what it holds after all */
+        }
+        if (s->stale) {
+            s->stale = FALSE;
+            ask_settings(c->d, s);
         }
         schedule(c->d);
     }
@@ -1011,6 +1019,10 @@ static gboolean pretend_written(gpointer data)
     if (s) {
         s->writing = FALSE;
         for (int i = 0; i < n; i++) hyperx_apply(&s->state, packets[i]);
+        if (s->stale) {
+            s->stale = FALSE;
+            ask_settings(c->d, s);
+        }
         schedule(c->d);
     }
     c->done(n >= 0, n >= 0 ? NULL : "The mouse can't hold that setting.", c->user);
