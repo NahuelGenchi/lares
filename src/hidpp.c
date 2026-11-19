@@ -43,8 +43,10 @@
 static GMutex turns;   /* one exchange with a receiver at a time */
 
 static const HidppModel MODELS[] = {
-    /* G715, on its Lightspeed receiver, whose HID++ interface is the third */
-    { 0xc547, 0x40a2, 2 },
+    /* G715, on its Lightspeed receiver, whose HID++ interface is the third.
+     * Its brightness key steps 100, 50, 25, 12, off, and 60 reads back as 50
+     * (issue #25). */
+    { 0xc547, 0x40a2, 2, 5, { 0, 12, 25, 50, 100 } },
 };
 
 const HidppModel *hidpp_model(guint16 receiver, guint16 product)
@@ -184,13 +186,22 @@ void hidpp_decode_profile(const guint8 *sector, gsize size, HidppKeyboard *out)
     hidpp_slot_decode(sector + slot, &out->light);
 }
 
-void hidpp_decode(const HidppKeyboard *k, KeyboardSettings *out)
+static int percent_of(const HidppKeyboard *k, int value)
+{
+    int range = k->brightness_max - k->brightness_min;
+    return CLAMP((int)((value - k->brightness_min) * 100.0 / range + 0.5), 0, 100);
+}
+
+void hidpp_decode(const HidppKeyboard *k, const HidppModel *model, KeyboardSettings *out)
 {
     memset(out, 0, sizeof *out);
     out->has_brightness = k->has_brightness;
     if (k->has_brightness) {
-        int range = k->brightness_max - k->brightness_min;
-        out->brightness = CLAMP((int)((k->brightness - k->brightness_min) * 100.0 / range + 0.5), 0, 100);
+        out->brightness = percent_of(k, k->brightness);
+        if (model && model->levels > 1) {
+            out->levels = model->levels;
+            for (int i = 0; i < model->levels; i++) out->level[i] = percent_of(k, model->level[i]);
+        }
     }
     out->has_lighting = k->has_profile;
     out->app_controls = k->app_controls;
@@ -238,7 +249,7 @@ gboolean hidpp_event(const guint8 *r, gsize len, guint8 index, const HidppKeyboa
     if (len < HIDPP_SHORT_LEN || (r[0] != HIDPP_SHORT && r[0] != HIDPP_LONG) || r[1] != index) return FALSE;
     /* The receiver's own notice, in HID++ 1.0. */
     if (r[0] == HIDPP_SHORT && r[2] == CONNECTION) {
-        out->kind = HIDPP_LINK;
+        out->kind = HIDPP_EVENT_LINK;
         out->linked = !(r[4] & LINK_DOWN);
         return TRUE;
     }
@@ -246,12 +257,18 @@ gboolean hidpp_event(const guint8 *r, gsize len, guint8 index, const HidppKeyboa
     if (r[2] == 0 || r[2] == 0xff || r[2] == 0x8f || (r[3] & 0x0f) != 0) return FALSE;
     if (k->status_index && r[2] == k->status_index) {
         if (r[4] != STATUS_RECONNECT) return FALSE;
-        out->kind = HIDPP_LINK;
+        out->kind = HIDPP_EVENT_LINK;
         out->linked = TRUE;
         return TRUE;
     }
+    /* Its brightness key says the new value, as the G715 does (issue #25). */
+    if (k->brightness_index && r[2] == k->brightness_index && r[3] == 0x00) {
+        out->kind = HIDPP_EVENT_BRIGHTNESS;
+        out->brightness = r[4] << 8 | r[5];
+        return TRUE;
+    }
     if ((k->brightness_index && r[2] == k->brightness_index) || (k->profiles_index && r[2] == k->profiles_index)) {
-        out->kind = HIDPP_CHANGED;
+        out->kind = HIDPP_EVENT_CHANGED;
         return TRUE;
     }
     return FALSE;

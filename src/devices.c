@@ -97,6 +97,7 @@ typedef struct {
     char *owner;         /* its HID device in sysfs, also its key in Devices.pp */
     char *node;          /* the receiver's HID++ node, /dev/hidrawN */
     guint8 index;        /* its place on the receiver */
+    const HidppModel *model;
     HidppKeyboard state; /* its settings, once `known` */
     gboolean known, asleep, reading, writing, stale;
     int watch_fd;        /* open while Keyboard shows, -1 otherwise */
@@ -269,7 +270,7 @@ static void add_usb(Devices *d)
             x->has_settings = TRUE;
             if (k->known) {
                 x->keyboard = g_new(KeyboardSettings, 1);
-                hidpp_decode(&k->state, x->keyboard);
+                hidpp_decode(&k->state, k->model, x->keyboard);
             }
             x->asleep = k->asleep;
         }
@@ -633,7 +634,7 @@ static void scan_protocols(Devices *d)
 /* For a keyboard paired to a receiver src/hidpp.c knows, such as
  * .../1-8.4:1.2/0003:046D:C547.0007/0003:046D:40A2.0009: the receiver's
  * HID++ node, and the keyboard's place on it. */
-static char *pp_node(const char *owner, guint8 *index)
+static char *pp_node(const char *owner, guint8 *index, const HidppModel **model)
 {
     char *name = g_path_get_basename(owner), *receiver = g_path_get_dirname(owner);
     char *rname = g_path_get_basename(receiver), *node = NULL;
@@ -658,6 +659,7 @@ static char *pp_node(const char *owner, guint8 *index)
     if (entry && g_str_has_prefix(entry, "hidraw")) {
         node = g_build_filename("/dev", entry, NULL);
         *index = (guint8)at;
+        *model = m;
     }
     if (raw) g_dir_close(raw);
     g_free(dir);
@@ -676,7 +678,8 @@ static void scan_hidpp(Devices *d)
     for (guint i = 0; i < d->usb->len; i++) {
         Device *x = d->usb->pdata[i];
         guint8 index = 0;
-        char *node = x->kind == DEV_KEYBOARD ? pp_node(x->id, &index) : NULL;
+        const HidppModel *model = NULL;
+        char *node = x->kind == DEV_KEYBOARD ? pp_node(x->id, &index, &model) : NULL;
         if (!node) continue;
         PpState *s = g_hash_table_lookup(d->pp, x->id);
         if (s) {
@@ -691,6 +694,7 @@ static void scan_hidpp(Devices *d)
         }
         s->node = node;
         s->index = index;
+        s->model = model;
         g_hash_table_insert(pp, s->owner, s);
     }
     g_hash_table_destroy(d->pp);
@@ -1268,9 +1272,10 @@ static void ask_keys(Devices *d, PpState *s)
 }
 
 /* What the keyboard or its receiver says by itself while Keyboard shows:
- * the receiver lost or found it, it reconnected, or a setting changed. Any
- * of these but a lost link means reading it again. The receiver's node also
- * carries the answers to everyone's requests; those aren't events. */
+ * the receiver lost or found it, it reconnected, its brightness changed, or
+ * another setting did. A new link or another setting means reading it
+ * again. The receiver's node also carries the answers to everyone's
+ * requests; those aren't events. */
 static gboolean on_keys_report(int fd, GIOCondition cond, gpointer data)
 {
     PpState *s = data;
@@ -1280,12 +1285,21 @@ static gboolean on_keys_report(int fd, GIOCondition cond, gpointer data)
     while ((got = read(fd, report, sizeof report)) > 0) {
         HidppEvent ev;
         if (!hidpp_event(report, (gsize)got, s->index, &s->state, &ev)) continue;
-        if (ev.kind == HIDPP_LINK) {
+        switch (ev.kind) {
+        case HIDPP_EVENT_LINK:
             changed |= s->asleep == ev.linked;
             s->asleep = !ev.linked;
             again |= ev.linked;
-        } else {
+            break;
+        case HIDPP_EVENT_BRIGHTNESS:
+            if (!s->known) break;
+            changed |= s->state.brightness != ev.brightness || s->asleep;
+            s->state.brightness = CLAMP(ev.brightness, 0, s->state.brightness_max);
+            s->asleep = FALSE;
+            break;
+        case HIDPP_EVENT_CHANGED:
             again = TRUE;
+            break;
         }
     }
     gboolean gone = got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR);

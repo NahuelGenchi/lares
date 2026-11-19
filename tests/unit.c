@@ -608,9 +608,13 @@ static void test_hidpp_keyboard(void)
     HidppKeyboard k;
     hidpp_sample(&k);
     KeyboardSettings s;
-    hidpp_decode(&k, &s);
+    hidpp_decode(&k, hidpp_model(0xc547, 0x40a2), &s);
     g_assert_true(s.has_brightness);
     g_assert_cmpint(s.brightness, ==, 12);
+    /* The levels its key steps through, as the real one showed them. */
+    const int levels[] = { 0, 12, 25, 50, 100 };
+    g_assert_cmpint(s.levels, ==, 5);
+    g_assert_cmpmem(s.level, sizeof levels, levels, sizeof levels);
     g_assert_true(s.has_lighting);
     g_assert_cmpint(s.light, ==, KEY_LIGHT_OWN);
     g_assert_false(s.app_controls);
@@ -621,8 +625,9 @@ static void test_hidpp_keyboard(void)
     r.brightness_min = 10;
     r.brightness_max = 210;
     r.brightness = 110;
-    hidpp_decode(&r, &s);
+    hidpp_decode(&r, NULL, &s);
     g_assert_cmpint(s.brightness, ==, 50);
+    g_assert_cmpint(s.levels, ==, 0);
     g_assert_cmpint(hidpp_brightness_value(&r, 25), ==, 60);
     g_assert_cmpint(hidpp_brightness_value(&r, 0), ==, 10);
 
@@ -630,7 +635,7 @@ static void test_hidpp_keyboard(void)
     HidppEvent ev;
     const guint8 down[] = { 0x10, 0x01, 0x41, 0x0c, 0x42, 0xa2, 0x40 };
     g_assert_true(hidpp_event(down, sizeof down, 1, &k, &ev));
-    g_assert_cmpint(ev.kind, ==, HIDPP_LINK);
+    g_assert_cmpint(ev.kind, ==, HIDPP_EVENT_LINK);
     g_assert_false(ev.linked);
     const guint8 up[] = { 0x10, 0x01, 0x41, 0x0c, 0x02, 0xa2, 0x40 };
     g_assert_true(hidpp_event(up, sizeof up, 1, &k, &ev));
@@ -638,13 +643,18 @@ static void test_hidpp_keyboard(void)
     g_assert_false(hidpp_event(up, sizeof up, 2, &k, &ev));   /* another device's */
     guint8 status[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x04, 0x00, 0x01, 0x01, 0x01 };
     g_assert_true(hidpp_event(status, sizeof status, 1, &k, &ev));
-    g_assert_cmpint(ev.kind, ==, HIDPP_LINK);
+    g_assert_cmpint(ev.kind, ==, HIDPP_EVENT_LINK);
     g_assert_true(ev.linked);
     status[4] = 0x00;
     g_assert_false(hidpp_event(status, sizeof status, 1, &k, &ev));
-    const guint8 bright[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x0f, 0x00, 0x00, 0x32 };
+    /* Its brightness key stepping from 50 to 25, as the G715 said it. */
+    const guint8 bright[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x0f, 0x00, 0x00, 0x19 };
     g_assert_true(hidpp_event(bright, sizeof bright, 1, &k, &ev));
-    g_assert_cmpint(ev.kind, ==, HIDPP_CHANGED);
+    g_assert_cmpint(ev.kind, ==, HIDPP_EVENT_BRIGHTNESS);
+    g_assert_cmpint(ev.brightness, ==, 25);
+    const guint8 profile[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x10, 0x00, 0x00, 0x01 };
+    g_assert_true(hidpp_event(profile, sizeof profile, 1, &k, &ev));
+    g_assert_cmpint(ev.kind, ==, HIDPP_EVENT_CHANGED);
     /* Answers to Lares' requests or the kernel's, the battery's news, and
      * errors aren't. */
     const guint8 mine[HIDPP_LONG_LEN] = { 0x11, 0x01, 0x0f, 0x1c, 0x00, 0x32 };

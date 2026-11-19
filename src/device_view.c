@@ -309,12 +309,28 @@ static void on_brightness(LaresMeter *meter, double fraction, gpointer user)
     changed(v, FALSE);
 }
 
+/* A keyboard that keeps only some brightness levels has a block for each
+ * but off, so every pick is one it keeps. */
+static int key_blocks(const KeyboardSettings *k)
+{
+    return k->levels > 1 ? k->levels - 1 : 10;
+}
+
+static double key_fraction(const KeyboardSettings *k)
+{
+    if (k->levels <= 1) return k->brightness / 100.0;
+    int near = 0;
+    for (int i = 1; i < k->levels; i++)
+        if (abs(k->level[i] - k->brightness) < abs(k->level[near] - k->brightness)) near = i;
+    return (double)near / (k->levels - 1);
+}
+
 static void on_key_brightness(LaresMeter *meter, double fraction, gpointer user)
 {
     DeviceView *v = user;
     KeyboardSettings *k = key_wanting(v, GTK_WIDGET(meter));
     if (!k) return;
-    k->brightness = (int)lround(fraction * 100);
+    k->brightness = k->levels > 1 ? k->level[(int)lround(fraction * (k->levels - 1))] : (int)lround(fraction * 100);
     changed(v, FALSE);
 }
 
@@ -398,11 +414,11 @@ static GtkWidget *step_button(DeviceView *v, Card *c, const char *text, int step
     return b;
 }
 
-static void brightness_row(DeviceView *v, Card *c, GtkWidget *card, LaresMeterChanged fn)
+static void brightness_row(DeviceView *v, Card *c, GtkWidget *card, LaresMeterChanged fn, int blocks)
 {
     GtkWidget *head;
     setting_row(c, card, "Brightness", NULL, &head);
-    c->bright = lares_meter_new(10, 3);
+    c->bright = lares_meter_new(blocks, 3);
     lares_meter_set_interactive(LARES_METER(c->bright), fn, v);
     gtk_accessible_update_property(GTK_ACCESSIBLE(c->bright), GTK_ACCESSIBLE_PROPERTY_LABEL, "Brightness", -1);
     g_object_set_data_full(G_OBJECT(c->bright), "device", g_strdup(c->id), g_free);
@@ -472,14 +488,14 @@ static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseS
         gtk_accessible_update_property(GTK_ACCESSIBLE(t), GTK_ACCESSIBLE_PROPERTY_LABEL, COLOURS[i].name, -1);
     }
 
-    brightness_row(v, c, card, on_brightness);
+    brightness_row(v, c, card, on_brightness, 10);
 }
 
 /* A keyboard's brightness, which it sets, and its lighting, which shows
  * here for now: what its onboard profile holds, which it plays by itself. */
 static void build_keys(DeviceView *v, Card *c, GtkWidget *card, const KeyboardSettings *k)
 {
-    if (k->has_brightness) brightness_row(v, c, card, on_key_brightness);
+    if (k->has_brightness) brightness_row(v, c, card, on_key_brightness, key_blocks(k));
     if (!k->has_lighting) return;
     GtkWidget *head;
     GtkWidget *row = setting_row(c, card, "Lighting", NULL, &head);
@@ -514,11 +530,11 @@ static char *shape_of(DeviceView *v, Device *d)
     gboolean busy = v->busy_id && g_str_equal(v->busy_id, d->id);
     const MouseSettings *m = settings_shown(d) ? shown(v, d) : NULL;
     const KeyboardSettings *k = settings_shown(d) ? key_shown(v, d) : NULL;
-    return g_strdup_printf("%s\n%s\n%s\n%d %d %d %d %d %d %d %d %d %d %d %d", d->id, d->name,
+    return g_strdup_printf("%s\n%s\n%s\n%d %d %d %d %d %d %d %d %d %d %d %d %d", d->id, d->name,
                            d->model ? d->model : "", d->link, d->bluetooth, d->connected,
                            d->connected && d->battery >= 0, d->battery_locked, d->settings_locked, busy,
                            d->has_settings, m ? m->stages : -1, m ? m->rate_max : 0,
-                           k ? k->has_brightness : -1, k ? k->has_lighting : -1);
+                           k ? k->has_brightness : -1, k ? k->has_lighting : -1, k ? key_blocks(k) : 0);
 }
 
 static Card *build_card(DeviceView *v, Device *d)
@@ -674,7 +690,7 @@ static void update_keys(Card *c, Device *d, const KeyboardSettings *k)
         gboolean lit = !(k->has_lighting && k->light == KEY_LIGHT_OFF);
         gtk_widget_set_sensitive(c->bright, lit);
         gtk_widget_set_sensitive(c->bright_text, lit);
-        lares_meter_set(LARES_METER(c->bright), k->brightness / 100.0);
+        lares_meter_set(LARES_METER(c->bright), key_fraction(k));
         set_number(c->bright_text, "%d%%", k->brightness);
     }
     if (!c->effect) return;

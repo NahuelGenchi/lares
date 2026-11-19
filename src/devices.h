@@ -37,10 +37,14 @@ typedef enum {
     KEY_LIGHT_OWN,
 } KeyLight;
 
+#define KEY_LEVELS 8
+
 /* A keyboard's settings in plain units, as it last reported them. */
 typedef struct {
     gboolean has_brightness;
     int brightness;              /* 0 to 100 % */
+    int levels;                  /* the brightness levels it keeps, from off, or 0 when it keeps any */
+    int level[KEY_LEVELS];       /* those levels, in %, rising */
     gboolean has_lighting;       /* its onboard profile holds the lighting below */
     gboolean app_controls;       /* an app holds the lighting, so the profile's isn't what shows */
     KeyLight light;

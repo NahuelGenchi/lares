@@ -32,6 +32,10 @@ enum {
 typedef struct {
     guint16 receiver, product;
     int interface;          /* the receiver's HID++ interface */
+    /* The brightness values it keeps, from off: its key steps through
+     * them, and it keeps no other. 0 when it keeps any. */
+    int levels;
+    int level[KEY_LEVELS];
 } HidppModel;
 
 /* The lighting in a profile slot. */
@@ -59,13 +63,14 @@ typedef struct {
 typedef enum { HIDPP_OTHER, HIDPP_ANSWER, HIDPP_ERROR, HIDPP_RECEIVER_ERROR } HidppMatch;
 
 /* Something a keyboard or its receiver says unasked: the receiver lost or
- * found it, or it reconnected, or one of its settings changed, such as its
- * brightness by its own key. */
-typedef enum { HIDPP_LINK, HIDPP_CHANGED } HidppEventKind;
+ * found it, or it reconnected; its brightness changed, by its own key or
+ * by a request; or another of its settings changed, so read it again. */
+typedef enum { HIDPP_EVENT_LINK, HIDPP_EVENT_BRIGHTNESS, HIDPP_EVENT_CHANGED } HidppEventKind;
 
 typedef struct {
     HidppEventKind kind;
-    gboolean linked;        /* HIDPP_LINK: awake, or asleep and off */
+    gboolean linked;        /* HIDPP_EVENT_LINK: awake, or asleep and off */
+    int brightness;         /* HIDPP_EVENT_BRIGHTNESS: the new value */
 } HidppEvent;
 
 /* The model with this receiver and wireless product, or NULL. */
@@ -109,8 +114,9 @@ int hidpp_keys_slot(gsize profile_size);
 void hidpp_decode_brightness(const guint8 *info, const guint8 *now, HidppKeyboard *out);
 void hidpp_decode_profile(const guint8 *sector, gsize size, HidppKeyboard *out);
 
-/* `k` in plain units, and back: the brightness value that is `percent`. */
-void hidpp_decode(const HidppKeyboard *k, KeyboardSettings *out);
+/* `k` in plain units, with the levels `model` keeps (it may be NULL), and
+ * back: the brightness value that is `percent`. */
+void hidpp_decode(const HidppKeyboard *k, const HidppModel *model, KeyboardSettings *out);
 int hidpp_brightness_value(const HidppKeyboard *k, int percent);
 
 /* Whether `report` is something the device at `index` behind this receiver
