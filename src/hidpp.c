@@ -11,10 +11,12 @@
  *
  * Written from the behaviour Logitech documents for HID++ 2.0 and what
  * issue #23 found on a real G715; libratbag (MIT) and Solaar (GPL-2.0 or
- * later) were read for the onboard profiles' layout, and no code is taken
- * from either. Lares never takes the lighting into software control: the
- * keyboard would then stop dimming itself, and Lares would have to keep
- * running to do it. */
+ * later) were read for the onboard profiles' layout and the effects'
+ * parameters, and no code is taken from either. Lares never takes the
+ * lighting into software control: the keyboard would then stop dimming
+ * itself, and Lares would have to keep running to do it. It changes the
+ * lighting the onboard profile holds instead, which the keyboard keeps and
+ * plays by itself (issue #57). */
 #include "hidpp.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -23,6 +25,7 @@
 #include <unistd.h>
 
 #define ANSWER_MS  1000
+#define SAVED_MS   3000  /* the end of a profile write, which the keyboard stores before it answers */
 #define ROOT_GET_FEATURE 0
 #define ROOT_PING        1
 #define BRIGHTNESS_INFO  0
@@ -34,7 +37,33 @@
 #define PROFILES_MODE    2   /* 1 onboard, 2 host: an app sends the settings */
 #define PROFILES_CURRENT 4   /* the sector in use */
 #define PROFILES_READ    5   /* <sector:2> <offset:2> -> 16 bytes */
-#define KEYS_SLOT        0xd0 /* the keys' lighting while in use; 0xe6 while saving power */
+#define PROFILES_BEGIN   6   /* memoryAddrWrite <sector:2> <offset:2> <length:2>: a write begins */
+#define PROFILES_WRITE   7   /* memoryWrite: the next 16 bytes of it */
+#define PROFILES_END     8   /* memoryWriteEnd: the keyboard checks the CRC and stores it */
+#define KEYS_SLOT        0xd0 /* the keys' lighting while in use */
+#define SAVING_SLOT      0xe6 /* and once they dim after a minute alone */
+
+/* Effects by their ID in a slot. Colour cycle, wave and ripple each have an
+ * older ID and the one the G715 lists, which adds a saturation; Lares writes
+ * the listed ones. Its factory effect is 0x18, and 0x19 while saving power,
+ * which no list names (issue #23). */
+enum {
+    FX_OFF = 0x00, FX_SOLID = 0x01, FX_BREATHING = 0x0a,
+    FX_CYCLE_OLD = 0x03, FX_WAVE_OLD = 0x04, FX_RIPPLE_OLD = 0x0b,
+    FX_CYCLE = 0x15, FX_WAVE = 0x16, FX_RIPPLE = 0x17,
+    FX_OWN = 0x18, FX_OWN_SAVING = 0x19,
+};
+
+/* What Lares writes with an effect, after its colour: periods in ms,
+ * big-endian, full intensity and saturation, and the wave moving right.
+ * Changing only the colour keeps what the slot already says. */
+#define BREATH_MS     5000
+#define CYCLE_MS      5000
+#define WAVE_MS       5000
+#define RIPPLE_PERIOD 20
+#define FULL          100   /* intensity, in % */
+#define SATURATED     0xff
+#define WAVE_RIGHT    1
 
 #define CONNECTION       0x41 /* a receiver's notice that a device's link came up or went down */
 #define LINK_DOWN        0x40 /* in its flags */
@@ -72,6 +101,26 @@ static gboolean get_sub(const guint8 *params, gsize n)
     return n > 0 && params[0] == 0x00;
 }
 
+/* A write that starts at the beginning of HIDPP_SECTOR and covers it
+ * whole: never the profile directory (sector 0), the ROM (0x01xx), or
+ * another profile. */
+static gboolean whole_sector(const guint8 *p, gsize n)
+{
+    if (n != 6) return FALSE;
+    guint sector = p[0] << 8 | p[1], offset = p[2] << 8 | p[3], length = p[4] << 8 | p[5];
+    return sector == HIDPP_SECTOR && offset == 0 && length >= 16 && length <= HIDPP_SECTOR_MAX;
+}
+
+static gboolean one_chunk(const guint8 *params, gsize n)
+{
+    return n == 16;
+}
+
+static gboolean nothing(const guint8 *params, gsize n)
+{
+    return n == 0;
+}
+
 static const struct {
     guint16 feature;
     guint8 function;
@@ -88,6 +137,9 @@ static const struct {
     { HIDPP_PROFILES, PROFILES_MODE, NULL },
     { HIDPP_PROFILES, PROFILES_CURRENT, NULL },
     { HIDPP_PROFILES, PROFILES_READ, NULL },
+    { HIDPP_PROFILES, PROFILES_BEGIN, whole_sector },
+    { HIDPP_PROFILES, PROFILES_WRITE, one_chunk },
+    { HIDPP_PROFILES, PROFILES_END, nothing },
 };
 
 gboolean hidpp_allowed(guint16 feature, guint8 function, const guint8 *params, gsize n)
@@ -146,22 +198,92 @@ int hidpp_keys_slot(gsize profile_size)
     return profile_size >= KEYS_SLOT + HIDPP_SLOT + 2 ? KEYS_SLOT : -1;
 }
 
-/* Effects by their ID in a slot. Colour cycle, wave and ripple each have an
- * older ID and the one the G715 lists, with a saturation. */
 void hidpp_slot_decode(const guint8 *slot, HidppLighting *out)
 {
     memset(out, 0, sizeof *out);
     switch (slot[0]) {
-    case 0x00: out->effect = KEY_LIGHT_OFF; break;
-    case 0x01: out->effect = KEY_LIGHT_SOLID; break;
-    case 0x0a: out->effect = KEY_LIGHT_BREATHING; break;
-    case 0x03: case 0x15: out->effect = KEY_LIGHT_CYCLE; break;
-    case 0x04: case 0x16: out->effect = KEY_LIGHT_WAVE; break;
-    case 0x0b: case 0x17: out->effect = KEY_LIGHT_RIPPLE; break;
-    default: out->effect = KEY_LIGHT_OWN; return;
+    case FX_OFF: out->effect = KEY_LIGHT_OFF; break;
+    case FX_SOLID: out->effect = KEY_LIGHT_SOLID; break;
+    case FX_BREATHING: out->effect = KEY_LIGHT_BREATHING; break;
+    case FX_CYCLE_OLD: case FX_CYCLE: out->effect = KEY_LIGHT_CYCLE; break;
+    case FX_WAVE_OLD: case FX_WAVE: out->effect = KEY_LIGHT_WAVE; break;
+    case FX_RIPPLE_OLD: case FX_RIPPLE: out->effect = KEY_LIGHT_RIPPLE; break;
+    case FX_OWN: case FX_OWN_SAVING: out->effect = KEY_LIGHT_OWN; break;
+    default: out->effect = KEY_LIGHT_OTHER; break;
     }
-    if (out->effect == KEY_LIGHT_SOLID || out->effect == KEY_LIGHT_BREATHING || out->effect == KEY_LIGHT_RIPPLE)
-        memcpy(out->rgb, slot + 1, 3);
+    if (key_light_coloured(out->effect)) memcpy(out->rgb, slot + 1, 3);
+}
+
+static void put16(guint8 *at, guint value)
+{
+    at[0] = value >> 8 & 0xff;
+    at[1] = value & 0xff;
+}
+
+/* The parameters follow the effect: the colour first, for those with one. */
+gboolean hidpp_slot_encode(const HidppLighting *l, gboolean saving, guint8 slot[HIDPP_SLOT])
+{
+    guint8 *p = slot + 1;
+    memset(slot, 0, HIDPP_SLOT);
+    if (key_light_coloured(l->effect)) memcpy(p, l->rgb, 3);
+    switch (l->effect) {
+    case KEY_LIGHT_OFF:
+        slot[0] = FX_OFF;
+        break;
+    case KEY_LIGHT_SOLID:
+        slot[0] = FX_SOLID;   /* then its ramp, 0 for the keyboard's own */
+        break;
+    case KEY_LIGHT_BREATHING:
+        slot[0] = FX_BREATHING;
+        put16(p + 3, BREATH_MS);
+        p[6] = FULL;          /* after the waveform, 0 for the keyboard's own */
+        break;
+    case KEY_LIGHT_CYCLE:
+        slot[0] = FX_CYCLE;
+        p[1] = SATURATED;
+        put16(p + 6, CYCLE_MS);
+        p[8] = FULL;
+        break;
+    case KEY_LIGHT_WAVE:
+        slot[0] = FX_WAVE;
+        p[1] = SATURATED;
+        put16(p + 6, WAVE_MS);
+        p[8] = FULL;
+        p[9] = WAVE_RIGHT;
+        break;
+    case KEY_LIGHT_RIPPLE:
+        slot[0] = FX_RIPPLE;
+        p[3] = SATURATED;
+        put16(p + 6, RIPPLE_PERIOD);
+        break;
+    case KEY_LIGHT_OWN:
+        slot[0] = saving ? FX_OWN_SAVING : FX_OWN;
+        break;
+    default:
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* A slot that already plays the effect keeps its speed and the rest, and
+ * takes only the new colour. */
+static void put_slot(guint8 *at, const HidppLighting *l, const guint8 fresh[HIDPP_SLOT])
+{
+    if (at[0] != fresh[0]) memcpy(at, fresh, HIDPP_SLOT);
+    else if (key_light_coloured(l->effect)) memcpy(at + 1, l->rgb, 3);
+}
+
+gboolean hidpp_profile_lit(const guint8 *sector, gsize size, const HidppLighting *l, guint8 *out)
+{
+    guint8 on[HIDPP_SLOT], saving[HIDPP_SLOT];
+    if (size > HIDPP_SECTOR_MAX || size < SAVING_SLOT + HIDPP_SLOT + 2 || !hidpp_sector_valid(sector, size)
+        || !hidpp_slot_encode(l, FALSE, on) || !hidpp_slot_encode(l, TRUE, saving))
+        return FALSE;
+    memmove(out, sector, size);
+    put_slot(out + KEYS_SLOT, l, on);
+    put_slot(out + SAVING_SLOT, l, saving);
+    put16(out + size - 2, hidpp_crc(out, size - 2));
+    return TRUE;
 }
 
 void hidpp_decode_brightness(const guint8 *info, const guint8 *now, HidppKeyboard *out)
@@ -297,11 +419,11 @@ static gboolean link_open(Link *l, const char *node, guint8 index, GError **erro
     return FALSE;
 }
 
-/* Sends function `function` of `feature`, at `feature_index`, and waits for
- * its answer's parameters, skipping everything else on the way: the
- * kernel's own requests and answers, and events. */
-static gboolean call(Link *l, guint16 feature, guint8 feature_index, guint8 function, const guint8 *params,
-                     gsize n, guint8 out[HIDPP_PARAMS], GError **error)
+/* Sends function `function` of `feature`, at `feature_index`, and waits up
+ * to `ms` for its answer's parameters, skipping everything else on the way:
+ * the kernel's own requests and answers, and events. */
+static gboolean call_for(Link *l, int ms, guint16 feature, guint8 feature_index, guint8 function,
+                         const guint8 *params, gsize n, guint8 out[HIDPP_PARAMS], GError **error)
 {
     if (!hidpp_allowed(feature, function, params, n))
         return fail(error, G_IO_ERROR_PERMISSION_DENIED, "Lares doesn't send that request.");
@@ -311,7 +433,7 @@ static gboolean call(Link *l, guint16 feature, guint8 feature_index, guint8 func
     while (read(l->fd, junk, sizeof junk) > 0) {}   /* what came before isn't for us */
     if (!len || write(l->fd, packet, len) != (ssize_t)len)
         return fail(error, G_IO_ERROR_FAILED, "Its receiver couldn't be asked.");
-    gint64 end = g_get_monotonic_time() + ANSWER_MS * 1000;
+    gint64 end = g_get_monotonic_time() + (gint64)ms * 1000;
     for (;;) {
         int left = (int)((end - g_get_monotonic_time()) / 1000);
         if (left <= 0) break;
@@ -338,6 +460,12 @@ static gboolean call(Link *l, guint16 feature, guint8 feature_index, guint8 func
         }
     }
     return fail(error, G_IO_ERROR_TIMED_OUT, "It didn't answer; it may be asleep.");
+}
+
+static gboolean call(Link *l, guint16 feature, guint8 feature_index, guint8 function, const guint8 *params,
+                     gsize n, guint8 out[HIDPP_PARAMS], GError **error)
+{
+    return call_for(l, ANSWER_MS, feature, feature_index, function, params, n, out, error);
 }
 
 /* The feature's index on the device, 0 when it hasn't the feature. */
@@ -444,6 +572,57 @@ gboolean hidpp_set_brightness(const char *node, guint8 index, int value, int *no
         close(l.fd);
     }
     g_mutex_unlock(&turns);
+    return ok;
+}
+
+/* The whole sector, 16 bytes a time, the last padded; the keyboard keeps
+ * the length the write began with, checks the CRC at its end, and only
+ * then stores it. */
+static gboolean write_profile(Link *l, guint8 fi, guint16 sector, const guint8 *data, gsize size, GError **error)
+{
+    const guint8 begin[] = { sector >> 8, sector & 0xff, 0, 0, size >> 8, size & 0xff };
+    guint8 a[HIDPP_PARAMS];
+    if (!call(l, HIDPP_PROFILES, fi, PROFILES_BEGIN, begin, sizeof begin, a, error)) return FALSE;
+    for (gsize at = 0; at < size; at += 16) {
+        guint8 chunk[16] = { 0 };
+        memcpy(chunk, data + at, MIN((gsize)16, size - at));
+        if (!call(l, HIDPP_PROFILES, fi, PROFILES_WRITE, chunk, sizeof chunk, a, error)) return FALSE;
+    }
+    return call_for(l, SAVED_MS, HIDPP_PROFILES, fi, PROFILES_END, NULL, 0, a, error);
+}
+
+static gboolean set_lighting(Link *l, const HidppLighting *want, HidppKeyboard *out, GError **error)
+{
+    HidppKeyboard k;
+    guint8 sector[HIDPP_SECTOR_MAX];
+    if (!read_all(l, &k, error)) return FALSE;
+    if (!k.profiles_index || !k.has_profile || !hidpp_profile_lit(k.profile, k.profile_size, want, sector))
+        return fail(error, G_IO_ERROR_NOT_SUPPORTED, "Its lighting can't be changed.");
+    if (k.sector != HIDPP_SECTOR)
+        return fail(error, G_IO_ERROR_NOT_SUPPORTED, "It's using a profile Lares doesn't change.");
+    if (memcmp(sector, k.profile, k.profile_size) != 0) {
+        if (!write_profile(l, k.profiles_index, k.sector, sector, k.profile_size, error) || !read_all(l, &k, error))
+            return FALSE;
+        if (!k.has_profile || memcmp(k.profile, sector, k.profile_size) != 0)
+            return fail(error, G_IO_ERROR_FAILED, "It didn't keep the new lighting.");
+    }
+    *out = k;
+    return TRUE;
+}
+
+gboolean hidpp_set_lighting(const char *node, guint8 index, const HidppLighting *l, HidppKeyboard *out,
+                            GError **error)
+{
+    Link link;
+    HidppKeyboard k;
+    g_mutex_lock(&turns);
+    gboolean ok = link_open(&link, node, index, error);
+    if (ok) {
+        ok = set_lighting(&link, l, &k, error);
+        close(link.fd);
+    }
+    g_mutex_unlock(&turns);
+    if (ok) *out = k;
     return ok;
 }
 

@@ -1264,8 +1264,10 @@ typedef struct {
     Devices *d;
     char *owner, *node;
     guint8 index;
-    HidppKeyboard state;
+    HidppKeyboard state;   /* what it reads, or holds after a lighting change */
+    gboolean set_bright, set_light;
     int value, now;        /* the brightness to set, and what it reads back */
+    HidppLighting light;   /* the lighting to set */
     DevDone done;
     gpointer user;
 } KeysCtx;
@@ -1415,7 +1417,9 @@ static void keys_write_thread(GTask *task, gpointer src, gpointer data, GCancell
 {
     KeysCtx *c = data;
     GError *e = NULL;
-    if (hidpp_set_brightness(c->node, c->index, c->value, &c->now, &e)) g_task_return_boolean(task, TRUE);
+    gboolean ok = !c->set_bright || hidpp_set_brightness(c->node, c->index, c->value, &c->now, &e);
+    if (ok && c->set_light) ok = hidpp_set_lighting(c->node, c->index, &c->light, &c->state, &e);
+    if (ok) g_task_return_boolean(task, TRUE);
     else g_task_return_error(task, e);
 }
 
@@ -1428,7 +1432,8 @@ static void keys_written(GObject *src, GAsyncResult *res, gpointer user)
     if (s) {
         s->writing = FALSE;
         if (ok) {
-            s->state.brightness = c->now;
+            if (c->set_light) s->state = c->state;   /* read back whole, the brightness too */
+            else s->state.brightness = c->now;
             s->asleep = FALSE;
         } else if (g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED)
                    || g_error_matches(e, G_IO_ERROR, G_IO_ERROR_TIMED_OUT)) {
@@ -1452,7 +1457,8 @@ static gboolean pretend_keys_written(gpointer data)
     PpState *s = g_hash_table_lookup(c->d->pp, c->owner);
     if (s) {
         s->writing = FALSE;
-        s->state.brightness = c->value;
+        if (c->set_bright) s->state.brightness = c->value;
+        if (c->set_light) s->state.light = c->light;
         if (s->stale) {
             s->stale = FALSE;
             ask_keys(c->d, s);
@@ -1468,16 +1474,27 @@ void devices_set_keyboard(Devices *d, const char *id, const KeyboardSettings *ba
                           DevDone done, gpointer user)
 {
     PpState *s = g_hash_table_lookup(d->pp, id);
-    if (!s || !s->known || s->writing || !s->state.has_brightness) {
+    if (!s || !s->known || s->writing) {
         done(FALSE, "Its settings can't be changed right now.", user);
         return;
     }
-    if (want->brightness == base->brightness) {
+    gboolean bright = want->brightness != base->brightness;
+    gboolean light = want->light != base->light
+                     || (key_light_coloured(want->light) && memcmp(want->rgb, base->rgb, 3) != 0);
+    if ((bright && !s->state.has_brightness) || (light && !s->state.has_profile)) {
+        done(FALSE, "Its settings can't be changed right now.", user);
+        return;
+    }
+    if (!bright && !light) {
         done(TRUE, NULL, user);
         return;
     }
     KeysCtx *c = keys_ctx(d, s);
+    c->set_bright = bright;
     c->value = hidpp_brightness_value(&s->state, want->brightness);
+    c->set_light = light;
+    c->light.effect = want->light;
+    memcpy(c->light.rgb, want->rgb, 3);
     c->done = done;
     c->user = user;
     s->writing = TRUE;

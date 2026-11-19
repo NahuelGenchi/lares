@@ -17,6 +17,7 @@
 #define HIDPP_SW_ID      0x0c
 #define HIDPP_SECTOR_MAX 256    /* the largest profile sector Lares keeps */
 #define HIDPP_SLOT       11     /* bytes in a lighting slot of a profile */
+#define HIDPP_SECTOR     0x0001 /* the one profile sector Lares ever writes */
 
 enum {
     HIDPP_ROOT        = 0x0000,
@@ -81,9 +82,10 @@ const HidppModel *hidpp_model(guint16 receiver, guint16 product);
 int hidpp_phys_index(const char *phys);
 
 /* Whether Lares may send function `function` of feature `feature` with
- * these parameters: the reads it needs, and setBrightness. Everything
- * else, such as firmware updates, resets or the keyboard's test modes, is
- * refused before it's sent. */
+ * these parameters: the reads it needs, setBrightness, and a write of the
+ * whole profile in HIDPP_SECTOR. Everything else, such as other sectors,
+ * firmware updates, resets or the keyboard's test modes, is refused before
+ * it's sent. */
 gboolean hidpp_allowed(guint16 feature, guint8 function, const guint8 *params, gsize n);
 
 /* Builds a request in `out`, short when the parameters fit, and returns its
@@ -104,6 +106,14 @@ gboolean hidpp_sector_valid(const guint8 *sector, gsize size);
 /* The lighting in an 11-byte profile slot: the effect, then its
  * parameters, the colour first. */
 void hidpp_slot_decode(const guint8 *slot, HidppLighting *out);
+/* And back, for the slot in use or the one for saving power (`saving`).
+ * FALSE for KEY_LIGHT_OTHER, which Lares can't write. */
+gboolean hidpp_slot_encode(const HidppLighting *l, gboolean saving, guint8 slot[HIDPP_SLOT]);
+
+/* `sector` with the keys' lighting changed to `l`, in use and while saving
+ * power, and its CRC made again, in `out`; everything else stays. FALSE when
+ * `sector` isn't a whole profile or `l` can't be written. */
+gboolean hidpp_profile_lit(const guint8 *sector, gsize size, const HidppLighting *l, guint8 *out);
 
 /* Where the keys' lighting sits in a profile, while in use, or -1 when the
  * profile is too short to hold it. */
@@ -134,6 +144,12 @@ void hidpp_sample(HidppKeyboard *out);
 gboolean hidpp_read(const char *node, guint8 index, HidppKeyboard *out, GError **error);
 /* Sets the brightness, then reads it back into `now`. */
 gboolean hidpp_set_brightness(const char *node, guint8 index, int value, int *now, GError **error);
+/* Writes `l` into the onboard profile in use, which must be HIDPP_SECTOR:
+ * reads the profile, changes its lighting slots, writes it whole with a new
+ * CRC, and reads it back, which fills `out`. Nothing is written when it
+ * already holds `l`. */
+gboolean hidpp_set_lighting(const char *node, guint8 index, const HidppLighting *l, HidppKeyboard *out,
+                            GError **error);
 
 /* The udev rules that let the person at the screen open each known
  * receiver's HID++ node, and nothing else of it. The keyboard's own node
