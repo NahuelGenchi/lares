@@ -28,6 +28,15 @@
 enum { TAB_BUTTONS, TAB_STICKS, TAB_VIBRATION, N_TABS };
 static const char *const TAB_NAMES[N_TABS] = { "Buttons", "Sticks", "Vibration" };
 
+/* What buttons whose text changes can say; each keeps the width of its
+ * widest (ui_button_labels), so a click doesn't move it. */
+static const char *const PLAY_LABELS[] = { "Play", "Playing…", NULL };
+static const char *const FIND_LABELS[] = { "Find controller", "Stop finding", NULL };
+static const char *const CONNECT_LABELS[] = { "Connect", "Connecting…", NULL };
+/* padpair_action's, and "Pairing…" while it pairs, with nothing to click. */
+static const char *const PAIR_LABELS[] = { "Pair a controller", "Stop searching", "Search again",
+                                           "Pair another controller", "Try again", "Pairing…", NULL };
+
 typedef struct PadView PadView;
 
 /* What a controller's card remembers while it stays connected, so a card
@@ -54,6 +63,7 @@ typedef struct {
     GtkWidget *gauges[2], *stick_text[2], *trig_meter[2], *trig_text[2];
     GtkWidget *strong, *weak, *length, *strong_text, *weak_text, *length_text, *play;
     GtkWidget *users, *find, *test;
+    GtkWidget *battery, *battery_text;  /* turn orange at the low battery level */
     PadReader *reader;
     gboolean reader_raw;
     Stick sticks[2];
@@ -339,7 +349,7 @@ static void on_length(LaresMeter *meter, double f, gpointer data)
 static gboolean played(gpointer data)
 {
     GtkWidget *b = data;
-    gtk_button_set_label(GTK_BUTTON(b), "Play");
+    ui_button_label(b, "Play");
     gtk_widget_set_sensitive(b, TRUE);
     g_object_unref(b);
     return G_SOURCE_REMOVE;
@@ -350,7 +360,7 @@ static void on_play(GtkButton *b, Card *c)
     const Pad *pad = pads_find(c->v->app->pads, c->path);
     Memory *m = memory_of(c->v, c->path);
     if (!pad || !pad_rumble(pad, m->strong, m->weak, m->length_ms)) return;
-    gtk_button_set_label(b, "Playing…");
+    ui_button_label(GTK_WIDGET(b), "Playing…");
     gtk_widget_set_sensitive(GTK_WIDGET(b), FALSE);
     g_timeout_add(m->length_ms, played, g_object_ref(b));
 }
@@ -369,7 +379,7 @@ static void find_done(gpointer data)
     PadView *v = data;
     for (guint i = 0; i < v->card_list->len; i++) {
         Card *c = v->card_list->pdata[i];
-        if (c->find) gtk_button_set_label(GTK_BUTTON(c->find), pad_finding(c->path) ? "Stop finding" : "Find controller");
+        if (c->find) ui_button_label(c->find, pad_finding(c->path) ? "Stop finding" : "Find controller");
     }
 }
 
@@ -497,6 +507,7 @@ static GtkWidget *vibration_page(Card *c)
     gtk_widget_set_hexpand(note, TRUE);
     gtk_box_append(GTK_BOX(foot), note);
     c->play = button("Play", "primary", G_CALLBACK(on_play), c);
+    ui_button_labels(c->play, PLAY_LABELS);
     gtk_widget_set_valign(c->play, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(foot), c->play);
     gtk_box_append(GTK_BOX(page), foot);
@@ -510,6 +521,29 @@ static char *since_text(gint64 since)
     char *s = g_date_time_format(t, "%H:%M");
     g_date_time_unref(t);
     return s;
+}
+
+/* The nickname, or the model's name, and how it's connected. */
+static void show_name(Card *c, const Pad *pad)
+{
+    char *since = since_text(pad->since);
+    char *sub = pad->nickname ? g_strdup_printf("%s · %s%s%s", pad->name, pad_connection_name(pad->connection),
+                                                since ? " since " : "", since ? since : "")
+                              : g_strdup_printf("%s%s%s", pad_connection_name(pad->connection),
+                                                since ? " since " : "", since ? since : "");
+    set_text(c->name, pad_name(pad));
+    set_text(c->sub, sub);
+    g_free(sub);
+    g_free(since);
+}
+
+static void show_low(Card *c, const Pad *pad)
+{
+    if (!c->battery) return;
+    gboolean low = pad_battery_low_stage(&pad->battery, prefs(c->v)->low_level) > 0
+                && !pad_battery_charging(&pad->battery);
+    ui_class(c->battery, "low", low);
+    ui_class(c->battery_text, "low", low);
 }
 
 static GtkWidget *pad_card(PadView *v, const Pad *pad)
@@ -533,7 +567,7 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_hexpand(texts, TRUE);
     gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
-    c->name = ui_label(pad_name(pad), "card-title");
+    c->name = ui_label("", "card-title");
     gtk_label_set_ellipsize(GTK_LABEL(c->name), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(texts), c->name);
     c->entry = gtk_entry_new();
@@ -545,16 +579,10 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     g_signal_connect(keys, "key-pressed", G_CALLBACK(on_entry_key), c);
     gtk_widget_add_controller(c->entry, keys);
     gtk_box_append(GTK_BOX(texts), c->entry);
-    char *since = since_text(pad->since);
-    char *sub = pad->nickname ? g_strdup_printf("%s · %s%s%s", pad->name, pad_connection_name(pad->connection),
-                                                since ? " since " : "", since ? since : "")
-                              : g_strdup_printf("%s%s%s", pad_connection_name(pad->connection),
-                                                since ? " since " : "", since ? since : "");
-    c->sub = ui_label(sub, "muted");
+    c->sub = ui_label("", "muted");
     gtk_label_set_ellipsize(GTK_LABEL(c->sub), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(texts), c->sub);
-    g_free(sub);
-    g_free(since);
+    show_name(c, pad);
     gtk_box_append(GTK_BOX(head), texts);
     if (pad_can_nickname(pad)) {
         GtkWidget *pencil = gtk_button_new();
@@ -613,14 +641,14 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
     GtkWidget *facts = lares_wrap_new(27);
     GtkWidget *bat = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
     if (pad->battery.known) {
-        GtkWidget *meter = lares_meter_new(10, 2);
-        lares_meter_set(LARES_METER(meter), pad_battery_fraction(&pad->battery));
-        gboolean low = pad_battery_low_stage(&pad->battery, prefs(v)->low_level) > 0 && !pad_battery_charging(&pad->battery);
-        ui_class(meter, "low", low);
-        gtk_box_append(GTK_BOX(bat), meter);
+        c->battery = lares_meter_new(10, 2);
+        lares_meter_set(LARES_METER(c->battery), pad_battery_fraction(&pad->battery));
+        gtk_box_append(GTK_BOX(bat), c->battery);
         char *text = pad_battery_text(&pad->battery);
-        gtk_box_append(GTK_BOX(bat), ui_label(text, low ? "low" : NULL));
+        c->battery_text = ui_label(text, NULL);
+        gtk_box_append(GTK_BOX(bat), c->battery_text);
         g_free(text);
+        show_low(c, pad);
     } else {
         gtk_box_append(GTK_BOX(bat), ui_label(pad->connection == PAD_USB ? "On USB power" : "No reading yet", NULL));
     }
@@ -650,7 +678,9 @@ static GtkWidget *pad_card(PadView *v, const Pad *pad)
         gtk_widget_set_visible(c->test, m->tab != TAB_VIBRATION);
         lares_wrap_append(LARES_WRAP(actions), c->test);
         if (pad->connection != PAD_USB) {
-            c->find = button(pad_finding(pad->path) ? "Stop finding" : "Find controller", "quiet", G_CALLBACK(on_find), c);
+            c->find = button("Find controller", "quiet", G_CALLBACK(on_find), c);
+            ui_button_labels(c->find, FIND_LABELS);
+            if (pad_finding(pad->path)) ui_button_label(c->find, "Stop finding");
             lares_wrap_append(LARES_WRAP(actions), c->find);
         }
     }
@@ -714,7 +744,9 @@ static void build_away(PadView *v)
             gtk_box_append(GTK_BOX(texts), ui_paragraph(v->away_error, "bad"));
         gtk_box_append(GTK_BOX(card), texts);
         gboolean busy = v->away_busy && g_str_equal(v->away_busy, d->id);
-        GtkWidget *b = button(busy ? "Connecting…" : "Connect", "primary", G_CALLBACK(on_connect_away), v);
+        GtkWidget *b = button("Connect", "primary", G_CALLBACK(on_connect_away), v);
+        ui_button_labels(b, CONNECT_LABELS);
+        if (busy) ui_button_label(b, "Connecting…");
         gtk_widget_set_sensitive(b, !busy);
         g_object_set_data_full(G_OBJECT(b), "device", g_strdup(d->id), g_free);
         gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
@@ -739,8 +771,8 @@ static void show_pairing(gpointer data)
 {
     PadView *v = data;
     const char *action = padpair_action(v->pair);
-    gtk_widget_set_visible(v->pair_action, action != NULL);
-    if (action) gtk_button_set_label(GTK_BUTTON(v->pair_action), action);
+    ui_button_label(v->pair_action, action ? action : "Pairing…");
+    gtk_widget_set_sensitive(v->pair_action, action != NULL);
     char *status = padpair_status(v->pair);
     gtk_label_set_text(GTK_LABEL(v->pair_status), status ? status : "Hold the pair button on top of the controller "
                                                                     "until the Xbox button flashes quickly.");
@@ -784,13 +816,18 @@ static void on_switch(GObject *sw, GParamSpec *ps, PadView *v)
     show_settings(v);
 }
 
+/* The cards change colour in place: making them again would reset them. */
 static void on_level(GtkButton *b, PadView *v)
 {
     int step = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "step"));
     prefs(v)->low_level = CLAMP(prefs(v)->low_level + step, 5, 50);
     save(v);
     show_settings(v);
-    rebuild(v);
+    for (guint i = 0; i < v->card_list->len; i++) {
+        Card *c = v->card_list->pdata[i];
+        const Pad *pad = pads_find(v->app->pads, c->path);
+        if (pad) show_low(c, pad);
+    }
 }
 
 static void on_minutes(GtkToggleButton *t, PadView *v)
@@ -951,17 +988,18 @@ static void find_users(PadView *v)
     for (guint i = 0; i < list->len; i++) pad_find_users(list->pdata[i], users_found, v);
 }
 
-/* What the cards show; when it's the same, nothing is made again. */
+/* What the cards show; when it's the same, nothing is made again. A
+ * nickname and the low battery level change in place, as the cards' own
+ * controls change them, and making the cards again would reset those. */
 static char *shape_of(PadView *v)
 {
     GString *s = g_string_new(NULL);
     GPtrArray *list = pads_list(v->app->pads);
     for (guint i = 0; i < list->len; i++) {
         Pad *p = list->pdata[i];
-        g_string_append_printf(s, "%s|%s|%d|%.0f|%u|%u;", p->path, pad_name(p), p->battery.known,
-                               p->battery.percentage, p->battery.state, p->battery.level);
+        g_string_append_printf(s, "%s|%d|%.0f|%u|%u;", p->path, p->battery.known, p->battery.percentage,
+                               p->battery.state, p->battery.level);
     }
-    g_string_append_printf(s, "low %d", prefs(v)->low_level);
     return g_string_free(s, FALSE);
 }
 
@@ -969,7 +1007,15 @@ static void rebuild(gpointer data)
 {
     PadView *v = data;
     char *shape = shape_of(v);
-    if (v->shape && g_str_equal(shape, v->shape)) { g_free(shape); return; }
+    if (v->shape && g_str_equal(shape, v->shape)) {
+        g_free(shape);
+        for (guint i = 0; i < v->card_list->len; i++) {
+            Card *c = v->card_list->pdata[i];
+            const Pad *pad = pads_find(v->app->pads, c->path);
+            if (pad) show_name(c, pad);
+        }
+        return;
+    }
     g_free(v->shape);
     v->shape = shape;
 
@@ -1030,15 +1076,18 @@ GtkWidget *pad_view_build(Lares *app, Section *self)
     gtk_widget_add_css_class(v->pair_card, "card");
     gtk_widget_add_css_class(v->pair_card, "padded");
     /* The hint and the button say what this card is for: the hint across
-     * the card, the controllers found, then the button, so the hint doesn't
-     * wrap into a narrow column beside it. */
+     * the card, so it doesn't wrap into a narrow column beside the button.
+     * The hint keeps the height of its longest, and the controllers found
+     * come under the button, so the button stays put while pairing goes on. */
     v->pair_status = ui_paragraph("", "muted");
+    gtk_widget_add_css_class(v->pair_status, "pair-status");
     gtk_box_append(GTK_BOX(v->pair_card), v->pair_status);
-    v->pair_found = lares_wrap_new(9);
-    gtk_box_append(GTK_BOX(v->pair_card), v->pair_found);
     v->pair_action = button("Pair a controller", "primary", G_CALLBACK(on_pair_action), v);
+    ui_button_labels(v->pair_action, PAIR_LABELS);
     gtk_widget_set_halign(v->pair_action, GTK_ALIGN_END);
     gtk_box_append(GTK_BOX(v->pair_card), v->pair_action);
+    v->pair_found = lares_wrap_new(9);
+    gtk_box_append(GTK_BOX(v->pair_card), v->pair_found);
     gtk_box_append(GTK_BOX(v->page), v->pair_card);
     show_pairing(v);
 

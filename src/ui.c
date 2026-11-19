@@ -34,6 +34,24 @@ GtkWidget *ui_busy_child(const char *text, gboolean busy)
     return overlay;
 }
 
+/* A button whose text changes keeps the width of its widest text, so
+ * neither it nor what's beside it moves when it says something else.
+ * `labels` ends with NULL, and the first shows; ui_button_label shows
+ * another of them. */
+void ui_button_labels(GtkWidget *button, const char *const *labels)
+{
+    GtkWidget *stack = gtk_stack_new();
+    for (int i = 0; labels[i]; i++) gtk_stack_add_named(GTK_STACK(stack), gtk_label_new(labels[i]), labels[i]);
+    gtk_button_set_child(GTK_BUTTON(button), stack);
+    ui_button_label(button, labels[0]);
+}
+
+void ui_button_label(GtkWidget *button, const char *label)
+{
+    gtk_stack_set_visible_child_name(GTK_STACK(gtk_button_get_child(GTK_BUTTON(button))), label);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+}
+
 GtkWidget *ui_icon(const char *const *art, int pixel, const char *css_class)
 {
     GtkWidget *w = lares_pixel_icon_new(art, pixel);
