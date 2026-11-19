@@ -760,6 +760,7 @@ struct _LaresMeter {
     double value;
     LaresMeterChanged changed;
     gpointer changed_user;
+    gboolean dragged;   /* a drag picked something, to be finished when it ends */
 };
 
 G_DEFINE_FINAL_TYPE(LaresMeter, lares_meter, GTK_TYPE_WIDGET)
@@ -821,27 +822,41 @@ void lares_meter_set(LaresMeter *s, double fraction)
     gtk_widget_queue_draw(GTK_WIDGET(s));
 }
 
-static void meter_pick(LaresMeter *s, double fraction)
+static gboolean meter_pick(LaresMeter *s, double fraction)
 {
     fraction = CLAMP(round(fraction * s->blocks) / s->blocks, 0.0, 1.0);
-    if (fabs(fraction - s->value) < 0.001) return;
+    if (fabs(fraction - s->value) < 0.001) return FALSE;
     lares_meter_set(s, fraction);
-    s->changed(s, fraction, s->changed_user);
+    s->changed(s, fraction, FALSE, s->changed_user);
+    return TRUE;
 }
 
 /* A block counts once the pointer is past its middle. */
 static void meter_at(LaresMeter *s, double x)
 {
-    meter_pick(s, (x + 2.0 * s->pixel) / (4.0 * s->pixel * s->blocks));
+    if (meter_pick(s, (x + 2.0 * s->pixel) / (4.0 * s->pixel * s->blocks))) s->dragged = TRUE;
 }
 
-static void meter_drag_begin(GtkGestureDrag *g, double x, double y, LaresMeter *s) { meter_at(s, x); }
+static void meter_drag_begin(GtkGestureDrag *g, double x, double y, LaresMeter *s)
+{
+    s->dragged = FALSE;
+    meter_at(s, x);
+}
 
 static void meter_drag_update(GtkGestureDrag *g, double dx, double dy, LaresMeter *s)
 {
     double x, y;
     gtk_gesture_drag_get_start_point(g, &x, &y);
     meter_at(s, x + dx);
+}
+
+/* A click is a drag that doesn't move: either way, the pick is final once
+ * the button is let go. */
+static void meter_drag_end(GtkGestureDrag *g, double dx, double dy, LaresMeter *s)
+{
+    if (!s->dragged) return;
+    s->dragged = FALSE;
+    s->changed(s, s->value, TRUE, s->changed_user);
 }
 
 static gboolean meter_key(GtkEventControllerKey *k, guint keyval, guint code, GdkModifierType mods, LaresMeter *s)
@@ -859,6 +874,7 @@ void lares_meter_set_interactive(LaresMeter *s, LaresMeterChanged fn, gpointer u
     GtkGesture *drag = gtk_gesture_drag_new();
     g_signal_connect(drag, "drag-begin", G_CALLBACK(meter_drag_begin), s);
     g_signal_connect(drag, "drag-update", G_CALLBACK(meter_drag_update), s);
+    g_signal_connect(drag, "drag-end", G_CALLBACK(meter_drag_end), s);
     gtk_widget_add_controller(GTK_WIDGET(s), GTK_EVENT_CONTROLLER(drag));
     GtkEventController *keys = gtk_event_controller_key_new();
     g_signal_connect(keys, "key-pressed", G_CALLBACK(meter_key), s);

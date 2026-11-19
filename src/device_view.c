@@ -8,7 +8,7 @@
 #include "lares.h"
 
 #define DPI_STEP  100   /* each − or + */
-#define SETTLE_MS 700   /* a stepped DPI or a dragged brightness is written once it stops */
+#define SETTLE_MS 700   /* a stepped DPI or brightness is written once it stops, or a click or drag is let go */
 
 typedef enum { PICK_STAGE, PICK_RATE, PICK_LIFT, PICK_LIGHT, PICK_COLOUR } Pick;
 
@@ -300,9 +300,13 @@ static void on_dpi_step(GtkButton *b, DeviceView *v)
     changed(v, FALSE);
 }
 
-static void on_brightness(LaresMeter *meter, double fraction, gpointer user)
+static void on_brightness(LaresMeter *meter, double fraction, gboolean done, gpointer user)
 {
     DeviceView *v = user;
+    if (done) { /* let go: what it picked is written now */
+        commit(v);
+        return;
+    }
     MouseSettings *m = wanting(v, GTK_WIDGET(meter));
     if (!m) return;
     m->brightness = (int)lround(fraction * 100);
@@ -325,9 +329,13 @@ static double key_fraction(const KeyboardSettings *k)
     return (double)near / (k->levels - 1);
 }
 
-static void on_key_brightness(LaresMeter *meter, double fraction, gpointer user)
+static void on_key_brightness(LaresMeter *meter, double fraction, gboolean done, gpointer user)
 {
     DeviceView *v = user;
+    if (done) {
+        commit(v);
+        return;
+    }
     KeyboardSettings *k = key_wanting(v, GTK_WIDGET(meter));
     if (!k) return;
     k->brightness = k->levels > 1 ? k->level[(int)lround(fraction * (k->levels - 1))] : (int)lround(fraction * 100);
