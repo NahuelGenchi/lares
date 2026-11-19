@@ -74,7 +74,9 @@ AWDL takes the Wi-Fi card for itself while it runs, unless the card can inject w
 
 ### Permission
 
-Like the HyperX rule today, an **Allow** button asks for the password once. It installs `lares-awdl` as `/usr/local/libexec/lares-awdl`, owned by root, with file capabilities `cap_net_admin,cap_net_raw+ep`, so Lares can start it without a password each time. `make uninstall` will say how to remove it. Lares tells NetworkManager to leave the card alone for the session (`Managed = false` over D-Bus) and gives it back afterwards.
+Like the HyperX rule, an **Allow** button asks for the password once. It installs the `lares-awdl` built with Lares as `/usr/local/libexec/lares-awdl`, owned by root and runnable only by the user's group (mode 0750), with file capabilities `cap_net_admin,cap_net_raw+ep`, so Lares can start it without a password each time. Lares compares the installed copy with its own and asks again after an update. `make uninstall` says how to remove it. `lares-awdl` keeps only those two capabilities, tells NetworkManager to leave the card alone for the session (`nmcli device set … managed no`), records the card's state in a journal under `$XDG_RUNTIME_DIR` first, and puts everything back on exit, or at its next start after a crash. It ends by itself when Lares closes its standard input, so Lares ending in any way gives the card back. What it reports goes to `~/.cache/lares/lares-awdl.log`, on this PC only.
+
+The mDNS host name is `lares-` and the session's service ID, never the machine's own name, as owly does: strangers nearby don't learn it, and avahi, which answers for the machine's name, can't clash with it. avahi also starts answering on `awdl0` once it exists, announcing the machine's own services to AWDL peers; adding `deny-interfaces=awdl0` to `/etc/avahi/avahi-daemon.conf` stops that.
 
 ### In the window
 
@@ -92,6 +94,18 @@ Nothing runs while sharing is off. While it's on: `lares-awdl` sends about 9 PSF
 
 Anyone in radio range can reach a receiver, so every input is hostile until checked (owly's SEC rules): strict HTTP framing, plist and archive limits, no `..`, absolute paths, links or devices in archives, no overwriting, and names shown escaped. The hashed contact identifiers in Bluetooth adverts and records can be brute-forced back to phone numbers and emails (PrivateDrop, USENIX Security 2021; still unfixed as of 2026, reported), so Lares never logs or stores them.
 
+## Status
+
+| Part | Code | Checked |
+| :--- | :--- | :--- |
+| Plists, CPIO, gzip and DVZip, HTTP | `src/airdrop/{bplist,cpio,dvzip,http,names}.c` | Unit tests with owly's and Apple-style vectors, under ASan and UBSan; a million mutated inputs |
+| mDNS and the Bluetooth LE wake-up | `src/airdrop/{mdns,ble}.c` | Unit tests; a live publish and browse between two interfaces in a network namespace; BlueZ calls against a stand-in BlueZ |
+| Receiver and sender over TLS | `src/airdrop/session.c` | Whole transfers between Lares' own sender and receiver on loopback: discover, files and folders, gzip and DVZip, a name clash, a decline |
+| AWDL link | `src/awdl/`, `lares-awdl` | Unit tests on frames from the iPhone 17 capture (addresses and names replaced); `awdl0`, capabilities, peers and the crash journal in a network namespace; idle at about 240 kB of its own memory, 0 CPU ticks in 12 s |
+| Lares with lares-awdl | `src/share.c` | Lares' Share model against `lares-awdl`'s test mode in a network namespace: the link comes up, the receiver binds to `awdl0`'s address, a photo goes through to Downloads, and the link and `awdl0` go away when receiving stops |
+| Share section | `src/share.c`, `src/share_view.c` | Dry run in a hidden GNOME Shell, light and dark, every state |
+| With an iPhone | | **Not yet checked**: needs the owner, the USB adapter and the Allow step |
+
 ## Code we can reuse
 
 | Project | Language | Licence | Use in Lares |
@@ -102,10 +116,10 @@ Anyone in radio range can reach a receiver, so every input is hostile until chec
 
 Wi-Fi Aware (NAN) is not a way in. Apple's AirDrop still uses AWDL (reported), and the EU's Digital Markets Act decision of March 2025 opens iOS to third-party *apps* that share like AirDrop, not AirDrop itself to other devices. A Lares companion app for iOS would be a separate project.
 
-## Decisions before building
+## Decisions
 
-1. **Name of the section.** *Share* (planned), with AirDrop named in its text, keeps Apple's trademark out of the sidebar.
-2. **The Allow step.** Installing a binary with file capabilities under `/usr/local` is the first thing Lares puts outside the user's home besides udev rules.
+1. **Name of the section.** *Share*, with AirDrop named in its text, keeps Apple's trademark out of the sidebar.
+2. **The Allow step.** Installing a binary with file capabilities under `/usr/local` is the first thing Lares puts outside the user's home besides udev rules. It is root-owned, limited to the user's group, and holds two capabilities.
 3. **A dual-band adapter.** The current adapter is enough to build and test with, at about 35 kB/s from the iPhone. A dual-band card from owly's working list is needed for AirDrop to feel like it does on Apple devices.
 
 ## Sources

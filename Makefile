@@ -12,11 +12,15 @@ GIO     = $(shell pkg-config --cflags gio-2.0 gio-unix-2.0)
 GIO_LIBS = $(shell pkg-config --libs gio-2.0 gio-unix-2.0) -lm
 
 PAD_SOURCES = $(wildcard src/pad/*.c)
-APP_SOURCES = $(wildcard src/*.c) $(PAD_SOURCES) build/resources.c
+AIRDROP_SOURCES = $(wildcard src/airdrop/*.c)
+APP_SOURCES = $(wildcard src/*.c) $(PAD_SOURCES) $(AIRDROP_SOURCES) build/resources.c
 HELPER_SOURCES = src/helper/lares-pad.c $(PAD_SOURCES)
-HEADERS = $(wildcard src/*.h src/pad/*.h)
+HEADERS = $(wildcard src/*.h src/pad/*.h src/airdrop/*.h)
+AWDL_SOURCES = $(wildcard src/awdl/*.c)
+# What the AWDL tests need: frames and the node, without the radio or main().
+AWDL_PURE = $(filter-out src/awdl/main.c src/awdl/radio.c,$(AWDL_SOURCES))
 
-all: build/lares build/lares-pad
+all: build/lares build/lares-pad build/lares-awdl
 
 build/resources.c: data/lares.gresource.xml data/style.css data/pad/controller.txt
 	@mkdir -p build
@@ -30,9 +34,17 @@ build/lares-pad: $(HELPER_SOURCES) $(wildcard src/pad/*.h)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(GIO) -o $@ $(HELPER_SOURCES) $(GIO_LIBS)
 
+# AirDrop's link links libc alone: it holds two network capabilities, so it
+# carries as little code as it can (docs/AIRDROP.md).
+build/lares-awdl: $(AWDL_SOURCES) $(wildcard src/awdl/*.h)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ $(AWDL_SOURCES)
+
 install: all
 	install -Dm755 -s build/lares $(PREFIX)/bin/lares
 	install -Dm755 -s build/lares-pad $(PREFIX)/bin/lares-pad
+	@# Without capabilities here: Share's Allow installs a root-owned copy with them.
+	install -Dm755 -s build/lares-awdl $(PREFIX)/libexec/lares-awdl
 	install -Dm644 data/$(APP_ID).desktop $(PREFIX)/share/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).svg $(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
 	@mkdir -p $(PREFIX)/share/systemd/user
@@ -58,15 +70,28 @@ check: build/resources.c
 	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/unit tests/unit.c src/devices.c src/hyperx.c src/hidpp.c \
 		src/pad/pads.c src/pad/padconf.c src/pad_map.c src/remote_model.c $(GIO_LIBS)
 	build/check/unit
+	$(CC) $(CFLAGS) -Werror -o build/check/lares-awdl $(AWDL_SOURCES)
+	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/awdl tests/awdl.c $(AWDL_PURE) $(GIO_LIBS)
+	build/check/awdl
+	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/formats tests/formats.c $(AIRDROP_SOURCES) $(GIO_LIBS)
+	build/check/formats
+	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/discovery tests/discovery.c $(AIRDROP_SOURCES) $(GIO_LIBS)
+	build/check/discovery
+	$(CC) $(CFLAGS) -Werror $(GIO) -o build/check/share tests/share.c src/share.c $(AIRDROP_SOURCES) $(GIO_LIBS)
+	build/check/share
 	@for f in data/addon/*.js; do node --check "$$f" || exit 1; done
 	node tests/addon.mjs
 	@echo "make check: all passed"
 
 uninstall:
 	-systemctl --user disable --now lares-pad.service
-	rm -f $(PREFIX)/bin/lares $(PREFIX)/bin/lares-pad $(PREFIX)/share/applications/$(APP_ID).desktop \
+	rm -f $(PREFIX)/bin/lares $(PREFIX)/bin/lares-pad $(PREFIX)/libexec/lares-awdl \
+	      $(PREFIX)/share/applications/$(APP_ID).desktop \
 	      $(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg $(PREFIX)/share/systemd/user/lares-pad.service
 	rm -rf $(ADDONS)/$(ADDON) $(PREFIX)/share/fonts/lares
+	@test ! -e /usr/local/libexec/lares-awdl || echo "AirDrop's link stays installed; remove it with:" \
+		"sudo rm /usr/local/libexec/lares-awdl /etc/NetworkManager/conf.d/90-lares-airdrop.conf" \
+		"/etc/systemd/network/10-lares-awdl.link"
 
 clean:
 	rm -rf build

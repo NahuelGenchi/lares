@@ -20,3 +20,5 @@ extern const char *const ART_MEMORY[];
 extern const char *const ART_DISK[];
 extern const char *const ART_PENCIL[];
 extern const char *const ART_SLIDERS[];
+extern const char *const ART_SHARE[];
+extern const char *const ART_PHONE[];
