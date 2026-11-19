@@ -10,6 +10,7 @@
 #include "airdrop/discovery.h"
 #include "airdrop/session.h"
 #include <grp.h>
+#include <stdarg.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +18,13 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
-#define DISCOVER_RETRY 3          /* s between /Discover tries while sending (DISC-5) */
+/* s between /Discover tries while looking (DISC-5): a phone is reachable
+ * about once a second over a fixed radio, and refuses until its Bluetooth
+ * advert has woken it, so a slower retry only adds to the wait. */
+#define DISCOVER_RETRY 1
+/* s the link stays up after the last use, so the next send or receive
+ * doesn't wait the 2.7 s lares-awdl takes to set the card up. */
+#define LINK_LINGER 60
 /* s for lares-awdl to give the card back before it's asked again: handing
  * a network back to NetworkManager can take about 45 s. */
 #define LINK_STOP_GRACE 60
@@ -58,6 +65,11 @@ struct Share {
     GCancellable *send_cancel;
     char *send_key;
     guint dry_timer;
+
+    gboolean looking;         /* finding devices while files are being picked */
+    guint linger;
+    FILE *log;                /* ~/.cache/lares/share.log: when each step happened */
+    gint64 log_start;
 };
 
 static void update_link(Share *s);
@@ -66,6 +78,48 @@ static void parts_apply(Share *s);
 static void changed(Share *s)
 {
     if (s->fn) s->fn(s->user);
+}
+
+/* Looking for devices to send to: files picked, or being picked. */
+static gboolean finding(Share *s)
+{
+    return s->st.sending || s->looking;
+}
+
+/* When each step of finding and sending happened, in seconds from the
+ * link's start, on this PC only and started afresh with each link: what
+ * a slow discovery is measured with. No names or addresses. */
+static void G_GNUC_PRINTF(2, 3) share_log(Share *s, const char *fmt, ...)
+{
+    if (!s->log || s->dry) return;
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(s->log, "%7.2f  ", (g_get_monotonic_time() - s->log_start) / 1e6);
+    vfprintf(s->log, fmt, ap);
+    fputc('\n', s->log);
+    fflush(s->log);
+    va_end(ap);
+}
+
+static void log_open(Share *s);
+
+/* A new log for a new session of use; one more line in the current one if
+ * the link is still up from the last. */
+static void log_session(Share *s, const char *what)
+{
+    if (!s->log || s->st.link == LINK_OFF || s->st.link == LINK_FAILED) log_open(s);
+    share_log(s, "%s", what);
+}
+
+static void log_open(Share *s)
+{
+    if (s->dry) return;
+    if (s->log) fclose(s->log);
+    char *dir = g_build_filename(g_get_user_cache_dir(), "lares", NULL), *path = g_build_filename(dir, "share.log", NULL);
+    s->log = g_mkdir_with_parents(dir, 0700) == 0 ? fopen(path, "w") : NULL;
+    s->log_start = g_get_monotonic_time();
+    g_free(dir);
+    g_free(path);
 }
 
 /* ------------------------------------------------------------ helpers */
@@ -484,6 +538,7 @@ static void receiver_offer(const AirdropOffer *o, gpointer user)
         return;
     }
     incoming_free(cur);
+    share_log(s, "a device asks to send");
     ShareIncoming *in = g_new0(ShareIncoming, 1);
     in->id = o->id;
     in->state = INCOMING_ASKING;
@@ -527,6 +582,7 @@ static void receiver_received(guint id, gboolean links, GPtrArray *items, gpoint
     ShareIncoming *in = incoming_for(s, id);
     if (!in) return;
     in->state = INCOMING_DONE;
+    share_log(s, "received");
     in->saved = g_ptr_array_ref(items);
     changed(s);
     update_link(s);
@@ -538,6 +594,7 @@ static void receiver_failed(guint id, const char *message, gpointer user)
     ShareIncoming *in = incoming_for(s, id);
     if (!in) return;
     in->state = INCOMING_FAILED;
+    share_log(s, "receiving failed");
     g_free(in->message);
     in->message = g_strdup(message);
     changed(s);
@@ -554,6 +611,7 @@ static void try_discover(Share *s, Candidate *c)
 {
     if (c->trying || c->listed || !s->discover_cancel) return;
     c->trying = TRUE;
+    share_log(s, "asking a %s", g_str_has_prefix(c->key, "awdl:") ? "nearby AWDL device directly" : "service found over mDNS");
     g_object_set_data_full(G_OBJECT(s->discover_cancel), "share", s, NULL);
     airdrop_discover_async(c->address, c->port, s->discover_cancel, discovered, g_strdup(c->key));
 }
@@ -569,7 +627,9 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
     Candidate *c = s ? g_hash_table_lookup(s->candidates, key) : NULL;
     if (c) {
         c->trying = FALSE;
+        if (!peer) share_log(s, "not listed yet: %s", e ? e->message : "it didn't list us");
         if (peer) {
+            share_log(s, "listed a device");
             c->listed = TRUE;
             ShareDevice *d = device_find(s, key);
             ShareDevice *same = device_at(s, c->address);
@@ -643,7 +703,8 @@ static void drop_device(Share *s, const char *key)
 static void mdns_found(const AirdropService *svc, gpointer user)
 {
     Share *s = user;
-    if (!s->st.sending || !g_strcmp0(svc->instance, s->service_id)) return;
+    if (!finding(s) || !g_strcmp0(svc->instance, s->service_id)) return;
+    share_log(s, "service found over mDNS");
     add_candidate(s, svc->instance, svc->address, svc->port, svc->flags);
 }
 
@@ -694,15 +755,12 @@ static void parts_apply(Share *s)
                                  AIRDROP_RECEIVER_FLAGS);
         else
             airdrop_mdns_publish(s->mdns, NULL, NULL, NULL, 0, 0);
-        airdrop_mdns_browse(s->mdns, s->st.sending);
+        airdrop_mdns_browse(s->mdns, finding(s));
     }
-    if (s->st.sending) {
-        if (!s->ble) s->ble = airdrop_ble_new();
-        airdrop_ble_set_active(s->ble, TRUE);
+    if (finding(s)) {
         if (!s->discover_cancel) s->discover_cancel = g_cancellable_new();
         if (!s->retry) s->retry = g_timeout_add_seconds(DISCOVER_RETRY, retry_discover, s);
     } else {
-        if (s->ble) airdrop_ble_set_active(s->ble, FALSE);
         if (s->discover_cancel) {
             g_cancellable_cancel(s->discover_cancel);
             g_clear_object(&s->discover_cancel);
@@ -718,7 +776,6 @@ static void parts_stop(Share *s)
     g_clear_pointer(&s->receiver, airdrop_receiver_free);
     if (s->mdns) airdrop_mdns_publish(s->mdns, NULL, NULL, NULL, 0, 0);
     g_clear_pointer(&s->mdns, airdrop_mdns_free);
-    g_clear_pointer(&s->ble, airdrop_ble_free);
     if (s->discover_cancel) {
         g_cancellable_cancel(s->discover_cancel);
         g_clear_object(&s->discover_cancel);
@@ -733,7 +790,7 @@ static gboolean need_link(Share *s)
 {
     ShareIncoming *in = s->st.incoming;
     return s->st.setup == SHARE_READY
-        && (s->st.receiving || s->st.sending
+        && (s->st.receiving || finding(s)
             || (in && (in->state == INCOMING_ASKING || in->state == INCOMING_RECEIVING)));
 }
 
@@ -750,10 +807,14 @@ static void link_event(Share *s, GHashTable *ev)
                                       : NULL;
         if (!s->iface || !s->address) return;
         s->st.link = LINK_UP;
+        share_log(s, "link up on channel %s", (const char *)g_hash_table_lookup(ev, "channel"));
         g_clear_pointer(&s->st.link_error, g_free);
         parts_apply(s);
-    } else if (g_str_equal(kind, "peer") && s->iface && s->st.sending) {
-        const char *mac = g_hash_table_lookup(ev, "address"), *state = g_hash_table_lookup(ev, "state");
+    } else if (g_str_equal(kind, "peer")) {
+        const char *state = g_hash_table_lookup(ev, "state");
+        share_log(s, "AWDL peer %s", state ? state : "?");
+        if (!s->iface || !finding(s)) return;
+        const char *mac = g_hash_table_lookup(ev, "address");
         if (!mac || !state) return;
         char *key = g_strconcat("awdl:", mac, NULL);
         if (g_str_equal(state, "valid")) {
@@ -919,6 +980,7 @@ static gboolean kill_link(gpointer data)
 
 static void link_stop(Share *s)
 {
+    share_log(s, "link stopping");
     parts_stop(s);
     if (s->dry) {
         s->st.link = LINK_OFF;
@@ -936,14 +998,40 @@ static void link_stop(Share *s)
     if (!s->link_kill) s->link_kill = g_timeout_add_seconds(LINK_STOP_GRACE, kill_link, s);
 }
 
+/* The Bluetooth advert wakes phones while devices are looked for, from
+ * the moment files are being picked: it needs no link, and a phone takes
+ * seconds to wake, which can pass while the link comes up. */
+static void apply_ble(Share *s)
+{
+    gboolean on = finding(s) && s->st.setup == SHARE_READY && !s->dry;
+    if (on && !s->ble) s->ble = airdrop_ble_new();
+    if (s->ble && airdrop_ble_is_active(s->ble) != on) {
+        airdrop_ble_set_active(s->ble, on);
+        share_log(s, "Bluetooth advert %s", on ? "on" : "off");
+    }
+}
+
+static gboolean linger_over(gpointer data)
+{
+    Share *s = data;
+    s->linger = 0;
+    if (!need_link(s) && (s->st.link == LINK_UP || s->st.link == LINK_STARTING) && !s->cert_busy) link_stop(s);
+    return G_SOURCE_REMOVE;
+}
+
 static void update_link(Share *s)
 {
     gboolean need = need_link(s);
+    apply_ble(s);
+    if (need) g_clear_handle_id(&s->linger, g_source_remove);
     if (need && (s->st.link == LINK_OFF || s->st.link == LINK_FAILED)) {
-        if (s->st.link == LINK_FAILED && !s->st.receiving && !s->st.sending) return;
+        if (s->st.link == LINK_FAILED && !s->st.receiving && !finding(s)) return;
         link_start(s);
     } else if (!need && (s->st.link == LINK_UP || s->st.link == LINK_STARTING) && !s->cert_busy) {
-        link_stop(s);
+        /* What used it stops at once (the announcement, the receiver,
+         * browsing); the link itself waits a minute for the next use. */
+        if (s->st.link == LINK_UP) parts_apply(s);
+        if (!s->linger) s->linger = g_timeout_add_seconds(LINK_LINGER, linger_over, s);
     } else if (s->st.link == LINK_UP) {
         parts_apply(s);
     }
@@ -966,7 +1054,7 @@ static gboolean pretend_device(gpointer data)
 {
     Share *s = data;
     s->dry_timer = 0;
-    if (!s->st.sending || device_find(s, "dry")) return G_SOURCE_REMOVE;
+    if (!finding(s) || device_find(s, "dry")) return G_SOURCE_REMOVE;
     ShareDevice *d = g_new0(ShareDevice, 1);
     d->key = g_strdup("dry");
     d->name = g_strdup("iPhone");
@@ -1092,6 +1180,7 @@ void share_set_receiving(Share *s, gboolean on)
     s->st.receiving = on;
     g_clear_handle_id(&s->receive_timer, g_source_remove);
     if (on) {
+        log_session(s, "receiving on");
         s->st.receive_until = g_get_monotonic_time() + SHARE_RECEIVE_SECONDS * G_USEC_PER_SEC;
         s->receive_timer = g_timeout_add_seconds(SHARE_RECEIVE_SECONDS, receive_over, s);
         if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
@@ -1126,6 +1215,22 @@ void share_dismiss_incoming(Share *s)
     changed(s);
 }
 
+void share_set_looking(Share *s, gboolean on)
+{
+    if (on == s->looking || (on && s->st.setup != SHARE_READY)) return;
+    s->looking = on;
+    if (on) {
+        log_session(s, "looking while files are picked");
+        if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
+        if (s->dry && !s->dry_timer) s->dry_timer = g_timeout_add(1500, pretend_device, s);
+    } else if (!s->st.sending) {
+        g_ptr_array_set_size(s->st.devices, 0);
+        g_hash_table_remove_all(s->candidates);
+    }
+    changed(s);
+    update_link(s);
+}
+
 void share_set_sending(Share *s, const char *const *paths)
 {
     gboolean on = paths && paths[0];
@@ -1133,9 +1238,15 @@ void share_set_sending(Share *s, const char *const *paths)
     if (!on) share_cancel_send(s);
     g_strfreev(s->st.paths);
     s->st.paths = on ? g_strdupv((char **)paths) : NULL;
+    /* What was found while the files were picked stays. */
+    gboolean keep = on && s->looking;
+    s->looking = FALSE;
     s->st.sending = on;
-    g_ptr_array_set_size(s->st.devices, 0);
-    g_hash_table_remove_all(s->candidates);
+    if (on) log_session(s, keep ? "files picked" : "sending");
+    if (!keep) {
+        g_ptr_array_set_size(s->st.devices, 0);
+        g_hash_table_remove_all(s->candidates);
+    }
     if (on && s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
     if (on && s->dry && !s->dry_timer) s->dry_timer = g_timeout_add(1500, pretend_device, s);
     changed(s);
@@ -1154,7 +1265,10 @@ static void send_progress(gboolean accepted, guint64 sent, guint64 total, gpoint
     if (g_cancellable_is_cancelled(c->cancel)) return;
     ShareDevice *d = device_find(c->s, c->key);
     if (!d) return;
-    if (accepted && d->state == DEVICE_ASKING) d->state = DEVICE_SENDING;
+    if (accepted && d->state == DEVICE_ASKING) {
+        d->state = DEVICE_SENDING;
+        share_log(c->s, "they accepted");
+    }
     d->sent = sent;
     d->total = total;
     changed(c->s);
@@ -1168,6 +1282,7 @@ static void send_done(GObject *src, GAsyncResult *res, gpointer user)
     if (!g_cancellable_is_cancelled(c->cancel)) {
         Share *s = c->s;
         ShareDevice *d = device_find(s, c->key);
+        share_log(s, ok ? "sent" : "send ended without sending");
         if (d) {
             d->state = ok ? DEVICE_SENT : g_error_matches(e, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED)
                                           ? DEVICE_DECLINED : DEVICE_FAILED;
@@ -1191,6 +1306,7 @@ void share_send_to(Share *s, const char *key)
     ShareDevice *d = device_find(s, key);
     if (!d || !s->st.paths || s->send_key) return;
     d->state = DEVICE_ASKING;
+    share_log(s, "asking to send");
     d->sent = d->total = 0;
     g_clear_pointer(&d->message, g_free);
     s->send_key = g_strdup(key);

@@ -48,11 +48,15 @@
 #define MAX_TTL_US    (120 * G_USEC_PER_SEC)
 #define GOODBYE_US    G_USEC_PER_SEC
 
-/* The browser's first query 20 ms after it starts, then 1 s later, the
- * wait doubling up to 10 s. */
+/* The browser's first query 20 ms after it starts, then one a second for
+ * as long as it browses, without the usual doubling: Lares browses only
+ * while a send waits, and over a fixed radio a phone hears a query only in
+ * the slot it spends on our channel, about once a second, which lares-awdl
+ * holds each one for. A query that backed off to 10 s would let a phone
+ * that missed the first ones wait that long to be found. */
 #define FIRST_QUERY_US        (20 * 1000)
 #define QUERY_INTERVAL_US     G_USEC_PER_SEC
-#define MAX_QUERY_INTERVAL_US (10 * G_USEC_PER_SEC)
+#define MAX_QUERY_INTERVAL_US G_USEC_PER_SEC
 
 /* The burst owly-radio asks for when the radio is fixed to one channel,
  * as lares-awdl's is (AWDL-12): the phone visits it for a slot or two in

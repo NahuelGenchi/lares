@@ -90,6 +90,17 @@ A **Share** section, shown when a card that can run AWDL is present:
 
 Nothing runs while sharing is off. Measured: `lares-awdl` idles at about 240 kB of its own memory and 0 CPU ticks in 12 s; a transfer adds about 2.7 MB to Lares itself, with a sender and a receiver in one process. TLS connections are made with no certificate database, since none is ever checked (TLS-2): otherwise GIO loads the system's, 6.5 MB, and proxy lookup is off for link-local peers, which saves 2.6 MB of the desktop's proxy libraries. While it's on: `lares-awdl` sends about 9 PSF and 15 MIF frames a second and wakes for each AWDL frame it hears; Lares wakes only for mDNS and the transfer itself. Archives stream through: nothing is held whole in memory, and received files are written to a staging folder and moved into place only once complete (SEC-1).
 
+### Finding devices quickly
+
+On a card fixed to one channel, an iPhone is there only in the slot it gives that channel, one in sixteen on channel 6, about 65 ms a second. Anything sent outside it is lost, so finding each other is about meeting in that slot:
+
+- `lares-awdl` holds multicast (mDNS queries, answers and announcements) for a slot a valid peer spends on its channel, and sends identical copies queued for it once. owly sends multicast in any slot on such a card, which an iPhone hears about one time in sixteen. Until a peer's schedule is known, multicast goes at once, as before.
+- While looking, Lares asks for `_airdrop._tcp` once a second instead of backing off to every 10 s, and tries `/Discover` at each AWDL peer's address once a second (DISC-5) with a short timeout, so a lost SYN is replaced by a fresh connection rather than waiting out the kernel's 1 s, then 3 s, backoff.
+- Picking files starts the link, the search and the Bluetooth advert at once, so the 2.7 s `lares-awdl` takes to set the card up, and the phone's wake-up, pass while the files are chosen.
+- The link stays up a minute after its last use, so a second send or receive doesn't wait for it again.
+
+`~/.cache/lares/share.log` records when each step happened, in seconds from the start (no names or addresses), on this PC only.
+
 ### Security
 
 Anyone in radio range can reach a receiver, so every input is hostile until checked (owly's SEC rules): strict HTTP framing, plist and archive limits, no `..`, absolute paths, links or devices in archives, no overwriting, and names shown escaped. The hashed contact identifiers in Bluetooth adverts and records can be brute-forced back to phone numbers and emails (PrivateDrop, USENIX Security 2021; still unfixed as of 2026, reported), so Lares never logs or stores them.
@@ -101,10 +112,10 @@ Anyone in radio range can reach a receiver, so every input is hostile until chec
 | Plists, CPIO, gzip and DVZip, HTTP | `src/airdrop/{bplist,cpio,dvzip,http,names}.c` | Unit tests with owly's and Apple-style vectors, under ASan and UBSan; a million mutated inputs |
 | mDNS and the Bluetooth LE wake-up | `src/airdrop/{mdns,ble}.c` | Unit tests; a live publish and browse between two interfaces in a network namespace; BlueZ calls against a stand-in BlueZ |
 | Receiver and sender over TLS | `src/airdrop/session.c` | Whole transfers between Lares' own sender and receiver on loopback: discover, files and folders, gzip and DVZip, a name clash, a decline |
-| AWDL link | `src/awdl/`, `lares-awdl` | Unit tests on frames from the iPhone 17 capture (addresses and names replaced); `awdl0`, capabilities, peers and the crash journal in a network namespace; idle at about 240 kB of its own memory, 0 CPU ticks in 12 s |
+| AWDL link | `src/awdl/`, `lares-awdl` | Unit tests on frames from the iPhone 17 capture (addresses and names replaced), and on multicast held for the phone's slot; `awdl0`, capabilities, peers and the crash journal in a network namespace; idle at about 240 kB of its own memory, 0 CPU ticks in 12 s |
 | Lares with lares-awdl | `src/share.c` | Lares' Share model against `lares-awdl`'s test mode in a network namespace: the link comes up, the receiver binds to `awdl0`'s address, a photo goes through to Downloads, and the link and `awdl0` go away when receiving stops |
 | Share section | `src/share.c`, `src/share_view.c` | Dry run in a hidden GNOME Shell, light and dark, every state |
-| With an iPhone | | **Not yet checked**: needs the owner, the USB adapter and the Allow step |
+| With an iPhone | | Checked by the owner with an iPhone 17 on the USB adapter: a file each way. Finding each other took several seconds before the changes under *Finding devices quickly* |
 
 ## Code we can reuse
 

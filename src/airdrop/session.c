@@ -20,6 +20,12 @@
 #define MODEL "Linux"                        /* Receiver/SenderModelName, as owly sends */
 #define IO_TIMEOUT 30                        /* s: a peer that stops reading or writing (SEC-10) */
 #define CONNECT_TIMEOUT 10                   /* s */
+/* A /Discover that isn't answered soon is tried again on a new connection
+ * rather than waited for: over a fixed radio a phone is there about once a
+ * second, and a fresh connection's first SYN goes at once, where a lost one
+ * is resent only after the kernel's 1 s, then 3 s, backoff. */
+#define DISCOVER_CONNECT_TIMEOUT 3            /* s */
+#define DISCOVER_TIMEOUT 6                    /* s */
 #define PROMPT_TIMEOUT (40 * G_USEC_PER_SEC) /* under the ~45 s an Apple sender waits (ASK-2, ASK-2a) */
 #define PROMPT_SLICE (500 * G_TIME_SPAN_MILLISECOND)
 #define SENDER_ASK_TIMEOUT 45                /* s, longer than a receiver's 15 s (ASK-2a) */
@@ -1097,7 +1103,8 @@ static void link_close(Link *l)
     g_clear_object(&l->conn);
 }
 
-static gboolean link_open(Link *l, const char *address, guint16 port, GCancellable *cancel, GError **error)
+static gboolean link_open(Link *l, const char *address, guint16 port, guint connect_s, guint io_s,
+                          GCancellable *cancel, GError **error)
 {
     GSocketAddress *a = g_inet_socket_address_new_from_string(address, port);
     if (!a) {
@@ -1105,7 +1112,7 @@ static gboolean link_open(Link *l, const char *address, guint16 port, GCancellab
         return FALSE;
     }
     GSocketClient *client = g_socket_client_new();
-    g_socket_client_set_timeout(client, CONNECT_TIMEOUT);
+    g_socket_client_set_timeout(client, connect_s);
     /* A link-local peer is never behind a proxy, and looking one up loads
      * the desktop's proxy libraries, several megabytes. */
     g_socket_client_set_enable_proxy(client, FALSE);
@@ -1113,11 +1120,11 @@ static gboolean link_open(Link *l, const char *address, guint16 port, GCancellab
     g_object_unref(client);
     g_object_unref(a);
     if (!l->conn) return FALSE;
-    set_timeout(l->conn, CONNECT_TIMEOUT);
+    set_timeout(l->conn, connect_s);
     l->tls = tls_client(G_IO_STREAM(l->conn), error);
     if (!l->tls) return FALSE;
     if (!g_tls_connection_handshake(G_TLS_CONNECTION(l->tls), cancel, error)) return FALSE;
-    set_timeout(l->conn, IO_TIMEOUT);
+    set_timeout(l->conn, io_s);
     l->in = g_io_stream_get_input_stream(l->tls);
     l->out = g_io_stream_get_output_stream(l->tls);
     return TRUE;
@@ -1234,7 +1241,8 @@ static void discover_thread(GTask *task, gpointer src, gpointer data, GCancellab
     AirdropPeer *peer = NULL;
     /* An empty dict, as every sender known to work with iOS 18 sends (§6.3). */
     GBytes *req = plist_request("/Discover", v_empty_dict());
-    if (!link_open(&l, j->address, j->port, cancel, &e) || !write_bytes(l.out, req, cancel, &e)
+    if (!link_open(&l, j->address, j->port, DISCOVER_CONNECT_TIMEOUT, DISCOVER_TIMEOUT, cancel, &e)
+        || !write_bytes(l.out, req, cancel, &e)
         || !read_response(&l, &resp, cancel, &e))
         goto out;
     if (resp.status == 200) {
@@ -1506,7 +1514,9 @@ static void send_thread(GTask *task, gpointer src, gpointer data, GCancellable *
         goto out;
     }
 
-    if (!link_open(&l, j->req.address, j->req.port, cancel, &e) || !write_bytes(l.out, ask, cancel, &e)) goto out;
+    if (!link_open(&l, j->req.address, j->req.port, CONNECT_TIMEOUT, IO_TIMEOUT, cancel, &e)
+        || !write_bytes(l.out, ask, cancel, &e))
+        goto out;
     set_timeout(l.conn, SENDER_ASK_TIMEOUT);
     if (!read_response(&l, &resp, cancel, &e) || resp.status != 200) {
         g_clear_error(&e);

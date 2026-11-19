@@ -65,7 +65,10 @@ static void files_picked(GObject *src, GAsyncResult *res, gpointer data)
 {
     ShareView *v = data;
     GListModel *files = gtk_file_dialog_open_multiple_finish(GTK_FILE_DIALOG(src), res, NULL);
-    if (!files) return;
+    if (!files) {
+        share_set_looking(v->share, FALSE);
+        return;
+    }
     GPtrArray *paths = g_ptr_array_new_with_free_func(g_free);
     for (guint i = 0; i < g_list_model_get_n_items(files); i++) {
         GFile *f = g_list_model_get_item(files, i);
@@ -93,6 +96,7 @@ static void on_send(GtkButton *b, ShareView *v)
         g_strfreev(paths);
         return;
     }
+    share_set_looking(v->share, TRUE);
     GtkFileDialog *d = gtk_file_dialog_new();
     gtk_file_dialog_set_title(d, "Choose files to send");
     gtk_file_dialog_set_accept_label(d, "Choose");

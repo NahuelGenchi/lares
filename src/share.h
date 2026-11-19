@@ -104,7 +104,12 @@ void share_set_receiving(Share *s, gboolean on);
 void share_answer(Share *s, gboolean accept);
 void share_dismiss_incoming(Share *s);
 
-/* Starts looking for devices to send `paths` to; NULL stops. */
+/* Starts looking for devices while files are being picked, so the link
+ * and the phones' wake-up don't wait for the choice; FALSE when the pick is
+ * cancelled. */
+void share_set_looking(Share *s, gboolean on);
+/* Starts looking for devices to send `paths` to, keeping any found while
+ * they were picked; NULL stops. */
 void share_set_sending(Share *s, const char *const *paths);
 void share_send_to(Share *s, const char *key);
 void share_cancel_send(Share *s);
