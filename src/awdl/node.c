@@ -627,6 +627,15 @@ static void enqueue(struct awdl_node *n, awdl_time now, const awdl_mac *dst, con
         }
         q = &n->unicast;
     }
+    /* A multicast already waiting for its slot goes once: the copies of
+     * an mDNS burst would otherwise fill the queue and push out other
+     * packets, such as a query, while they wait. */
+    if (q == &n->multicast)
+        for (uint16_t i = 0; i < q->n; i++) {
+            const struct awdl_packet *w = queue_at(q, i);
+            if (w->len == len && awdl_mac_eq(&w->dst, dst) && memcmp(w->data, ip, len) == 0)
+                return;
+        }
     struct awdl_packet *p = queue_push(q, len, &n->stats.dropped_queue_full);
     if (!p) {
         n->stats.dropped_too_big++;
@@ -666,15 +675,59 @@ uint64_t awdl_node_unicast_wait(const struct awdl_node *n, const struct awdl_pee
     return 0;
 }
 
+/* The slots in which a valid peer whose schedule we know is on our
+ * channel, as a mask of slot numbers. */
+static uint32_t listening_slots(const struct awdl_node *n)
+{
+    uint32_t mask = 0;
+    for (size_t i = 0; n->npeers > 0 && i < AWDL_MAX_PEERS; i++) {
+        const struct awdl_peer *p = &n->peers[i];
+        if (!p->used || !p->valid || !p->has_sequence)
+            continue;
+        for (unsigned slot = 0; slot < AWDL_SLOTS; slot++) {
+            uint8_t own = own_channel(n, slot);
+            if (own != 0 && own == awdl_seq_channel(&p->sequence, slot))
+                mask |= 1u << slot;
+        }
+    }
+    return mask;
+}
+
+/* How long until a valid peer is on our channel, clear of `guard` at the
+ * slot's edges, early in the slot as its first AW may be all it spends
+ * there; UINT64_MAX if no peer's schedule ever brings it. */
+static uint64_t listening_wait(const struct awdl_node *n, awdl_time now, uint64_t guard)
+{
+    uint32_t mask = listening_slots(n);
+    if (mask == 0)
+        return UINT64_MAX;
+    uint64_t wait = awdl_clock_edge_wait(&n->clock, now, guard);
+    if (mask & (1u << awdl_clock_slot(&n->clock, now + wait)))
+        return wait;
+    uint64_t start = awdl_clock_next_slot_us(&n->clock, now);
+    for (unsigned k = 0; k < AWDL_SLOTS; k++) {
+        uint64_t at = start + (uint64_t)k * AWDL_SLOT_US + guard;
+        if (mask & (1u << awdl_clock_slot(&n->clock, now + at)))
+            return at;
+    }
+    return UINT64_MAX;
+}
+
 /* AWDL-16: multicast in slots 0 and 10, where Apple devices send it, clear
- * of a 16 TU guard. A fixed radio sends it in any slot with the unicast
- * guard, since the first AW may be all a peer spends on its channel. */
+ * of a 16 TU guard. A fixed radio sends it with the unicast guard in a slot
+ * a valid peer spends on its channel: an iPhone gives channel 6 one slot in
+ * sixteen, so multicast sent in any slot, as owly does, reaches it about one
+ * time in sixteen, and mDNS with it. Until such a peer is known, any slot. */
 uint64_t awdl_node_multicast_wait(const struct awdl_node *n, awdl_time now)
 {
     uint64_t guard = fixed(n) ? AWDL_UNICAST_GUARD_US : AWDL_MULTICAST_GUARD_US;
     uint64_t wait = awdl_clock_edge_wait(&n->clock, now, guard);
+    if (fixed(n)) {
+        uint64_t aimed = listening_wait(n, now, guard);
+        return aimed != UINT64_MAX ? aimed : wait;
+    }
     unsigned slot = awdl_clock_slot(&n->clock, now);
-    if (wait > 0 || fixed(n) || slot == AWDL_MULTICAST_SLOT_A || slot == AWDL_MULTICAST_SLOT_B)
+    if (wait > 0 || slot == AWDL_MULTICAST_SLOT_A || slot == AWDL_MULTICAST_SLOT_B)
         return wait;
     return awdl_clock_next_slot_us(&n->clock, now) + guard;
 }

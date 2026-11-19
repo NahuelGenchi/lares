@@ -1310,6 +1310,103 @@ static void test_node_fixed_unicast(void)
     g_free(n);
 }
 
+/* A multicast IPv6 packet with `tail` at its end, to ff02::fb. */
+static size_t mdns_packet(uint8_t *ip, size_t cap, const char *tail)
+{
+    size_t n = strlen(tail);
+    g_assert_cmpuint(40 + n, <=, cap);
+    memset(ip, 0, 40);
+    ip[0] = 0x60;
+    ip[4] = (uint8_t)(n >> 8);
+    ip[5] = (uint8_t)n;
+    ip[6] = 17;
+    ip[7] = 255;
+    ip[24] = 0xff;
+    ip[25] = 0x02;
+    ip[39] = 0xfb;
+    memcpy(ip + 40, tail, n);
+    return 40 + n;
+}
+
+/* A fixed radio holds multicast for the slot the phone spends on its
+ * channel, early in it, so mDNS is heard on the phone's next visit. */
+static void test_node_fixed_multicast_aims(void)
+{
+    struct awdl_node *n = node_new(6, AWDL_PRESENCE_FIXED, false);
+    struct awdl_sequence s;
+    seq_from(&s, IPHONE_SEQ);
+    awdl_time t = meet(n, &s);
+    for (int round = 0; round < 3; round++) {
+        /* Start somewhere else in the sequence each time. */
+        t += (uint64_t)(3 + 5 * round) * AWDL_SLOT_US;
+        uint8_t ip[128];
+        char tail[16];
+        g_snprintf(tail, sizeof tail, "mdns-%d", round);
+        size_t il = mdns_packet(ip, sizeof ip, tail);
+        outbound(n, t, &MDNS_GROUP, ip, il);
+        int k = run_until_sent(n, &t, &MDNS_GROUP, tail);
+        g_assert_cmpint(k, >=, 0);
+        g_assert_cmpuint(awdl_clock_slot(&n->clock, t), ==, 8);
+        uint64_t into = AWDL_SLOT_US - awdl_clock_next_slot_us(&n->clock, t);
+        g_assert_cmpuint(into, >=, AWDL_UNICAST_GUARD_US);
+        g_assert_cmpuint(into, <, AWDL_UNICAST_GUARD_US + 1024);
+    }
+    g_free(n);
+}
+
+/* With no peer known yet, a fixed radio's multicast goes at once. */
+static void test_node_fixed_multicast_alone(void)
+{
+    struct awdl_node *n = node_new(6, AWDL_PRESENCE_FIXED, false);
+    awdl_time t = START + 3 * AWDL_SLOT_US + AWDL_SLOT_US / 2;
+    uint8_t ip[128];
+    size_t il = mdns_packet(ip, sizeof ip, "early");
+    R.ntx = 0;
+    outbound(n, t, &MDNS_GROUP, ip, il);
+    bool sent = false;
+    for (int k = 0; k < R.ntx; k++)
+        sent |= awdl_mac_eq(&R.tx[k].to, &MDNS_GROUP) && ends_with(R.tx[k].bytes, R.tx[k].len, "early");
+    g_assert_true(sent);
+    g_free(n);
+}
+
+/* Copies of one multicast that wait for the same slot go once; a different
+ * packet queued between them still goes. */
+static void test_node_multicast_copies_merge(void)
+{
+    struct awdl_node *n = node_new(6, AWDL_PRESENCE_FIXED, false);
+    struct awdl_sequence s;
+    seq_from(&s, IPHONE_SEQ);
+    awdl_time t = meet(n, &s);
+    /* Into a slot the phone spends elsewhere, clear of its edges. */
+    while (awdl_clock_slot(&n->clock, t) != 3)
+        t += AWDL_SLOT_US / 4;
+    t += AWDL_SLOT_US / 2 - (AWDL_SLOT_US - awdl_clock_next_slot_us(&n->clock, t));
+    uint8_t ip[128], q[128];
+    size_t il = mdns_packet(ip, sizeof ip, "announce"), ql = mdns_packet(q, sizeof q, "query");
+    R.ntx = 0;
+    for (int i = 0; i < 40; i++) {
+        outbound(n, t, &MDNS_GROUP, ip, il);
+        if (i == 20)
+            outbound(n, t, &MDNS_GROUP, q, ql);
+    }
+    g_assert_cmpuint(n->multicast.n, ==, 2);
+    unsigned announce = 0, query = 0;
+    for (uint64_t i = 0; i < 8 * AWDL_SLOT_US / 256 && awdl_clock_slot(&n->clock, t) != 9; i++) {
+        t += 256;
+        tick_fresh(n, t);
+        for (int k = 0; k < R.ntx; k++) {
+            if (!awdl_mac_eq(&R.tx[k].to, &MDNS_GROUP))
+                continue;
+            announce += ends_with(R.tx[k].bytes, R.tx[k].len, "announce");
+            query += ends_with(R.tx[k].bytes, R.tx[k].len, "query");
+        }
+    }
+    g_assert_cmpuint(announce, ==, 1);
+    g_assert_cmpuint(query, ==, 1);
+    g_free(n);
+}
+
 static void test_node_packets_go_with_their_peer(void)
 {
     /* On 44, where the phone never is, so nothing goes. */
@@ -1547,6 +1644,9 @@ int main(int argc, char **argv)
     g_test_add_func("/awdl/node/outbound-to-nobody", test_node_outbound_to_nobody);
     g_test_add_func("/awdl/node/unicast-slots", test_node_unicast_slots);
     g_test_add_func("/awdl/node/fixed-unicast", test_node_fixed_unicast);
+    g_test_add_func("/awdl/node/fixed-multicast-aims", test_node_fixed_multicast_aims);
+    g_test_add_func("/awdl/node/fixed-multicast-alone", test_node_fixed_multicast_alone);
+    g_test_add_func("/awdl/node/multicast-copies-merge", test_node_multicast_copies_merge);
     g_test_add_func("/awdl/node/packets-go-with-peer", test_node_packets_go_with_their_peer);
     g_test_add_func("/awdl/node/multicast-slots", test_node_multicast_slots);
     g_test_add_func("/awdl/node/psf-mif-timing", test_node_psf_and_mif_timing);
