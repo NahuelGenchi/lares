@@ -49,6 +49,19 @@ static void update_on_screen(Lares *app)
 
 /* Pages scroll when the window is short, with no scroll bar, and keep a
  * readable width when it's wide. */
+static LaresClamp *page_clamp(GtkWidget *scroll)
+{
+    GtkWidget *viewport = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
+    return LARES_CLAMP(gtk_viewport_get_child(GTK_VIEWPORT(viewport)));
+}
+
+/* Scrolled up far enough, a page a click held may shorten (see
+ * lares_clamp_hold). */
+static void on_page_scrolled(GtkAdjustment *adj, LaresClamp *clamp)
+{
+    lares_clamp_release(clamp, (int)(gtk_adjustment_get_value(adj) + gtk_adjustment_get_page_size(adj)));
+}
+
 static GtkWidget *wrap_page(GtkWidget *page)
 {
     gtk_widget_add_css_class(page, "page");
@@ -56,8 +69,11 @@ static GtkWidget *wrap_page(GtkWidget *page)
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_EXTERNAL);
     GtkWidget *viewport = gtk_viewport_new(NULL, NULL);
-    gtk_viewport_set_child(GTK_VIEWPORT(viewport), lares_clamp_new(page, CONTENT_WIDTH, CONTENT_LEAD));
+    GtkWidget *clamp = lares_clamp_new(page, CONTENT_WIDTH, CONTENT_LEAD);
+    gtk_viewport_set_child(GTK_VIEWPORT(viewport), clamp);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), viewport);
+    g_signal_connect(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll)), "value-changed",
+                     G_CALLBACK(on_page_scrolled), clamp);
     return scroll;
 }
 
@@ -65,12 +81,14 @@ static GtkWidget *wrap_page(GtkWidget *page)
  * the focus there. A click focuses what it clicks too, and scrolling then,
  * to show all of a control half under the window's edge, would move the
  * page under the pointer. So a pointer or touch press turns that off for
- * every page, and a key turns it back on. */
+ * every page, and a key turns it back on. A press also holds the shown
+ * page's height, so what the click hides can't shorten it under the pointer. */
 static gboolean on_input(GtkEventControllerLegacy *c, GdkEvent *event, Lares *app)
 {
     GdkEventType type = gdk_event_get_event_type(event);
     gboolean pointer = type == GDK_BUTTON_PRESS || type == GDK_TOUCH_BEGIN;
     if (!pointer && type != GDK_KEY_PRESS) return GDK_EVENT_PROPAGATE;
+    if (pointer && app->current && app->current->page) lares_clamp_hold(page_clamp(app->current->page));
     for (int i = 0; i < app->n_sections; i++) {
         GtkWidget *page = app->sections[i].page;
         if (!page) continue;
@@ -84,6 +102,8 @@ void lares_show(Lares *app, const char *id)
 {
     Section *s = find(app, id);
     if (!s || s == app->current) return;
+    /* Out of sight, the page it leaves needn't keep a click's hold. */
+    if (app->current && app->current->page) lares_clamp_release(page_clamp(app->current->page), -1);
     if (!s->page) {
         s->page = wrap_page(s->build(app, s));
         gtk_stack_add_named(GTK_STACK(app->stack), s->page, s->id);

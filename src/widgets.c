@@ -671,6 +671,7 @@ struct _LaresClamp {
     GtkWidget parent;
     GtkWidget *child;
     int max, lead;
+    int floor;   /* the least height it asks for, while a click's hold lasts */
 };
 
 G_DEFINE_FINAL_TYPE(LaresClamp, lares_clamp, GTK_TYPE_WIDGET)
@@ -685,6 +686,8 @@ static void clamp_measure(GtkWidget *w, GtkOrientation o, int for_size,
     } else {
         int width = for_size < 0 ? -1 : MIN(for_size, s->max);
         gtk_widget_measure(s->child, o, width, min, nat, NULL, NULL);
+        *min = MAX(*min, s->floor);
+        *nat = MAX(*nat, s->floor);
     }
 }
 
@@ -712,6 +715,32 @@ static void lares_clamp_class_init(LaresClampClass *k)
 }
 
 static void lares_clamp_init(LaresClamp *s) { s->max = s->lead = 620; }
+
+/* The page's height as clamp_measure measures it, margins and all. */
+static int page_height(LaresClamp *s)
+{
+    int min, nat;
+    gtk_widget_measure(s->child, GTK_ORIENTATION_VERTICAL, MIN(gtk_widget_get_width(GTK_WIDGET(s)), s->max), &min,
+                       &nat, NULL, NULL);
+    return min;
+}
+
+/* A page scrolled to its end moves when it gets shorter, as its scrolled
+ * window keeps it filled: what a click hides below the pointer would pull
+ * what's above down under it. So a click holds the page's height, and the
+ * page shortens only once that moves nothing in sight. */
+void lares_clamp_hold(LaresClamp *s)
+{
+    s->floor = page_height(s);
+}
+
+void lares_clamp_release(LaresClamp *s, int seen)
+{
+    if (!s->floor) return;
+    if (seen >= 0 && page_height(s) < seen) return;
+    s->floor = 0;
+    gtk_widget_queue_resize(GTK_WIDGET(s));
+}
 
 GtkWidget *lares_clamp_new(GtkWidget *child, int max_width, int max_lead)
 {
