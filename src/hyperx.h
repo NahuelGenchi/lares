@@ -79,6 +79,18 @@ int hyperx_packets(const HyperxState *now, const MouseSettings *want, guint16 sl
  * button. The limits come from `want`. */
 void hyperx_merge(const HyperxState *now, const MouseSettings *base, const MouseSettings *want, MouseSettings *out);
 
+/* A Solid light takes up a stored brightness 2 to 3 s late, and a live one
+ * not at all, but a colour streamed to it, as NGENUITY streams its effects,
+ * shows the live brightness at once, for a second or so each. So when this
+ * says a change from `was` to `now` is a Solid light's new brightness,
+ * hyperx_write streams its colour once, and the caller goes on with
+ * hyperx_show every HYPERX_SHOW_EVERY_MS for HYPERX_SHOW_MS, until the
+ * mouse's own effect has caught up. Breathing and the colour cycle aren't
+ * still colours, so they keep the pause. */
+#define HYPERX_SHOW_MS       4000
+#define HYPERX_SHOW_EVERY_MS 300
+gboolean hyperx_shows(const MouseSettings *was, const MouseSettings *now);
+
 /* Updates `state` as one of those packets would update the mouse: what a
  * dry run pretends, and what the tests check them against. */
 void hyperx_apply(HyperxState *state, const guint8 *packet);
@@ -100,6 +112,9 @@ gboolean hyperx_read(const char *node, const HyperxModel *model, HyperxState *st
  * that it holds the change. */
 gboolean hyperx_write(const char *node, const HyperxModel *model, const MouseSettings *base,
                       const MouseSettings *want, HyperxState *state, GError **error);
+
+/* Streams `rgb` to the light once, at its live brightness. */
+gboolean hyperx_show(const char *node, const guint8 rgb[3], GError **error);
 
 /* The udev rules that let the person at the screen open that interface,
  * and nothing else of these devices. */

@@ -66,6 +66,7 @@ typedef struct {
     gboolean stale;      /* asked for while being read or written, so read it after */
     int watch_fd;        /* open while its settings are on screen, -1 otherwise */
     guint watch;
+    GCancellable *show;  /* while its light's colour is streamed: see hyperx_shows */
 } HidState;
 
 static void stop_watch(HidState *s)
@@ -76,10 +77,18 @@ static void stop_watch(HidState *s)
     s->watch_fd = -1;
 }
 
+static void stop_show(HidState *s)
+{
+    if (!s->show) return;
+    g_cancellable_cancel(s->show);
+    g_clear_object(&s->show);
+}
+
 static void hid_state_free(gpointer p)
 {
     HidState *s = p;
     stop_watch(s);
+    stop_show(s);
     g_free(s->owner);
     g_free(s->node);
     g_free(s);
@@ -1128,6 +1137,49 @@ static void write_thread(GTask *task, gpointer src, gpointer data, GCancellable 
     else g_task_return_error(task, e);
 }
 
+typedef struct {
+    char *node;
+    guint8 rgb[3];
+} ShowCtx;
+
+static void show_ctx_free(gpointer p)
+{
+    ShowCtx *c = p;
+    g_free(c->node);
+    g_free(c);
+}
+
+static void show_thread(GTask *task, gpointer src, gpointer data, GCancellable *cancel)
+{
+    ShowCtx *c = data;
+    gint64 end = g_get_monotonic_time() + HYPERX_SHOW_MS * G_TIME_SPAN_MILLISECOND;
+    GPollFD stop;
+    gboolean pollable = g_cancellable_make_pollfd(cancel, &stop);
+    for (;;) {
+        if (pollable) g_poll(&stop, 1, HYPERX_SHOW_EVERY_MS);
+        else g_usleep(HYPERX_SHOW_EVERY_MS * G_TIME_SPAN_MILLISECOND);
+        if (g_cancellable_is_cancelled(cancel) || g_get_monotonic_time() >= end) break;
+        hyperx_show(c->node, c->rgb, NULL);
+    }
+    if (pollable) g_cancellable_release_fd(cancel);
+    g_task_return_boolean(task, TRUE);
+}
+
+/* Goes on streaming the colour hyperx_write streamed once, until the
+ * mouse's own effect shows the stored brightness. */
+static void start_show(HidState *s, const guint8 rgb[3])
+{
+    stop_show(s);
+    s->show = g_cancellable_new();
+    ShowCtx *c = g_new0(ShowCtx, 1);
+    c->node = g_strdup(s->node);
+    memcpy(c->rgb, rgb, 3);
+    GTask *task = g_task_new(NULL, s->show, NULL, NULL);
+    g_task_set_task_data(task, c, show_ctx_free);
+    g_task_run_in_thread(task, show_thread);
+    g_object_unref(task);
+}
+
 static void settings_written(GObject *src, GAsyncResult *res, gpointer user)
 {
     SettingsCtx *c = g_task_get_task_data(G_TASK(res));
@@ -1137,6 +1189,10 @@ static void settings_written(GObject *src, GAsyncResult *res, gpointer user)
     if (s) {
         s->writing = FALSE;
         if (ok) {
+            MouseSettings was, now;
+            hyperx_decode(NULL, &s->state, &was);
+            hyperx_decode(NULL, &c->state, &now);
+            if (hyperx_shows(&was, &now)) start_show(s, now.rgb);
             s->state = c->state;
             s->asleep = FALSE;
         } else if (g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED)) {
@@ -1190,6 +1246,7 @@ void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, co
     c->done = done;
     c->user = user;
     s->writing = TRUE;
+    stop_show(s);   /* or its colour would cover this change */
     schedule(d);
     if (d->dry) {
         g_timeout_add(600, pretend_written, c);
