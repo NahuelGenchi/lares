@@ -59,12 +59,14 @@ GtkWidget *settings_build(Lares *app, Section *self);
 /* Small helpers shared by the sections */
 GtkWidget *ui_label(const char *text, const char *css_class);
 GtkWidget *ui_paragraph(const char *text, const char *css_class);
+GtkWidget *ui_busy_child(const char *text, gboolean busy);
 GtkWidget *ui_icon(const char *const *art, int pixel, const char *css_class);
 void ui_class(GtkWidget *w, const char *css_class, gboolean on);
 GtkWidget *ui_page(void);
 GtkWidget *ui_group(GtkWidget *page, const char *heading);
 void ui_subheading(GtkWidget *group, const char *const *art, const char *title);
 GtkWidget *ui_setting(GtkWidget *group, const char *title, const char *sub);
+void ui_setting_saving(GtkWidget *row, const char *text);
 GtkWidget *ui_setting_switch(GtkWidget *row, const char *title, gboolean *field, GCallback cb, gpointer data);
 const char *const *device_art(DevKind kind);
 char *battery_text(int battery);

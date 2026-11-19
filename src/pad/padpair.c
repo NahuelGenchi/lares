@@ -379,12 +379,12 @@ char *padpair_status(PadPair *p)
     case PAIR_SEARCHING:
         return g_strdup("Searching… Hold the pair button on top of the controller until the Xbox button flashes quickly.");
     case PAIR_NOT_FOUND:
-        return g_strdup("No controller found. Hold the pair button until the Xbox button flashes quickly, then search again.");
+        return g_strdup("No controller found. Hold the pair button until the Xbox button flashes quickly.");
     case PAIR_STOPPED:
-        return g_strdup_printf("The search stopped after %d seconds. Search again, and pick the controller while its Xbox button flashes quickly.", SEARCH_SECONDS);
+        return g_strdup_printf("The search stopped after %d seconds. Pick the controller while its Xbox button flashes quickly.", SEARCH_SECONDS);
     case PAIR_PAIRING: return g_strdup_printf("Pairing with %s…", p->target);
     case PAIR_CONNECTED: return g_strdup_printf("%s is paired and connected.", p->target);
-    case PAIR_FAILED: return g_strdup_printf("Couldn't pair: %s. Try again, or use Bluetooth in Settings.", p->reason);
+    case PAIR_FAILED: return g_strdup_printf("Couldn't pair: %s. Bluetooth in Settings can pair it too.", p->reason);
     default: return NULL;
     }
 }

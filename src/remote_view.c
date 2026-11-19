@@ -5,8 +5,7 @@
 
 #define STEP_GAP_MS 140   /* a breath between steps, so each row's change reads */
 
-typedef enum { RS_QUEUED, RS_BUSY, RS_OK, RS_DRIFT, RS_ERROR, RS_LEAVE, N_RS } RowState;
-static const char *RS_PAGE[N_RS] = { "queued", "busy", "ok", "drift", "error", "leave" };
+typedef enum { RS_QUEUED, RS_BUSY, RS_OK, RS_DRIFT, RS_ERROR, RS_LEAVE } RowState;
 
 typedef enum { NOTE_NONE, NOTE_CONFIRM, NOTE_PERMISSION, NOTE_ERROR, NOTE_DRIFT } Note;
 
@@ -15,7 +14,7 @@ typedef struct RemoteView RemoteView;
 typedef struct {
     RemoteView *app;
     Item item;
-    GtkWidget *box, *head, *value, *hint, *hint_rev, *status, *chevron, *revealer, *chips;
+    GtkWidget *box, *head, *value, *hint, *hint_rev, *chevron, *revealer, *chips;
     GPtrArray *toggles;
     char *chips_key;
     RowState state;
@@ -34,11 +33,11 @@ enum { STEP_TAILSCALE, STEP_SUNSHINE, STEP_MOONLIGHT, N_STEPS };
 struct RemoteView {
     Lares *app;
     Remote *m;
-    GtkWidget *page, *mode_box, *guide, *address, *guide_address;
+    GtkWidget *page, *mode_box, *guide, *guide_address, *guide_ip, *guide_or, *guide_host;
     Step steps[N_STEPS];
     char *guide_key;          /* what the guide shows; it's redrawn only when this changes */
     gboolean signing_in;
-    GtkWidget *title, *sub, *live_rev, *live_dot, *live_label, *sw;
+    GtkWidget *sw, *moonlight, *ip, *host;
     GtkWidget *note_rev, *note_icons, *note_text, *note_main, *note_alt;
     Row rows[N_ITEMS];
     gboolean ready, applying, restart;
@@ -83,16 +82,18 @@ static void update_row(Row *r)
 {
     RemoteView *a = r->app;
     const char *v = want(a, r->item);
-    char *d = remote_describe(r->item, v);
+    /* While it works, the row says so in its value's place and keeps its
+     * height; drift and errors, which stay, get a line under the name. */
+    gboolean busy = r->state == RS_BUSY;
+    char *d = busy ? g_strdup(busy_text(r->item, v)) : remote_describe(r->item, v);
     gtk_label_set_text(GTK_LABEL(r->value), d);
     g_free(d);
-    ui_class(r->value, "dim", leave(v));
-    gtk_stack_set_visible_child_name(GTK_STACK(r->status), RS_PAGE[r->state]);
+    ui_class(r->value, "dim", busy || leave(v));
 
     char *hint = NULL;
-    if (r->state == RS_BUSY) hint = g_strdup(busy_text(r->item, v));
-    else if (r->state == RS_DRIFT) hint = remote_describe_live(a->m, r->item);
-    else if (r->state == RS_ERROR) hint = g_strdup(r->error);
+    if (r->state == RS_DRIFT) hint = remote_describe_live(a->m, r->item);
+    /* A permission error's own text is Tailscale's; the note explains it. */
+    else if (r->state == RS_ERROR) hint = g_strdup(r->perm ? "Needs your password" : r->error);
     if (hint) {
         gtk_label_set_text(GTK_LABEL(r->hint), hint);
         ui_class(r->hint, "warn", r->state == RS_DRIFT);
@@ -123,19 +124,31 @@ static void settle_rows(RemoteView *a)
     }
 }
 
-/* ------------------------------------------------------------ hero & note */
+/* ------------------------------------------------------ connection & note */
 
-static void update_live_line(RemoteView *a)
+/* A label's text is set only when it changes, so a selection made to copy an
+ * address survives the next reading. */
+static void set_field(GtkWidget *label, const char *text, gboolean known)
+{
+    if (g_strcmp0(gtk_label_get_text(GTK_LABEL(label)), text) != 0)
+        gtk_label_set_text(GTK_LABEL(label), text);
+    ui_class(label, "dim", !known);
+}
+
+/* The card under the switch: whether Moonlight is connected, and the two
+ * ways to add this PC in it. */
+static void update_connection(RemoteView *a)
 {
     Live *l = remote_live(a->m);
-    gboolean show = cfg(a)->mode == MODE_REMOTE && l->sunshine == 1;
-    if (show) {
-        gtk_label_set_text(GTK_LABEL(a->live_label),
-                           l->streaming ? "Streaming to Moonlight now" : "Waiting for Moonlight");
-        ui_class(a->live_dot, "on", l->streaming);
-        ui_class(a->live_label, "on", l->streaming);
-    }
-    gtk_revealer_set_reveal_child(GTK_REVEALER(a->live_rev), show);
+    gboolean on = l->sunshine == 1, live = on && l->streaming;
+    const char *moon = l->sunshine < 0 ? "Unknown"
+                     : !on ? "Off"
+                     : live ? "live"
+                     : l->paired ? "Ready" : "No device paired";
+    set_field(a->moonlight, moon, live || (on && l->paired));
+    ui_class(a->moonlight, "live", live); /* a badge that breathes */
+    set_field(a->ip, l->tailscale_ip ? l->tailscale_ip : "Unknown", l->tailscale_ip != NULL);
+    set_field(a->host, l->tailscale_host ? l->tailscale_host : "Unknown", l->tailscale_host != NULL);
 }
 
 static void update_note(RemoteView *a)
@@ -154,13 +167,13 @@ static void update_note(RemoteView *a)
 
     char *text = NULL;
     const char *main = NULL, *alt = NULL, *art = "warn";
-    const char *mode = mode_name(cfg(a)->mode);
+    /* Each note says only what the line above and the rows don't. */
     switch (n) {
     case NOTE_CONFIRM: {
         gboolean ts_off = g_str_equal(cfg(a)->values[MODE_HOME][ITEM_TAILSCALE], "off");
         text = g_strdup(ts_off
-            ? "Moonlight is streaming right now. Home ends the stream and turns off Tailscale, so this PC can't be reached from away."
-            : "Moonlight is streaming right now. Home ends the stream.");
+            ? "Home ends the stream and turns off Tailscale, so this PC can't be reached from away."
+            : "Home ends the stream.");
         main = "Switch to Home";
         alt = "Stay on Remote";
         break;
@@ -171,11 +184,11 @@ static void update_note(RemoteView *a)
         art = "key";
         break;
     case NOTE_ERROR:
-        text = g_strdup_printf("%s didn't change. Its row says why.", item_name(bad->item));
+        text = g_strdup_printf("%s didn't change.", item_name(bad->item));
         main = "Try again";
         break;
     case NOTE_DRIFT:
-        text = g_strdup_printf("Something changed since you picked %s.", mode);
+        text = g_strdup("Changed outside Lares.");
         main = "Set it again";
         break;
     case NOTE_NONE:
@@ -190,16 +203,6 @@ static void update_note(RemoteView *a)
     }
     gtk_revealer_set_reveal_child(GTK_REVEALER(a->note_rev), text != NULL);
     g_free(text);
-}
-
-static void apply_theme(RemoteView *a)
-{
-    Mode m = cfg(a)->mode;
-    const char *key = m == MODE_HOME ? "home" : "remote";
-    lares_set_mode_colors(a->app);
-    gtk_stack_set_visible_child_name(GTK_STACK(a->title), key);
-    gtk_stack_set_visible_child_name(GTK_STACK(a->sub), key);
-    update_live_line(a);
 }
 
 /* ----------------------------------------------------------------- applying */
@@ -289,7 +292,7 @@ static void set_mode(RemoteView *a, Mode m)
     c->mode_known = TRUE;
     remote_save(a->m);
     lares_mode_switch_set_active(LARES_MODE_SWITCH(a->sw), m, TRUE);
-    apply_theme(a);
+    lares_set_mode_colors(a->app);
     start_apply(a);
 }
 
@@ -408,11 +411,20 @@ static void build_screen_chips(Row *r)
 {
     Live *l = remote_live(r->app->m);
     if (!l->modes) return;
+    /* The monitor's own size is what a mode sets until another is picked, so
+     * it always has a chip, in its own group when it isn't a common shape. */
+    char *own = remote_own_size(l);
+    Res mine = { 0 };
+    double rate = 0;
+    if (own) parse_screen(own, &mine.w, &mine.h, &rate);
+    mine.hz = (int)lround(rate);
+    gboolean own_listed = !own;
     GArray *list = g_array_new(FALSE, FALSE, sizeof(Res));
     for (guint i = 0; i < l->modes->len; i++) {
         ScreenMode *m = l->modes->pdata[i];
         Res res = { m->w, m->h, (int)lround(m->rate), m->w * 10 == m->h * 16 };
         if (m->w < 1280 || res.hz < 59 || (!res.tall && m->w * 9 != m->h * 16)) continue;
+        own_listed |= res.w == mine.w && res.h == mine.h && res.hz == mine.hz;
         gboolean seen = FALSE;
         for (guint j = 0; j < list->len && !seen; j++) {
             Res *o = &g_array_index(list, Res, j);
@@ -427,9 +439,11 @@ static void build_screen_chips(Row *r)
         Res *o = &g_array_index(list, Res, j);
         g_string_append_printf(key, "%dx%d@%d;", o->w, o->h, o->hz);
     }
+    if (!own_listed) g_string_append_printf(key, "own %s", own);
     if (r->chips_key && g_str_equal(r->chips_key, key->str)) {
         g_string_free(key, TRUE);
         g_array_unref(list);
+        g_free(own);
         return;
     }
     g_free(r->chips_key);
@@ -440,14 +454,21 @@ static void build_screen_chips(Row *r)
         gtk_box_remove(GTK_BOX(r->chips), child);
     g_ptr_array_set_size(r->toggles, 0);
 
-    for (int group = 0; group < 2; group++) {
+    if (!own_listed) {
+        mine.tall = FALSE;
+        g_array_append_val(list, mine);
+    }
+    static const char *const GROUPS[] = {
+        "16:10, as on MacBooks and many laptops", "16:9, as on most TVs and monitors", "This monitor's own size",
+    };
+    for (int group = 0; group < 3; group++) {
         GtkWidget *flow = NULL;
         for (guint j = 0; j < list->len; j++) {
             Res *o = &g_array_index(list, Res, j);
-            if (o->tall != (group == 0)) continue;
+            gboolean is_own = !own_listed && j == list->len - 1;
+            if (group == 2 ? !is_own : is_own || o->tall != (group == 0)) continue;
             if (!flow) {
-                gtk_box_append(GTK_BOX(r->chips),
-                    ui_label(group == 0 ? "16:10, as on MacBooks and many laptops" : "16:9, as on most TVs and monitors", "group"));
+                gtk_box_append(GTK_BOX(r->chips), ui_label(GROUPS[group], "group"));
                 flow = new_flow();
                 gtk_box_append(GTK_BOX(r->chips), flow);
             }
@@ -459,11 +480,8 @@ static void build_screen_chips(Row *r)
             g_free(value);
         }
     }
-    GtkWidget *flow = new_flow();
-    gtk_widget_add_css_class(flow, "last");
-    gtk_box_append(GTK_BOX(r->chips), flow);
-    add_chip(r, flow, "Leave as is", "leave");
     g_array_unref(list);
+    g_free(own);
     sync_chips(r);
 }
 
@@ -485,25 +503,6 @@ static void on_head(GtkButton *b, Row *r)
     ui_class(r->box, "open", open);
     gtk_accessible_update_state(GTK_ACCESSIBLE(r->head), GTK_ACCESSIBLE_STATE_EXPANDED, open, -1);
     a->open = open ? r : NULL;
-}
-
-static GtkWidget *status_stack(void)
-{
-    GtkWidget *s = gtk_stack_new();
-    gtk_stack_set_transition_type(GTK_STACK(s), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_stack_set_transition_duration(GTK_STACK(s), 160);
-    gtk_widget_add_css_class(s, "status");
-    gtk_widget_set_valign(s, GTK_ALIGN_CENTER);
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_DOT, 2, "queued"), "queued");
-    GtkWidget *spin = lares_pixel_spinner_new(2);
-    gtk_widget_add_css_class(spin, "busy");
-    gtk_stack_add_named(GTK_STACK(s), spin, "busy");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_CHECK, 2, "ok"), "ok");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_BANG, 2, "warn"), "drift");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_BANG, 2, "bad"), "error");
-    gtk_stack_add_named(GTK_STACK(s), ui_icon(ART_DASH, 2, "queued"), "leave");
-    gtk_stack_set_visible_child_name(GTK_STACK(s), "queued");
-    return s;
 }
 
 static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *card)
@@ -545,8 +544,8 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
     gtk_widget_set_valign(r->value, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(line), r->value);
 
-    r->status = status_stack();
-    gtk_box_append(GTK_BOX(line), r->status);
+    /* The value tells the state: what the mode sets, or what's happening;
+     * drift and errors get a line under the name and the note. */
     r->chevron = ui_icon(ART_CHEVRON, 2, "chevron");
     gtk_box_append(GTK_BOX(line), r->chevron);
     gtk_button_set_child(GTK_BUTTON(r->head), line);
@@ -563,7 +562,6 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
         gtk_box_append(GTK_BOX(r->chips), flow);
         add_chip(r, flow, "On", "on");
         add_chip(r, flow, "Off", "off");
-        add_chip(r, flow, "Leave as is", "leave");
     }
 
     gtk_box_append(GTK_BOX(r->box), r->head);
@@ -576,45 +574,43 @@ static void build_row(RemoteView *a, Item i, const char *const *art, GtkWidget *
     gtk_box_append(GTK_BOX(card), r->box);
 }
 
-static GtkWidget *two_texts(const char *home, const char *remote, const char *cls)
+/* A field of the connection card: its name, and its value on the right. */
+static GtkWidget *add_field(GtkWidget *card, const char *name, gboolean selectable)
 {
-    GtkWidget *s = gtk_stack_new();
-    gtk_stack_set_transition_type(GTK_STACK(s), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_stack_set_transition_duration(GTK_STACK(s), 280);
-    gtk_stack_set_interpolate_size(GTK_STACK(s), TRUE);
-    gtk_stack_add_named(GTK_STACK(s), ui_label(home, cls), "home");
-    gtk_stack_add_named(GTK_STACK(s), ui_label(remote, cls), "remote");
-    return s;
+    if (gtk_widget_get_first_child(card)) {
+        GtkWidget *sep = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(sep, "line");
+        gtk_box_append(GTK_BOX(card), sep);
+    }
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
+    gtk_widget_add_css_class(row, "field");
+    GtkWidget *n = ui_label(name, NULL);
+    gtk_widget_set_hexpand(n, TRUE);
+    gtk_box_append(GTK_BOX(row), n);
+    GtkWidget *v = ui_label("", "value");
+    gtk_label_set_xalign(GTK_LABEL(v), 1);
+    gtk_label_set_selectable(GTK_LABEL(v), selectable);
+    gtk_box_append(GTK_BOX(row), v);
+    gtk_box_append(GTK_BOX(card), row);
+    return v;
 }
 
 static void build_page(RemoteView *a)
 {
-    a->mode_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
+    a->mode_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 36);
 
-    GtkWidget *hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
-    a->title = two_texts("Home", "Remote", "title");
-    a->sub = two_texts("Set for sitting at this PC.", "Ready for Moonlight on your other device.", "sub");
-    gtk_box_append(GTK_BOX(hero), a->title);
-    gtk_box_append(GTK_BOX(hero), a->sub);
-
-    GtkWidget *live = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 9);
-    a->live_dot = ui_icon(ART_LIVE, 2, "live-dot");
-    a->live_label = ui_label("", "live");
-    gtk_box_append(GTK_BOX(live), a->live_dot);
-    gtk_box_append(GTK_BOX(live), a->live_label);
-    a->live_rev = gtk_revealer_new();
-    gtk_revealer_set_transition_type(GTK_REVEALER(a->live_rev), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
-    gtk_revealer_set_transition_duration(GTK_REVEALER(a->live_rev), 240);
-    gtk_revealer_set_child(GTK_REVEALER(a->live_rev), live);
-    gtk_box_append(GTK_BOX(hero), a->live_rev);
-    a->address = ui_label("", "muted");
-    gtk_label_set_selectable(GTK_LABEL(a->address), TRUE);
-    gtk_box_append(GTK_BOX(hero), a->address);
-    gtk_box_append(GTK_BOX(a->mode_box), hero);
-
+    /* The switch names the mode; under it, how the stream is doing and the
+     * address to add this PC by in Moonlight, then what the mode sets. */
     a->sw = lares_mode_switch_new(ART_HOME, "Home", ART_LAPTOP, "Remote");
     g_signal_connect(a->sw, "picked", G_CALLBACK(on_picked), a);
     gtk_box_append(GTK_BOX(a->mode_box), a->sw);
+
+    GtkWidget *conn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(conn, "card");
+    a->moonlight = add_field(conn, "Moonlight", FALSE);
+    a->ip = add_field(conn, "IP address", TRUE);
+    a->host = add_field(conn, "Host name", TRUE);
+    gtk_box_append(GTK_BOX(a->mode_box), conn);
 
     GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(card, "card");
@@ -629,6 +625,7 @@ static void build_page(RemoteView *a)
     gtk_stack_add_named(GTK_STACK(a->note_icons), ui_icon(ART_BANG, 2, "warn"), "warn");
     gtk_stack_add_named(GTK_STACK(a->note_icons), ui_icon(ART_KEY, 2, "key"), "key");
     gtk_widget_set_valign(a->note_icons, GTK_ALIGN_START);
+    gtk_widget_set_size_request(a->note_icons, -1, 27); /* one line of the text, so the icon sits level with it */
     gtk_widget_add_css_class(a->note_icons, "note-icon");
     a->note_text = ui_paragraph("", "note-text");
     gtk_label_set_wrap_mode(GTK_LABEL(a->note_text), PANGO_WRAP_WORD_CHAR);
@@ -661,7 +658,7 @@ static void build_page(RemoteView *a)
     /* With a saved mode the window opens in its colors, with no flash. */
     if (cfg(a)->mode_known) {
         lares_mode_switch_set_active(LARES_MODE_SWITCH(a->sw), cfg(a)->mode, FALSE);
-        apply_theme(a);
+        lares_set_mode_colors(a->app);
     }
     for (int i = 0; i < N_ITEMS; i++) update_row(&a->rows[i]);
 }
@@ -783,11 +780,8 @@ static void update_guide(RemoteView *a)
         set_step(a, STEP_TAILSCALE, FALSE, a->signing_in ? "Finish signing in in your browser…"
                                                          : "Installed. Sign in to link this PC with your devices.",
                  a->signing_in ? NULL : step_button(a, "Sign in", "primary", NULL, G_CALLBACK(on_sign_in)), NULL);
-    else {
-        char *text = l->tailscale_host ? g_strdup_printf("Linked as %s.", l->tailscale_host) : g_strdup("Linked.");
-        set_step(a, STEP_TAILSCALE, TRUE, text, NULL, NULL);
-        g_free(text);
-    }
+    else
+        set_step(a, STEP_TAILSCALE, TRUE, "Linked.", NULL, NULL); /* the address below names it */
 
     if (!l->sunshine_installed)
         set_step(a, STEP_SUNSHINE, FALSE, "Not installed yet.",
@@ -803,16 +797,11 @@ static void update_guide(RemoteView *a)
                  step_button(a, "Get Moonlight", "primary", "https://moonlight-stream.org", NULL),
                  l->sunshine_installed ? step_button(a, "Open Sunshine", "quiet", NULL, G_CALLBACK(on_open_sunshine)) : NULL);
 
-    char *addr = l->tailscale_ip ? g_strdup_printf("This PC's address: %s%s%s", l->tailscale_ip,
-                                                   l->tailscale_host ? ", or " : "", l->tailscale_host ? l->tailscale_host : "")
-                                 : NULL;
-    gtk_label_set_text(GTK_LABEL(a->guide_address), addr ? addr : "");
-    gtk_widget_set_visible(a->guide_address, addr != NULL);
-    char *moonlight = l->tailscale_ip ? g_strdup_printf("In Moonlight: %s", l->tailscale_ip) : NULL;
-    gtk_label_set_text(GTK_LABEL(a->address), moonlight ? moonlight : "");
-    gtk_widget_set_visible(a->address, moonlight != NULL);
-    g_free(addr);
-    g_free(moonlight);
+    gtk_label_set_text(GTK_LABEL(a->guide_ip), l->tailscale_ip ? l->tailscale_ip : "");
+    gtk_label_set_text(GTK_LABEL(a->guide_host), l->tailscale_host ? l->tailscale_host : "");
+    gtk_widget_set_visible(a->guide_or, l->tailscale_host != NULL);
+    gtk_widget_set_visible(a->guide_host, l->tailscale_host != NULL);
+    gtk_widget_set_visible(a->guide_address, l->tailscale_ip != NULL);
 }
 
 static void build_step(RemoteView *a, GtkWidget *card, int i, const char *number, const char *name, const char *what)
@@ -836,7 +825,9 @@ static void build_step(RemoteView *a, GtkWidget *card, int i, const char *number
     gtk_box_append(GTK_BOX(row), st->mark);
     GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_widget_set_hexpand(texts, TRUE);
-    gtk_box_append(GTK_BOX(texts), ui_label(name, NULL));
+    GtkWidget *title = ui_label(name, NULL);
+    gtk_widget_set_size_request(title, -1, 27); /* as tall as the mark beside it, so their middles meet */
+    gtk_box_append(GTK_BOX(texts), title);
     GtkWidget *w = ui_paragraph(what, "muted");
     gtk_box_append(GTK_BOX(texts), w);
     st->status = ui_paragraph("", NULL);
@@ -849,11 +840,11 @@ static void build_step(RemoteView *a, GtkWidget *card, int i, const char *number
 
 static void build_guide(RemoteView *a)
 {
-    a->guide = gtk_box_new(GTK_ORIENTATION_VERTICAL, 27);
+    a->guide = gtk_box_new(GTK_ORIENTATION_VERTICAL, 36);
     GtkWidget *hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
     gtk_box_append(GTK_BOX(hero), ui_label("Remote play", "title"));
     GtkWidget *sub = ui_paragraph("Play this PC's games and desktop from a laptop, tablet or phone, at home or away. "
-                                  "Three free apps do it, and each step ticks itself once it's done.", "sub");
+                                  "Three free apps do it.", "sub");
     gtk_box_append(GTK_BOX(hero), sub);
     gtk_box_append(GTK_BOX(a->guide), hero);
 
@@ -865,8 +856,20 @@ static void build_guide(RemoteView *a)
     build_step(a, card, STEP_MOONLIGHT, "3", "Moonlight", "Plays it on your other device.");
     gtk_box_append(GTK_BOX(a->guide), card);
 
-    a->guide_address = ui_paragraph("", "value");
-    gtk_label_set_selectable(GTK_LABEL(a->guide_address), TRUE);
+    /* The address and the name wrap as whole words: a name never breaks at
+     * its hyphen. */
+    a->guide_address = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
+    gtk_box_append(GTK_BOX(a->guide_address), ui_label("This PC's address", "muted"));
+    GtkWidget *values = lares_wrap_new(9);
+    a->guide_ip = ui_label("", "value");
+    gtk_label_set_selectable(GTK_LABEL(a->guide_ip), TRUE);
+    lares_wrap_append(LARES_WRAP(values), a->guide_ip);
+    a->guide_or = ui_label("or", "muted");
+    lares_wrap_append(LARES_WRAP(values), a->guide_or);
+    a->guide_host = ui_label("", "value");
+    gtk_label_set_selectable(GTK_LABEL(a->guide_host), TRUE);
+    lares_wrap_append(LARES_WRAP(values), a->guide_host);
+    gtk_box_append(GTK_BOX(a->guide_address), values);
     gtk_box_append(GTK_BOX(a->guide), a->guide_address);
 }
 
@@ -884,12 +887,12 @@ static void on_live(gpointer user)
         Config *c = cfg(a);
         lares_mode_switch_set_active(LARES_MODE_SWITCH(a->sw), c->mode, FALSE);
         for (int i = 0; i < N_ITEMS; i++) a->rows[i].state = RS_OK;
-        apply_theme(a);
+        lares_set_mode_colors(a->app);
         a->ready = TRUE;
     }
     build_screen_chips(&a->rows[ITEM_SCREEN]);
     if (!a->applying) settle_rows(a);
-    update_live_line(a);
+    update_connection(a);
     update_note(a);
 }
 

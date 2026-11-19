@@ -129,8 +129,10 @@ static void on_devices(gpointer user)
         Device *d = list->pdata[i];
         GtkButton *row = clickable(o->app, section_for(d->kind), "row-head");
         GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-        gtk_box_append(GTK_BOX(line), ui_icon(device_art(d->kind), 2, "row-icon"));
-        GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *icon = ui_icon(device_art(d->kind), 2, "row-icon");
+        gtk_widget_set_size_request(icon, 22, -1); /* icons of different widths line up their names */
+        gtk_box_append(GTK_BOX(line), icon);
+        GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
         gtk_widget_set_hexpand(texts, TRUE);
         GtkWidget *name = ui_label(d->name, NULL);
         gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
@@ -157,19 +159,36 @@ static void on_devices(gpointer user)
     gtk_widget_set_visible(o->devices, list->len > 0);
 }
 
+/* "Sunshine is off" when a service isn't as the mode sets it, or NULL. */
+static char *differs(Remote *r, const Config *c, Item i, int now)
+{
+    const char *want = c->values[c->mode][i];
+    if (now < 0 || !want || g_str_equal(want, "leave") || remote_matches(r, i, want)) return NULL;
+    return g_strdup_printf("%s is %s", item_name(i), now ? "on" : "off");
+}
+
+/* The mode, and under it only news: the stream, or a service that isn't as
+ * the mode sets it. What the mode sets goes without saying. */
 static void on_remote(gpointer user)
 {
     Overview *o = user;
-    Config *c = remote_config(o->app->remote);
-    Live *l = remote_live(o->app->remote);
+    Remote *r = o->app->remote;
+    Config *c = remote_config(r);
+    Live *l = remote_live(r);
     gtk_widget_set_visible(o->remote.button, c->ready);
     set_text(o->remote.value, c->mode_known ? mode_name(c->mode) : "…");
-    char *sub;
-    if (l->streaming) sub = g_strdup("Streaming to Moonlight now");
-    else if (l->sunshine < 0) sub = g_strdup("");
-    else sub = g_strdup_printf("Sunshine %s · Tailscale %s", l->sunshine ? "on" : "off",
-                               l->tailscale ? "on" : "off");
-    set_text(o->remote.sub, sub);
+    char *sub = NULL;
+    if (l->streaming) {
+        sub = g_strdup("Streaming to Moonlight now");
+    } else if (c->mode_known) {
+        char *sun = differs(r, c, ITEM_SUNSHINE, l->sunshine), *ts = differs(r, c, ITEM_TAILSCALE, l->tailscale);
+        if (sun && ts) sub = g_strdup_printf("%s · %s", sun, ts);
+        else if (sun || ts) sub = g_strdup(sun ? sun : ts);
+        else if (c->mode == MODE_REMOTE && l->sunshine == 1) sub = g_strdup("Waiting for Moonlight");
+        g_free(sun);
+        g_free(ts);
+    }
+    set_text(o->remote.sub, sub ? sub : "");
     g_free(sub);
 }
 
@@ -180,29 +199,32 @@ GtkWidget *overview_build(Lares *app, Section *self)
     self->view = o;
     GtkWidget *page = ui_page();
 
+    /* The tiles are one grid, as far apart down as across. */
+    GtkWidget *tiles = gtk_box_new(GTK_ORIENTATION_VERTICAL, 18);
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_box_set_homogeneous(GTK_BOX(row), TRUE);
-    make_tile(o, &o->cpu, "hardware", ART_CHIP, "CPU", 15);
+    make_tile(o, &o->cpu, "hardware", ART_CHIP, "CPU", 14);
     gtk_box_append(GTK_BOX(row), o->cpu.button);
     if (hardware_info(app->hw)->gpu_name) {
-        make_tile(o, &o->gpu, "hardware", ART_SCREEN, "GPU", 15);
+        make_tile(o, &o->gpu, "hardware", ART_SCREEN, "GPU", 14);
         gtk_box_append(GTK_BOX(row), o->gpu.button);
     }
-    make_tile(o, &o->mem, "hardware", ART_MEMORY, "Memory", 15);
+    make_tile(o, &o->mem, "hardware", ART_MEMORY, "Memory", 14);
     gtk_box_append(GTK_BOX(row), o->mem.button);
-    gtk_box_append(GTK_BOX(page), row);
+    gtk_box_append(GTK_BOX(tiles), row);
 
     /* The system drive spans the width: a fourth tile in the row would
      * leave too little room for its number. */
     make_tile(o, &o->disk, "hardware", ART_DISK, "Storage", 34);
-    gtk_box_append(GTK_BOX(page), o->disk.button);
+    gtk_box_append(GTK_BOX(tiles), o->disk.button);
+    gtk_box_append(GTK_BOX(page), tiles);
 
     o->devices = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(o->devices, "card");
     gtk_box_append(GTK_BOX(page), o->devices);
 
     /* The Remote tile shows once remote play is set up. */
-    make_tile(o, &o->remote, "remote", ART_LAPTOP, "Remote", 0);
+    make_tile(o, &o->remote, "remote", ART_LAPTOP, "Mode", 0);
     gtk_box_append(GTK_BOX(page), o->remote.button);
     remote_watch(app->remote, on_remote, o);
     on_remote(o);

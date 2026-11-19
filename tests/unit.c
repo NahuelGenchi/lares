@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* Unit tests for the parts of Lares that work on plain data: nickname keys,
  * battery stages and wording, screen sizes, the controller picture's map,
- * how keyboards and mice are told apart in sysfs, HyperX battery answers,
- * and Logitech HID++ requests and profiles. `make check` runs them from
- * the repository's root. */
+ * how keyboards and mice are told apart in sysfs, HyperX mice's batteries
+ * and settings, and Logitech HID++ requests and profiles. `make check` runs
+ * them from the repository's root. */
 #include <glib.h>
 #include <string.h>
 #include "../src/devices.h"
-#include "../src/hidbattery.h"
 #include "../src/hidpp.h"
+#include "../src/hyperx.h"
 #include "../src/pad/pads.h"
 #include "../src/pad_map.h"
 #include "../src/remote_model.h"
@@ -102,6 +102,47 @@ static void test_screen(void)
     g_free(d);
 }
 
+/* Services are on or off: an old "leave" loads as the mode's own value;
+ * the screen keeps it. */
+static void test_saved_values(void)
+{
+    char *v = remote_saved_value(MODE_HOME, ITEM_SUNSHINE, "leave");
+    g_assert_cmpstr(v, ==, "off");
+    g_free(v);
+    v = remote_saved_value(MODE_REMOTE, ITEM_TAILSCALE, "leave");
+    g_assert_cmpstr(v, ==, "on");
+    g_free(v);
+    v = remote_saved_value(MODE_HOME, ITEM_TAILSCALE, "on");
+    g_assert_cmpstr(v, ==, "on");
+    g_free(v);
+    v = remote_saved_value(MODE_REMOTE, ITEM_SCREEN, "leave");
+    g_assert_cmpstr(v, ==, "leave");
+    g_free(v);
+    v = remote_saved_value(MODE_REMOTE, ITEM_SUNSHINE, NULL);
+    g_assert_cmpstr(v, ==, "on");
+    g_free(v);
+}
+
+/* A mode's screen until a size is picked: the monitor's preferred mode, its
+ * current one when none is preferred, nothing before it's read. */
+static void test_own_size(void)
+{
+    Live l = { 0 };
+    g_assert_null(remote_own_size(&l));
+    ScreenMode big = { .w = 3840, .h = 2160, .rate = 59.94, .current = TRUE };
+    ScreenMode native = { .w = 2560, .h = 1440, .rate = 143.97, .preferred = TRUE };
+    l.modes = g_ptr_array_new();
+    g_ptr_array_add(l.modes, &big);
+    char *v = remote_own_size(&l);
+    g_assert_cmpstr(v, ==, "3840x2160@60");
+    g_free(v);
+    g_ptr_array_add(l.modes, &native);
+    v = remote_own_size(&l);
+    g_assert_cmpstr(v, ==, "2560x1440@144");
+    g_free(v);
+    g_ptr_array_unref(l.modes);
+}
+
 /* Capability bitmaps as a 64-bit kernel shows them, from a wireless mouse
  * whose receiver also has a keyboard node, a keyboard on a receiver, a
  * wired gamepad and a power button. */
@@ -162,15 +203,15 @@ static void test_hid_battery(void)
     gboolean charging = TRUE;
     /* 54 %, not charging, 26 °C, 3840 mV */
     const guint8 answer[64] = { 0x51, 0x02, 0x36, 0x00, 0x1a, 0x00, 0x00, 0x0f };
-    g_assert_true(hidbattery_parse(answer, sizeof answer, &level, &charging));
+    g_assert_true(hyperx_battery_parse(answer, sizeof answer, &level, &charging));
     g_assert_cmpint(level, ==, 54);
     g_assert_false(charging);
     const guint8 on_cable[64] = { 0x51, 0x02, 0x64, 0x01 };
-    g_assert_true(hidbattery_parse(on_cable, sizeof on_cable, &level, &charging));
+    g_assert_true(hyperx_battery_parse(on_cable, sizeof on_cable, &level, &charging));
     g_assert_cmpint(level, ==, 100);
     g_assert_true(charging);
     const guint8 full[64] = { 0x51, 0x02, 0x64, 0x02 };
-    g_assert_true(hidbattery_parse(full, sizeof full, &level, &charging));
+    g_assert_true(hyperx_battery_parse(full, sizeof full, &level, &charging));
     g_assert_false(charging);
 
     /* The receiver's acknowledgement, a link event, a wrong level and a
@@ -178,23 +219,253 @@ static void test_hid_battery(void)
     const guint8 ack[64] = { 0xff, 0x01, 0xbf, 0xb4 };
     const guint8 link[64] = { 0xfb, 0x0a, 0x01 };
     const guint8 wrong[64] = { 0x51, 0x02, 0x65, 0x00 };
-    g_assert_false(hidbattery_parse(ack, sizeof ack, &level, &charging));
-    g_assert_false(hidbattery_parse(link, sizeof link, &level, &charging));
-    g_assert_false(hidbattery_parse(wrong, sizeof wrong, &level, &charging));
-    g_assert_false(hidbattery_parse(answer, 3, &level, &charging));
+    g_assert_false(hyperx_battery_parse(ack, sizeof ack, &level, &charging));
+    g_assert_false(hyperx_battery_parse(link, sizeof link, &level, &charging));
+    g_assert_false(hyperx_battery_parse(wrong, sizeof wrong, &level, &charging));
+    g_assert_false(hyperx_battery_parse(answer, 3, &level, &charging));
 
-    const HidBatteryModel *m = hidbattery_model(0x03f0, 0x0f98);
+    const HyperxModel *m = hyperx_model(0x03f0, 0x0f98);
     g_assert_nonnull(m);
     g_assert_cmpint(m->interface, ==, 2);
-    g_assert_null(hidbattery_model(0x03f0, 0x0d97));
+    g_assert_true(m->receiver);
+    g_assert_null(hyperx_model(0x03f0, 0x0d97));
 
     /* The rule opens the battery interface only, to the person at the screen. */
-    char *rules = hidbattery_udev_rules();
+    char *rules = hyperx_udev_rules();
     g_assert_nonnull(strstr(rules, "SUBSYSTEM==\"hidraw\", ENV{ID_USB_VENDOR_ID}==\"03f0\", "
                                    "ENV{ID_USB_MODEL_ID}==\"0f98\", ENV{ID_USB_INTERFACE_NUM}==\"02\", "
                                    "TAG+=\"uaccess\"\n"));
     g_assert_null(strstr(rules, "MODE="));  /* no world-readable node */
     g_free(rules);
+}
+
+/* The settings as the protocol notes read them from a Pulsefire Haste 2
+ * Wireless (hyperx_sample), decoded and changed. */
+static void test_hyperx_settings(void)
+{
+    HyperxState s;
+    hyperx_sample(&s);
+    MouseSettings m;
+    hyperx_decode(hyperx_model(0x03f0, 0x0f98), &s, &m);
+    g_assert_cmpint(m.stages, ==, 5);
+    g_assert_cmpint(m.active, ==, 2);
+    const int dpi[] = { 400, 800, 1600, 3200, 6400 };
+    for (int i = 0; i < 5; i++) g_assert_cmpint(m.dpi[i], ==, dpi[i]);
+    g_assert_cmpint(m.rate, ==, 1000);
+    g_assert_cmpint(m.lift_mm, ==, 1);
+    g_assert_cmpint(m.brightness, ==, 100);
+    g_assert_cmpint(m.light, ==, LIGHT_OTHER);
+    g_assert_cmpint(m.dpi_min, ==, 200);
+    g_assert_cmpint(m.dpi_max, ==, 26000);
+
+    /* Nothing to change, nothing sent. */
+    guint8 p[HYPERX_BLOCKS][HYPERX_REPORT];
+    g_assert_cmpint(hyperx_packets(&s, &m, 0, p), ==, 0);
+
+    /* A new active stage and polling rate rewrite the DPI table and keep the
+     * stages' colours. */
+    MouseSettings want = m;
+    want.active = 3;
+    want.rate = 500;
+    want.dpi[3] = 3600;
+    g_assert_cmpint(hyperx_packets(&s, &want, 1, p), ==, 1);
+    const guint8 table[] = { 0x32, 0x01, 0x01, 0x00, 0x10, 0x1f, 0x03,
+                             0x07, 0x00, 0xff, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0xff,
+                             0x1f, 0x00, 0xff, 0xff, 0x00, 0x47, 0x00, 0x00, 0xff, 0x00,
+                             0x7f, 0x00, 0xff, 0xff, 0xff };
+    g_assert_cmpmem(p[0], sizeof table, table, sizeof table);
+
+    /* Lift-off, brightness and a solid colour: one packet each, in the
+     * protocol's own words (51 % is 0x82, as NGENUITY sends it). */
+    want = m;
+    want.lift_mm = 2;
+    want.brightness = 51;
+    want.light = LIGHT_SOLID;
+    want.rgb[0] = 0xff;
+    want.rgb[1] = want.rgb[2] = 0;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, 3);
+    const guint8 sensor[] = { 0x36, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00 };
+    const guint8 bright[] = { 0x40, 0x01, 0x00, 0x00, 0x82, 0x00 };
+    const guint8 solid[] = { 0x42, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0xff, 0x00, 0x00, 0x00 };
+    g_assert_cmpmem(p[0], sizeof sensor, sensor, sizeof sensor);
+    g_assert_cmpmem(p[1], sizeof bright, bright, sizeof bright);
+    g_assert_cmpmem(p[2], sizeof solid, solid, sizeof solid);
+
+    /* The mouse, given those packets, holds what was wanted. */
+    for (int i = 0; i < 3; i++) hyperx_apply(&s, p[i]);
+    MouseSettings got;
+    hyperx_decode(NULL, &s, &got);
+    g_assert_cmpint(got.lift_mm, ==, 2);
+    g_assert_cmpint(got.brightness, ==, 51);
+    g_assert_cmpint(got.light, ==, LIGHT_SOLID);
+    g_assert_cmpmem(got.rgb, 3, want.rgb, 3);
+
+    /* Breathing and the colour cycle, as tested on the mouse. */
+    want = got;
+    want.light = LIGHT_BREATHING;
+    want.rgb[0] = 0;
+    want.rgb[1] = 0xff;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, 1);
+    const guint8 breath[] = { 0x42, 0x02, 0x00, 0x00, 0x02, 0x32, 0x00, 0x00, 0x01, 0x00, 0xff, 0x00 };
+    g_assert_cmpmem(p[0], sizeof breath, breath, sizeof breath);
+    want.light = LIGHT_CYCLE;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, 1);
+    const guint8 cycle[] = { 0x42, 0x02, 0x00, 0x00, 0x04, 0x32, 0x00, 0x00, 0xfe, 0x00 };
+    g_assert_cmpmem(p[0], sizeof cycle, cycle, sizeof cycle);
+
+    /* Every brightness survives the trip to a byte and back. */
+    for (int pct = 0; pct <= 100; pct++) {
+        want = got;
+        want.brightness = pct;
+        int n = hyperx_packets(&s, &want, 0, p);
+        HyperxState t = s;
+        for (int i = 0; i < n; i++) hyperx_apply(&t, p[i]);
+        MouseSettings back;
+        hyperx_decode(NULL, &t, &back);
+        g_assert_cmpint(back.brightness, ==, pct);
+    }
+
+    /* What the mouse can't hold is refused, not sent. */
+    hyperx_sample(&s);
+    want = m;
+    want.dpi[0] = 425;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, -1);
+    want = m;
+    want.dpi[0] = 26050;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, -1);
+    want = m;
+    want.rate = 2000;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, -1);
+    want = m;
+    want.active = 5;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, -1);
+    want = m;
+    want.light = LIGHT_OTHER;
+    want.lift_mm = 2;
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, 1);  /* only the lift-off */
+}
+
+/* The answers of a real Pulsefire Haste 2 Wireless: four stages in use
+ * (400, 800 in use, 1600, 3200) and a fifth, at 26000, left out; the
+ * firmware's colour cycle, with stale bytes where a colour would be. */
+static void test_hyperx_real(void)
+{
+    HyperxState s = { 0 };
+    const guint8 dpi[] = { 0x33, 0x02, 0x08, 0x0f, 0x01, 0x07, 0x00, 0xff, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0xff,
+                           0x1f, 0x00, 0xff, 0xff, 0x00, 0x3f, 0x00, 0x00, 0xff, 0x00, 0x07, 0x02, 0xff, 0xff, 0xff };
+    const guint8 light[] = { 0x43, 0x03, 0x04, 0x2b, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff };
+    memcpy(s.dpi, dpi, sizeof dpi);
+    memcpy(s.light, light, sizeof light);
+    s.sensor[0] = 0x37;
+    s.brightness[0] = 0x41;
+    s.brightness[2] = 0xff;
+    MouseSettings m;
+    hyperx_decode(NULL, &s, &m);
+    g_assert_cmpint(m.stages, ==, 4);
+    g_assert_cmpint(m.active, ==, 1);
+    g_assert_cmpint(m.dpi[1], ==, 800);
+    g_assert_cmpint(m.dpi[3], ==, 3200);
+    g_assert_cmpint(m.light, ==, LIGHT_CYCLE);
+    const guint8 none[3] = { 0 };
+    g_assert_cmpmem(m.rgb, 3, none, 3);
+
+    /* A new stage in use leaves the left-out one as it was. */
+    MouseSettings want = m;
+    want.active = 3;
+    guint8 p[HYPERX_BLOCKS][HYPERX_REPORT];
+    g_assert_cmpint(hyperx_packets(&s, &want, 0, p), ==, 1);
+    g_assert_cmpint(p[0][6], ==, 3);
+    g_assert_cmpmem(p[0] + 7, 25, dpi + 5, 25);
+    hyperx_apply(&s, p[0]);
+    hyperx_decode(NULL, &s, &m);
+    g_assert_cmpint(m.active, ==, 3);
+    g_assert_cmpint(m.stages, ==, 4);
+}
+
+static void test_hyperx_events(void)
+{
+    HyperxEvent ev;
+    const guint8 stage[64] = { 0xfb, 0x08, 0x03, 0x3f, 0x00 };
+    g_assert_true(hyperx_event(stage, sizeof stage, &ev));
+    g_assert_cmpint(ev.kind, ==, HYPERX_STAGE);
+    g_assert_cmpint(ev.stage, ==, 3);
+    g_assert_cmpint(ev.code, ==, 0x3f);
+    /* The sample's stage 3 is 3200 DPI, so the event is taken; the one a
+     * click sends on waking, stage 0 with code 0, matches nothing. */
+    HyperxState s;
+    hyperx_sample(&s);
+    g_assert_true(hyperx_take_stage(&s, &ev));
+    g_assert_cmpint(s.dpi[4], ==, 3);
+    const guint8 waking[64] = { 0xfb, 0x08, 0x00, 0x00, 0x00 };
+    g_assert_true(hyperx_event(waking, sizeof waking, &ev));
+    g_assert_false(hyperx_take_stage(&s, &ev));
+    g_assert_cmpint(s.dpi[4], ==, 3);
+    const guint8 off_mask[64] = { 0xfb, 0x08, 0x06, 0x3f, 0x00 };
+    g_assert_true(hyperx_event(off_mask, sizeof off_mask, &ev));
+    g_assert_false(hyperx_take_stage(&s, &ev));
+    const guint8 asleep[64] = { 0xfb, 0x0a, 0x00 }, awake[64] = { 0xfb, 0x0a, 0x01 };
+    g_assert_true(hyperx_event(asleep, sizeof asleep, &ev));
+    g_assert_cmpint(ev.kind, ==, HYPERX_LINK);
+    g_assert_false(ev.linked);
+    g_assert_true(hyperx_event(awake, sizeof awake, &ev));
+    g_assert_true(ev.linked);
+    const guint8 battery[64] = { 0x51, 0x02, 0x36, 0x01 };
+    g_assert_true(hyperx_event(battery, sizeof battery, &ev));
+    g_assert_cmpint(ev.kind, ==, HYPERX_BATTERY);
+    g_assert_cmpint(ev.level, ==, 54);
+    g_assert_true(ev.charging);
+    /* Button presses, answers and acknowledgements are not events Lares uses. */
+    const guint8 button[64] = { 0xfb, 0x01, 0x20, 0x00, 0x01 };
+    const guint8 table[64] = { 0x33, 0x02, 0x08, 0x1f, 0x02 };
+    const guint8 ack[64] = { 0xff, 0x01 };
+    g_assert_false(hyperx_event(button, sizeof button, &ev));
+    g_assert_false(hyperx_event(table, sizeof table, &ev));
+    g_assert_false(hyperx_event(ack, sizeof ack, &ev));
+}
+
+/* A change carries only what the person changed: what the mouse changed
+ * by itself meanwhile, here its DPI button, stays. */
+static void test_hyperx_merge(void)
+{
+    const HyperxModel *model = hyperx_model(0x03f0, 0x0f98);
+    HyperxState now;
+    hyperx_sample(&now);
+    MouseSettings base, want, out;
+    hyperx_decode(model, &now, &base);
+    now.dpi[4] = 4;                  /* the DPI button, after the view read it */
+
+    want = base;
+    want.light = LIGHT_SOLID;
+    want.rgb[0] = 0xff;
+    hyperx_merge(&now, &base, &want, &out);
+    g_assert_cmpint(out.active, ==, 4);
+    g_assert_cmpint(out.light, ==, LIGHT_SOLID);
+    g_assert_cmpint(out.rgb[0], ==, 0xff);
+    g_assert_cmpint(out.dpi_max, ==, model->dpi_max);
+
+    want = base;
+    want.active = 0;
+    want.dpi[1] = 900;
+    hyperx_merge(&now, &base, &want, &out);
+    g_assert_cmpint(out.active, ==, 0);
+    g_assert_cmpint(out.dpi[1], ==, 900);
+    g_assert_cmpint(out.dpi[2], ==, 1600);
+    g_assert_cmpint(out.light, ==, LIGHT_OTHER);   /* the sample's animation, untouched */
+
+    /* Nothing changed: nothing to send. */
+    guint8 packets[HYPERX_BLOCKS][HYPERX_REPORT];
+    hyperx_merge(&now, &base, &base, &out);
+    g_assert_cmpint(hyperx_packets(&now, &out, 0, packets), ==, 0);
+}
+
+static void test_usb_parent(void)
+{
+    char *p = devices_usb_parent("/sys/devices/pci0000:00/0000:00:14.0/usb1/1-8/1-8.4/1-8.4:1.2/"
+                                 "0003:046D:C547.0007/0003:046D:40A2.0009");
+    g_assert_cmpstr(p, ==, "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-8/1-8.4");
+    g_free(p);
+    g_assert_null(devices_usb_parent("/sys/devices/platform/i8042/serio0"));
+    g_assert_null(devices_usb_parent(NULL));
 }
 
 /* Logitech HID++ 2.0 requests, as a G715 on its Lightspeed receiver
@@ -413,9 +684,16 @@ int main(int argc, char **argv)
     g_test_add_func("/nicknames/clean", test_clean_nickname);
     g_test_add_func("/battery/stages-and-words", test_battery);
     g_test_add_func("/remote/screen-sizes", test_screen);
+    g_test_add_func("/remote/saved-values", test_saved_values);
+    g_test_add_func("/remote/own-size", test_own_size);
     g_test_add_func("/devices/input-kinds", test_input_kinds);
     g_test_add_func("/devices/input-owner", test_input_owner);
     g_test_add_func("/devices/hid-battery", test_hid_battery);
+    g_test_add_func("/devices/hyperx-settings", test_hyperx_settings);
+    g_test_add_func("/devices/hyperx-real", test_hyperx_real);
+    g_test_add_func("/devices/hyperx-events", test_hyperx_events);
+    g_test_add_func("/devices/hyperx-merge", test_hyperx_merge);
+    g_test_add_func("/devices/usb-parent", test_usb_parent);
     g_test_add_func("/devices/hidpp-packets", test_hidpp_packets);
     g_test_add_func("/devices/hidpp-allowed", test_hidpp_allowed);
     g_test_add_func("/devices/hidpp-profile", test_hidpp_profile);

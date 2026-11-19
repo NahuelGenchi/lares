@@ -18,6 +18,7 @@ window.lares {
   --note: rgba(196, 96, 42, 0.10);
   --warn: #a96d07;
   --bad: #bb3a2b;
+  --live: #d33a2c;
 
   font-family: "Monocraft";
   font-size: 18px;
@@ -58,6 +59,7 @@ window.lares.remote {
     --note: rgba(240, 154, 90, 0.12);
     --warn: #e7b24a;
     --bad: #f07a68;
+    --live: #ff7b6b;
   }
   window.lares.remote {
     --bg: #111a27;
@@ -106,41 +108,23 @@ window.lares .app-name {
   color: var(--text);
 }
 
-.sub,
-.live {
+.sub {
   color: var(--muted);
 }
 
-.live.on {
-  color: var(--text);
-}
-
-.live-dot {
-  color: var(--muted);
-}
-
-.live-dot.on {
-  color: var(--accent);
-  animation: pulse 1100ms ease-in-out infinite alternate;
-}
-
-@keyframes pulse {
-  from { opacity: 1; }
-  to { opacity: 0.25; }
-}
 
 /* ----------------------------------------------------------- the switch */
 
 modeswitch {
   background-color: var(--track);
   border-radius: 18px;
-  padding: 6px;
+  padding: 9px;
   transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 modeswitch > .pill {
   background-color: var(--accent);
-  border-radius: 13px;
+  border-radius: 9px;
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.10);
   transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -155,7 +139,7 @@ modeswitch > button:checked {
   box-shadow: none;
   min-height: 0;
   padding: 18px;
-  border-radius: 13px;
+  border-radius: 9px;
   font-size: 27px;
   font-weight: normal;
   color: var(--muted);
@@ -205,7 +189,7 @@ modeswitch > button.selected:focus-visible {
   box-shadow: none;
   min-height: 0;
   padding: 18px;
-  border-radius: 12px;
+  border-radius: 9px;
   font-weight: normal;
   color: var(--text);
   background-color: transparent;
@@ -254,18 +238,31 @@ modeswitch > button.selected:focus-visible {
   color: var(--muted);
 }
 
-.status .ok,
-.status .busy {
-  color: var(--accent);
+/* A field of Remote's connection card: as tall as a row, but not a button.
+   Values keep 6 px above and below, room the live badge fills, so the row
+   is the same height with or without it. Its name starts where the rows'
+   names do, past their icon. */
+.field {
+  padding: 12px 18px 12px 54px;
 }
 
-.status .queued {
-  color: var(--muted);
-  opacity: 0.6;
+.field > .value {
+  padding: 6px 0;
 }
 
-.status .warn { color: var(--warn); }
-.status .bad { color: var(--bad); }
+/* While Moonlight streams, its field is a badge whose background breathes;
+   the word stays steady. */
+.field > .value.live {
+  color: var(--live);
+  padding: 6px 14px;
+  border-radius: 9px;
+  animation: breathe 2400ms ease-in-out infinite alternate;
+}
+
+@keyframes breathe {
+  from { background-color: alpha(currentColor, 0.10); }
+  to { background-color: alpha(currentColor, 0.26); }
+}
 
 .chevron {
   color: var(--muted);
@@ -279,8 +276,10 @@ modeswitch > button.selected:focus-visible {
 
 /* --------------------------------------------------------------- chips */
 
+/* A row's choices, under its name: 18 below the open row's highlight and
+   18 above the next row's line. */
 .chips {
-  padding: 9px 18px 18px 54px;
+  padding: 18px 18px 18px 54px;
 }
 
 .chips > .group {
@@ -288,10 +287,6 @@ modeswitch > button.selected:focus-visible {
 }
 
 .chips > .group:not(:first-child) {
-  margin-top: 9px;
-}
-
-.chips > wrap.last {
   margin-top: 9px;
 }
 
@@ -326,12 +321,19 @@ modeswitch > button.selected:focus-visible {
   outline-offset: 2px;
 }
 
+/* A colour to pick: the chip around a square of it. */
+.chip.swatch,
+.chip.swatch:hover,
+.chip.swatch:checked {
+  padding: 9px;
+}
+
 /* --------------------------------------------------------------- notes */
 
 .note {
   background-color: var(--note);
   border-radius: 18px;
-  padding: 18px;
+  padding: 18px 27px;
 }
 
 .note-icon .warn { color: var(--warn); }
@@ -351,6 +353,12 @@ button.quiet:active {
   border-radius: 9px;
   font-weight: normal;
   transition: background-color 180ms ease-out, opacity 180ms ease-out;
+}
+
+/* A device's Connect, Disconnect or Allow keeps one width while its label
+   changes or a spinner replaces it: wide enough for "Disconnect". */
+button.action {
+  min-width: 126px;
 }
 
 button.primary {
@@ -384,14 +392,16 @@ button.quiet:disabled {
 
 /* ------------------------------------------------------------- sidebar */
 
+/* The first item's top lines up with the page's first card, and the width
+   fits "Set up remote", so the pages don't move when the label changes. */
 nav {
-  padding: 9px 9px 18px 18px;
-  min-width: 216px;
+  padding: 18px 9px 18px 18px;
+  min-width: 234px;
 }
 
 nav > .pill {
   background-color: var(--card);
-  border-radius: 12px;
+  border-radius: 9px;
   transition: background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -403,8 +413,8 @@ nav button.nav-item:active {
   border: none;
   box-shadow: none;
   min-height: 0;
-  padding: 12px 18px;
-  border-radius: 12px;
+  padding: 9px 18px;
+  border-radius: 9px;
   font-weight: normal;
   color: var(--muted);
   transition: color 240ms ease-out, background-color 180ms ease-out;
@@ -439,7 +449,7 @@ button.tile:active {
   border: none;
   box-shadow: none;
   min-height: 0;
-  padding: 18px;
+  padding: 27px;
   border-radius: 18px;
   font-weight: normal;
   color: var(--text);
@@ -470,7 +480,9 @@ meter.low, meter.hot {
   color: var(--bad);
 }
 
+/* As wide as the widest device, so names start at the same place. */
 .device-art {
+  min-width: 44px;
   color: var(--muted);
   transition: color 320ms ease-out;
 }
@@ -485,8 +497,9 @@ meter.low, meter.hot {
   nav > .pill, nav button.nav-item, button.tile, .device-art {
     transition: none;
   }
-  .live-dot.on {
+  .field > .value.live {
     animation: none;
+    background-color: alpha(currentColor, 0.18);
   }
 }
 
@@ -501,7 +514,7 @@ window.lares viewport {
 /* ---------------------------------------------------------- controllers */
 
 .card-title { color: var(--text); }
-.group-heading { color: var(--muted); padding: 0 9px; }
+.group-heading { color: var(--muted); padding: 0 27px; }
 .warn { color: var(--warn); }
 .value { color: var(--accent); }
 
@@ -514,6 +527,17 @@ meter.interactive:focus-visible {
 }
 
 .setting { min-height: 36px; }
+
+/* What turning a setting off saves (ui_setting_saving). */
+.saving {
+  color: var(--accent);
+  background-color: var(--note);
+  border-radius: 9px;
+  padding: 0 9px;
+  min-height: 27px;
+  transition: color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 
 /* Settings in one card are split by a line, centred in the card's gap. */
 .setting ~ .setting {
@@ -558,15 +582,13 @@ window.lares entry {
   border: none;
   box-shadow: none;
   border-radius: 9px;
-  padding: 4px 9px;
+  padding: 0 9px;
+  min-height: 27px;
   color: var(--text);
   caret-color: var(--accent);
 }
 
 window.lares entry:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-/* Four tabs fit one line of a card. */
-.tabs > .chip, .tabs > .chip:hover, .tabs > .chip:checked { padding: 9px 12px; }
 
 /* ---------------------------------------------------------- setup guide */
 
