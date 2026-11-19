@@ -70,8 +70,10 @@ G_DECLARE_FINAL_TYPE(LaresMeter, lares_meter, LARES, METER, GtkWidget)
 GtkWidget *lares_meter_new(int blocks, int pixel);
 void lares_meter_set(LaresMeter *self, double fraction);
 /* Lets the person set it by clicking, dragging or with the arrow keys, one
- * block at a time. */
-typedef void (*LaresMeterChanged)(LaresMeter *self, double fraction, gpointer user);
+ * block at a time. Each pick comes with `done` FALSE, as more may follow;
+ * once a click or drag that picked something is let go, it comes again
+ * with `done` TRUE and the fraction it ended on. */
+typedef void (*LaresMeterChanged)(LaresMeter *self, double fraction, gboolean done, gpointer user);
 void lares_meter_set_interactive(LaresMeter *self, LaresMeterChanged fn, gpointer user);
 
 /* Recent samples as pixel columns, newest on the right. */

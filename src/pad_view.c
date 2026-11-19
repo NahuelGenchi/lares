@@ -328,7 +328,7 @@ static void show_vibration(Card *c)
     set_text(c->length_text, buf);
 }
 
-static void on_strength(LaresMeter *meter, double f, gpointer data)
+static void on_strength(LaresMeter *meter, double f, gboolean done, gpointer data)
 {
     Card *c = data;
     Memory *m = memory_of(c->v, c->path);
@@ -337,7 +337,7 @@ static void on_strength(LaresMeter *meter, double f, gpointer data)
     show_vibration(c);
 }
 
-static void on_length(LaresMeter *meter, double f, gpointer data)
+static void on_length(LaresMeter *meter, double f, gboolean done, gpointer data)
 {
     Card *c = data;
     Memory *m = memory_of(c->v, c->path);
