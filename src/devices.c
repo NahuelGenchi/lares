@@ -1223,10 +1223,11 @@ typedef struct {
     Devices *d;
     char *owner, *node;
     guint8 index;
-    HidppKeyboard state;   /* what it reads, or holds after a lighting change */
-    gboolean set_bright, set_light;
+    HidppKeyboard state;   /* what it reads, or holds after a change to its profile or effects */
+    gboolean set_bright, set_rest;
     int value, now;        /* the brightness to set, and what it reads back */
-    HidppLighting light;   /* the lighting to set */
+    HidppLighting light;   /* the lighting to set, when `change` asks for it */
+    HidppChange change;    /* the rest */
     DevDone done;
     gpointer user;
 } KeysCtx;
@@ -1380,7 +1381,7 @@ static void keys_write_thread(GTask *task, gpointer src, gpointer data, GCancell
     KeysCtx *c = data;
     GError *e = NULL;
     gboolean ok = !c->set_bright || hidpp_set_brightness(c->node, c->index, c->value, &c->now, &e);
-    if (ok && c->set_light) ok = hidpp_set_lighting(c->node, c->index, &c->light, &c->state, &e);
+    if (ok && c->set_rest) ok = hidpp_change(c->node, c->index, &c->change, &c->state, &e);
     if (ok) g_task_return_boolean(task, TRUE);
     else g_task_return_error(task, e);
 }
@@ -1394,7 +1395,7 @@ static void keys_written(GObject *src, GAsyncResult *res, gpointer user)
     if (s) {
         s->writing = FALSE;
         if (ok) {
-            if (c->set_light) s->state = c->state;   /* read back whole, the brightness too */
+            if (c->set_rest) s->state = c->state;   /* read back whole, the brightness too */
             else s->state.brightness = c->now;
             s->asleep = FALSE;
         } else if (g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED)
@@ -1420,7 +1421,11 @@ static gboolean pretend_keys_written(gpointer data)
     if (s) {
         s->writing = FALSE;
         if (c->set_bright) s->state.brightness = c->value;
-        if (c->set_light) s->state.light = c->light;
+        if (c->change.light) s->state.light = c->light;
+        if (c->change.dim_s >= 0) s->state.dim_s = c->change.dim_s;
+        if (c->change.off_s >= 0) s->state.off_s = c->change.off_s;
+        if (c->change.startup >= 0) s->state.startup.on = c->change.startup;
+        if (c->change.shutdown >= 0) s->state.shutdown.on = c->change.shutdown;
         if (s->stale) {
             s->stale = FALSE;
             ask_keys(c->d, s);
@@ -1446,20 +1451,30 @@ void devices_set_keyboard(Devices *d, const char *id, const KeyboardSettings *ba
     gboolean light = hidpp_kept(want->light)
                      && (want->light != base->light
                          || (key_light_coloured(want->light) && memcmp(want->rgb, base->rgb, 3) != 0));
-    if ((bright && !s->state.has_brightness) || (light && !s->state.has_profile)) {
+    gboolean dim = want->dim_s != base->dim_s, off = want->off_s != base->off_s;
+    gboolean startup = want->startup != base->startup, shutdown = want->shutdown != base->shutdown;
+    if ((bright && !s->state.has_brightness) || ((light || dim || off) && !s->state.has_profile)
+        || (startup && !s->state.startup.known) || (shutdown && !s->state.shutdown.known)) {
         done(FALSE, "Its settings can't be changed right now.", user);
         return;
     }
-    if (!bright && !light) {
+    if (!bright && !light && !dim && !off && !startup && !shutdown) {
         done(TRUE, NULL, user);
         return;
     }
     KeysCtx *c = keys_ctx(d, s);
     c->set_bright = bright;
     c->value = hidpp_brightness_value(&s->state, want->brightness);
-    c->set_light = light;
+    c->set_rest = light || dim || off || startup || shutdown;
     c->light.effect = want->light;
     memcpy(c->light.rgb, want->rgb, 3);
+    c->change = (HidppChange){
+        .light = light ? &c->light : NULL,
+        .dim_s = dim ? want->dim_s : -1,
+        .off_s = off ? want->off_s : -1,
+        .startup = startup ? want->startup : -1,
+        .shutdown = shutdown ? want->shutdown : -1,
+    };
     c->done = done;
     c->user = user;
     s->writing = TRUE;

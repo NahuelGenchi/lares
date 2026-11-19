@@ -3,16 +3,18 @@
 /* The keyboard lighting the helper plays live (issue #57): an effect a
  * Logitech keyboard can't keep in its onboard profile, Off, Solid,
  * Breathing or Colour cycle, set under software control as Logitech G HUB
- * does. The keyboard then stops dimming itself: about a minute after its
- * last key it says it's idle, and the effect plays at half strength until
- * it's used again. A keyboard that reconnects, after sleeping or a power
- * cycle, is given the effect again. When the setting goes or the helper
- * stops, the lights go back to the keyboard, which plays what its profile
- * keeps.
+ * does. The keyboard then stops dimming itself: after its profile's dim
+ * time without a key it says it's idle, and the effect plays at half
+ * strength until it's used again. It never turns its lights off either, so
+ * at the profile's lights-off time they go off here (issue #68). A keyboard
+ * that reconnects, after sleeping or a power cycle, is given the effect
+ * again. When the setting goes or the helper stops, the lights go back to
+ * the keyboard, which plays what its profile keeps.
  *
  * Nothing polls: the receiver's node is listened to only while an effect is
- * wanted, and /dev is watched for the receiver coming back. Requests run in
- * a worker thread, one at a time; a change that comes meanwhile follows. */
+ * wanted, /dev is watched for the receiver coming back, and the lights-off
+ * time is one timer, set when the keyboard says it's idle. Requests run in a
+ * worker thread, one at a time; a change that comes meanwhile follows. */
 #include "livelight.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -32,6 +34,7 @@ struct LiveLight {
     gboolean known;        /* `fx` was read from this node */
     int fd;                /* listened to while an effect is wanted, -1 otherwise */
     guint watch, plugged;
+    guint dark;            /* the lights go off when it fires, while idle */
     GFileMonitor *dev;
     gboolean held;         /* software holds the lights now */
     HidppLive state;       /* what the keyboard was last told */
@@ -47,6 +50,7 @@ typedef struct {
     HidppLighting light;
     HidppLive state;
     gboolean ok, asleep;
+    int dark_after;        /* idle: seconds until the lights go off, -1 never */
 } Job;
 
 static void sync_light(LiveLight *l);
@@ -77,11 +81,33 @@ static void job_thread(GTask *task, gpointer src, gpointer data, GCancellable *c
         j->ok = j->release ? hidpp_live_release(j->node, j->index, &j->fx, &e)
                            : hidpp_live_play(j->node, j->index, &j->fx, &j->light, j->state, &e);
     }
+    /* Read as it goes idle, so a change from the window counts at once. */
+    j->dark_after = -1;
+    int dim, off;
+    if (j->ok && !j->release && j->state == HIDPP_LIVE_IDLE && hidpp_live_timers(j->node, j->index, &dim, &off, NULL))
+        j->dark_after = hidpp_dark_after(dim, off);
     j->asleep = g_error_matches(e, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED)
              || g_error_matches(e, G_IO_ERROR, G_IO_ERROR_TIMED_OUT);
     if (e && !j->asleep) g_printerr("lares-pad: keyboard lighting: %s\n", e->message);
     g_clear_error(&e);
     g_task_return_boolean(task, TRUE);
+}
+
+static void stop_dark(LiveLight *l)
+{
+    if (l->dark) g_source_remove(l->dark);
+    l->dark = 0;
+}
+
+static gboolean go_dark(gpointer data)
+{
+    LiveLight *l = data;
+    l->dark = 0;
+    if (l->held && l->state == HIDPP_LIVE_IDLE) {
+        l->state = HIDPP_LIVE_DARK;
+        sync_light(l);
+    }
+    return G_SOURCE_REMOVE;
 }
 
 static void job_done(GObject *src, GAsyncResult *res, gpointer user)
@@ -96,6 +122,10 @@ static void job_done(GObject *src, GAsyncResult *res, gpointer user)
         }
         /* Asleep, it has no lights to hold; it takes them again as it wakes. */
         l->held = j->ok ? !j->release : j->asleep ? FALSE : l->held;
+        if (j->dark_after >= 0 && l->held && l->state == HIDPP_LIVE_IDLE) {
+            stop_dark(l);
+            l->dark = g_timeout_add_seconds((guint)j->dark_after, go_dark, l);
+        }
     }
     if (l->again) {
         l->again = FALSE;
@@ -139,6 +169,7 @@ static void stop_listening(LiveLight *l)
 static void forget_node(LiveLight *l)
 {
     stop_listening(l);
+    stop_dark(l);
     g_clear_pointer(&l->node, g_free);
     l->known = l->held = FALSE;
 }
@@ -161,15 +192,21 @@ static gboolean on_report(int fd, GIOCondition cond, gpointer data)
         switch (ev.kind) {
         case HIDPP_EVENT_LINK:
             l->held = FALSE;
+            stop_dark(l);
             if (ev.linked) {
                 l->state = HIDPP_LIVE_TAKE;
                 again = TRUE;
             }
             break;
-        case HIDPP_EVENT_IDLE:
+        case HIDPP_EVENT_IDLE:   /* said again until answered; once dark, it stays dark */
+            if (!l->held) break;
+            if (l->state != HIDPP_LIVE_DARK) l->state = HIDPP_LIVE_IDLE;
+            again = TRUE;
+            break;
         case HIDPP_EVENT_ACTIVE:
             if (!l->held) break;
-            l->state = ev.kind == HIDPP_EVENT_IDLE ? HIDPP_LIVE_IDLE : HIDPP_LIVE_ACTIVE;
+            stop_dark(l);
+            l->state = HIDPP_LIVE_ACTIVE;
             again = TRUE;
             break;
         default:
@@ -211,6 +248,7 @@ static void sync_light(LiveLight *l)
         listen_to(l);
         request(l, FALSE);
     } else if (l->node && l->held) {
+        stop_dark(l);
         request(l, TRUE);
         stop_listening(l);
     } else if (!l->busy) {
@@ -222,6 +260,7 @@ static void on_conf(gpointer data)
 {
     LiveLight *l = data;
     if (!l->held) l->state = HIDPP_LIVE_TAKE;
+    else if (l->state == HIDPP_LIVE_DARK) l->state = HIDPP_LIVE_IDLE;   /* a new pick shows, dimmed, until its time */
     sync_light(l);
 }
 

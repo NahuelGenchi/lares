@@ -43,6 +43,10 @@ typedef struct {
     gboolean app_controls;       /* an app holds the lighting, so the profile's isn't what shows */
     KeyLight light;
     guint8 rgb[3];               /* the colour of a solid, breathing or ripple light */
+    gboolean has_timers;         /* its onboard profile holds the two below */
+    int dim_s, off_s;            /* seconds without a key before its lights dim, and go off */
+    gboolean has_startup, has_shutdown;
+    gboolean startup, shutdown;  /* it plays its effect as it turns on, and as it turns off */
 } KeyboardSettings;
 
 typedef struct {
@@ -94,9 +98,11 @@ void devices_want_settings(Devices *d, DevKind kind, gboolean on);
  * they didn't change keeps the mouse's own. A dry run only pretends. */
 void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, const MouseSettings *want,
                        DevDone done, gpointer user);
-/* The same for a keyboard: its brightness, and the lighting in its onboard
+/* The same for a keyboard: its brightness; the lighting in its onboard
  * profile, which it keeps and plays by itself, when it's an effect it keeps
- * (hidpp_kept); the helper plays the others, from the settings. */
+ * (hidpp_kept), as the helper plays the others from the settings; the
+ * profile's dim and lights-off timers; and its startup and shutdown
+ * effects. */
 void devices_set_keyboard(Devices *d, const char *id, const KeyboardSettings *base, const KeyboardSettings *want,
                           DevDone done, gpointer user);
 
