@@ -88,7 +88,7 @@ A **Share** section, shown when a card that can run AWDL is present:
 
 ### Lightness
 
-Nothing runs while sharing is off. While it's on: `lares-awdl` sends about 9 PSF and 15 MIF frames a second and wakes for each AWDL frame it hears; Lares wakes only for mDNS and the transfer itself. Archives stream through: nothing is held whole in memory, and received files are written to a staging folder and moved into place only once complete (SEC-1).
+Nothing runs while sharing is off. Measured: `lares-awdl` idles at about 240 kB of its own memory and 0 CPU ticks in 12 s; a transfer adds about 2.7 MB to Lares itself, with a sender and a receiver in one process. TLS connections are made with no certificate database, since none is ever checked (TLS-2): otherwise GIO loads the system's, 6.5 MB, and proxy lookup is off for link-local peers, which saves 2.6 MB of the desktop's proxy libraries. While it's on: `lares-awdl` sends about 9 PSF and 15 MIF frames a second and wakes for each AWDL frame it hears; Lares wakes only for mDNS and the transfer itself. Archives stream through: nothing is held whole in memory, and received files are written to a staging folder and moved into place only once complete (SEC-1).
 
 ### Security
 

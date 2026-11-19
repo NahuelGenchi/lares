@@ -148,6 +148,29 @@ static gboolean accept_any(GTlsConnection *tls, GTlsCertificate *cert, GTlsCerti
     return TRUE; /* TLS-2: encryption only, never peer authentication */
 }
 
+/* TLS connections made with no certificate database from the start: no
+ * certificate is ever checked against one (TLS-2), and a connection given
+ * none only after it's made has already loaded the system's, about 6.5 MB
+ * that stay for good. Made this way, a connection costs about 0.3 MB. */
+static GIOStream *tls_server(GIOStream *base, GTlsCertificate *cert, GError **error)
+{
+    GType type = g_tls_backend_get_server_connection_type(g_tls_backend_get_default());
+    /* Asked for, Apple senders present a certificate; nothing depends on
+     * it (TLS-3), and any is accepted. */
+    GIOStream *tls = g_initable_new(type, NULL, error, "base-io-stream", base, "certificate", cert, "database", NULL,
+                                    "authentication-mode", G_TLS_AUTHENTICATION_REQUESTED, NULL);
+    if (tls) g_signal_connect(tls, "accept-certificate", G_CALLBACK(accept_any), NULL);
+    return tls;
+}
+
+static GIOStream *tls_client(GIOStream *base, GError **error)
+{
+    GType type = g_tls_backend_get_client_connection_type(g_tls_backend_get_default());
+    GIOStream *tls = g_initable_new(type, NULL, error, "base-io-stream", base, "database", NULL, NULL);
+    if (tls) g_signal_connect(tls, "accept-certificate", G_CALLBACK(accept_any), NULL);
+    return tls;
+}
+
 /* --------------------------------------------------------------- receiver */
 
 struct AirdropReceiver {
@@ -890,12 +913,8 @@ static void serve(Conn *c)
 {
     AirdropReceiver *r = c->r;
     set_timeout(c->conn, IO_TIMEOUT);
-    GIOStream *tls = g_tls_server_connection_new(G_IO_STREAM(c->conn), r->cert, NULL);
+    GIOStream *tls = tls_server(G_IO_STREAM(c->conn), r->cert, NULL);
     if (!tls) return;
-    /* Asked for, Apple senders present a certificate; nothing depends on it
-     * (TLS-3), and any is accepted. */
-    g_object_set(tls, "authentication-mode", G_TLS_AUTHENTICATION_REQUESTED, NULL);
-    g_signal_connect(tls, "accept-certificate", G_CALLBACK(accept_any), NULL);
     if (!g_tls_connection_handshake(G_TLS_CONNECTION(tls), r->cancel, NULL)) {
         g_object_unref(tls);
         return;
@@ -1087,14 +1106,16 @@ static gboolean link_open(Link *l, const char *address, guint16 port, GCancellab
     }
     GSocketClient *client = g_socket_client_new();
     g_socket_client_set_timeout(client, CONNECT_TIMEOUT);
+    /* A link-local peer is never behind a proxy, and looking one up loads
+     * the desktop's proxy libraries, several megabytes. */
+    g_socket_client_set_enable_proxy(client, FALSE);
     l->conn = g_socket_client_connect(client, G_SOCKET_CONNECTABLE(a), cancel, error);
     g_object_unref(client);
     g_object_unref(a);
     if (!l->conn) return FALSE;
     set_timeout(l->conn, CONNECT_TIMEOUT);
-    l->tls = g_tls_client_connection_new(G_IO_STREAM(l->conn), NULL, error);
+    l->tls = tls_client(G_IO_STREAM(l->conn), error);
     if (!l->tls) return FALSE;
-    g_signal_connect(l->tls, "accept-certificate", G_CALLBACK(accept_any), NULL);
     if (!g_tls_connection_handshake(G_TLS_CONNECTION(l->tls), cancel, error)) return FALSE;
     set_timeout(l->conn, IO_TIMEOUT);
     l->in = g_io_stream_get_input_stream(l->tls);
