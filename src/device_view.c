@@ -6,6 +6,7 @@
  * then the button allows it. A mouse or keyboard whose own protocol reports
  * its settings shows them under its details, and changes them. */
 #include "lares.h"
+#include "pad_service.h"
 
 #define DPI_STEP  100   /* each − or + */
 #define SETTLE_MS 700   /* a stepped DPI or brightness is written once it stops, or a click or drag is let go;
@@ -42,6 +43,7 @@ typedef struct {
     char *want_id;
     MouseSettings base, want;
     KeyboardSettings key_base, key_want;
+    KeyboardSettings key_now;   /* what a keyboard shows: its own, with the live lighting the helper plays */
     gboolean pending;    /* `want` waits to be written */
     gboolean writing;
     guint settle;
@@ -182,10 +184,37 @@ static const MouseSettings *shown(DeviceView *v, Device *d)
     return changing(v, d) ? &v->want : d->mouse;
 }
 
+/* A keyboard's lighting is the live one the helper plays, when the settings
+ * ask for one: then software holding its lights is Lares itself. */
 static const KeyboardSettings *key_shown(DeviceView *v, Device *d)
 {
     if (v->kind != DEV_KEYBOARD) return NULL;
-    return changing(v, d) ? &v->key_want : d->keyboard;
+    if (changing(v, d)) return &v->key_want;
+    if (!d->keyboard) return NULL;
+    const PadPrefs *p = padconf_prefs(v->app->padconf);
+    v->key_now = *d->keyboard;
+    if (v->key_now.has_lighting && key_light_live(p->key_light)) {
+        v->key_now.light = p->key_light;
+        memcpy(v->key_now.rgb, p->key_rgb, 3);
+        v->key_now.app_controls = FALSE;
+    }
+    return &v->key_now;
+}
+
+/* A live lighting goes to the settings, which start the helper and which it
+ * plays; an effect the keyboard keeps clears them, so the helper gives the
+ * lights back. */
+static void key_live_save(DeviceView *v)
+{
+    PadPrefs *p = padconf_prefs(v->app->padconf);
+    KeyLight live = key_light_live(v->key_want.light) ? v->key_want.light : KEY_LIGHT_OWN;
+    if (!v->key_want.has_lighting
+        || (live == p->key_light && (!key_light_live(live) || memcmp(p->key_rgb, v->key_want.rgb, 3) == 0)))
+        return;
+    p->key_light = live;
+    if (key_light_live(live)) memcpy(p->key_rgb, v->key_want.rgb, 3);
+    padconf_save(v->app->padconf);
+    pad_service_sync(p);
 }
 
 static void written(gboolean ok, const char *message, gpointer user)
@@ -207,8 +236,12 @@ static void commit(DeviceView *v)
     if (v->writing || !v->pending) return;
     v->pending = FALSE;
     v->writing = TRUE;
-    if (v->kind == DEV_KEYBOARD) devices_set_keyboard(v->app->devices, v->want_id, &v->key_base, &v->key_want, written, v);
-    else devices_set_mouse(v->app->devices, v->want_id, &v->base, &v->want, written, v);
+    if (v->kind == DEV_KEYBOARD) {
+        key_live_save(v);
+        devices_set_keyboard(v->app->devices, v->want_id, &v->key_base, &v->key_want, written, v);
+    } else {
+        devices_set_mouse(v->app->devices, v->want_id, &v->base, &v->want, written, v);
+    }
 }
 
 static gboolean settled(gpointer user)
@@ -230,7 +263,7 @@ static gboolean begin(DeviceView *v, GtkWidget *control)
         if (v->want_id && !g_str_equal(v->want_id, d->id)) commit(v);  /* another device's change goes first */
         g_free(v->want_id);
         v->want_id = g_strdup(d->id);
-        if (keys) v->key_base = v->key_want = *d->keyboard;
+        if (keys) v->key_base = v->key_want = *key_shown(v, d);
         else v->base = v->want = *d->mouse;
     }
     set_error(v, NULL, NULL);
@@ -537,15 +570,18 @@ static void build_settings(DeviceView *v, Card *c, GtkWidget *card, const MouseS
     brightness_row(v, c, card, on_brightness, 10);
 }
 
-/* A keyboard's brightness, and the lighting its onboard profile holds,
- * which it plays by itself: Built-in is the effect it came with. */
+/* A keyboard's brightness, and its lighting: Wave, Ripple and Built-in, the
+ * effect it came with, go to its onboard profile, and it plays them by
+ * itself anywhere; the others it can't keep, so the helper plays them. */
 static void build_keys(DeviceView *v, Card *c, GtkWidget *card, const KeyboardSettings *k)
 {
     if (k->has_brightness) brightness_row(v, c, card, on_key_brightness, key_blocks(k));
     if (!k->has_lighting) return;
     static const char *const EFFECTS[] = { "Off", "Solid", "Breathing", "Colour cycle", "Wave", "Ripple", "Built-in" };
-    GtkWidget *row = lighting_row(v, c, card, "Saved on the keyboard, so it stays without Lares.", EFFECTS,
-                                  KEY_LIGHT_OTHER);
+    GtkWidget *row = lighting_row(v, c, card,
+                                  "Wave, Ripple and Built-in stay on the keyboard. The others play while Lares runs in "
+                                  "the background.",
+                                  EFFECTS, KEY_LIGHT_OTHER);
     c->app_note = ui_paragraph("Another app holds its lighting now, so what shows may differ.", "muted");
     gtk_box_append(GTK_BOX(row), c->app_note);
 }

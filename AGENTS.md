@@ -17,12 +17,12 @@ Never describe something as working or complete unless a recorded check establis
 | `src/main.c`, `src/window.c` | Start-up, the command line (`lares home`, `remote`, `status`, `restore`, `--section`), the window, its sidebar and lazily built sections |
 | `src/widgets.c` | Lares' own widgets: pixel icons, the spring-driven switch and sidebar highlight, wrap, clamp, meters and graphs |
 | `src/overview.c`, `src/hardware.c`, `src/hardware_view.c` | Overview, and the hardware readings with their section |
-| `src/devices.c`, `src/hyperx.c`, `src/hidpp.c`, `src/device_view.c` | Bluetooth, battery and USB input devices from BlueZ, UPower and sysfs, with their model and connection; HyperX mouse batteries and settings over hidraw; Logitech keyboard brightness and lighting over HID++; and the Headphones, Keyboard and Mouse sections |
+| `src/devices.c`, `src/hyperx.c`, `src/hidpp.c`, `src/keylight.h`, `src/device_view.c` | Bluetooth, battery and USB input devices from BlueZ, UPower and sysfs, with their model and connection; HyperX mouse batteries and settings over hidraw; Logitech keyboard brightness and lighting over HID++, kept in its profile or played live; and the Headphones, Keyboard and Mouse sections |
 | `src/pad/` | The controller core, shared with the helper and free of GTK: detection, batteries, nicknames, evdev input, rumble and Find, the programs using a pad, pairing, settings and the background features |
 | `src/pad_view.c`, `src/pad_picture.c`, `src/pad_map.c`, `src/pad_service.c` | The Controller section, its live pixel-art picture and the picture's map (`data/pad/controller.txt`), and switching the helper and the addon |
 | `src/remote_model.c`, `src/remote_view.c` | Remote play: the screen, Sunshine and Tailscale, the Home and Remote modes, and the setup guide |
 | `src/settings_view.c` | The Settings section: Run in the background and the top-bar icon |
-| `src/helper/lares-pad.c` | The background helper and its D-Bus interface for the addon |
+| `src/helper/lares-pad.c`, `src/helper/livelight.c` | The background helper and its D-Bus interface for the addon, and the keyboard lighting it plays live |
 | `data/` | Stylesheet, artwork, the bundled Monocraft font, the desktop file, the helper's unit and the addon (`data/addon/`) |
 | `tests/unit.c`, `tests/addon.mjs` | Unit tests on plain data, and on the addon's controller picture under Node, run by `make check` |
 | `tools/pad-map.py` | Draws the controller picture's map from the artwork; needs Pillow and NumPy, building doesn't |

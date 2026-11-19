@@ -640,47 +640,6 @@ static void scan_protocols(Devices *d)
     d->hid = hid;
 }
 
-/* For a keyboard paired to a receiver src/hidpp.c knows, such as
- * .../1-8.4:1.2/0003:046D:C547.0007/0003:046D:40A2.0009: the receiver's
- * HID++ node, and the keyboard's place on it. */
-static char *pp_node(const char *owner, guint8 *index, const HidppModel **model)
-{
-    char *name = g_path_get_basename(owner), *receiver = g_path_get_dirname(owner);
-    char *rname = g_path_get_basename(receiver), *node = NULL;
-    const HidppModel *m = NULL;
-    if (is_hid_id(name) && is_hid_id(rname) && g_str_has_prefix(name, "0003:046D:")
-        && g_str_has_prefix(rname, "0003:046D:"))
-        m = hidpp_model(g_ascii_strtoull(rname + 10, NULL, 16), g_ascii_strtoull(name + 10, NULL, 16));
-    char *iface = m ? g_path_get_dirname(receiver) : NULL;
-    char *number = iface ? sys_text(iface, "bInterfaceNumber") : NULL;
-    char *uevent = number && g_ascii_strtoll(number, NULL, 16) == m->interface ? sys_text(owner, "uevent") : NULL;
-    char *phys = uevent ? strstr(uevent, "HID_PHYS=") : NULL;
-    int at = -1;
-    if (phys) {
-        phys += strlen("HID_PHYS=");
-        char *nl = strchr(phys, '\n');
-        if (nl) *nl = '\0';
-        at = hidpp_phys_index(phys);
-    }
-    char *dir = at > 0 ? g_build_filename(receiver, "hidraw", NULL) : NULL;
-    GDir *raw = dir ? g_dir_open(dir, 0, NULL) : NULL;
-    const char *entry = raw ? g_dir_read_name(raw) : NULL;
-    if (entry && g_str_has_prefix(entry, "hidraw")) {
-        node = g_build_filename("/dev", entry, NULL);
-        *index = (guint8)at;
-        *model = m;
-    }
-    if (raw) g_dir_close(raw);
-    g_free(dir);
-    g_free(uevent);
-    g_free(number);
-    g_free(iface);
-    g_free(rname);
-    g_free(receiver);
-    g_free(name);
-    return node;
-}
-
 static void scan_hidpp(Devices *d)
 {
     GHashTable *pp = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, pp_state_free);
@@ -688,7 +647,7 @@ static void scan_hidpp(Devices *d)
         Device *x = d->usb->pdata[i];
         guint8 index = 0;
         const HidppModel *model = NULL;
-        char *node = x->kind == DEV_KEYBOARD ? pp_node(x->id, &index, &model) : NULL;
+        char *node = x->kind == DEV_KEYBOARD ? hidpp_node(x->id, &index, &model) : NULL;
         if (!node) continue;
         PpState *s = g_hash_table_lookup(d->pp, x->id);
         if (s) {
@@ -1369,6 +1328,9 @@ static gboolean on_keys_report(int fd, GIOCondition cond, gpointer data)
         case HIDPP_EVENT_CHANGED:
             again = TRUE;
             break;
+        case HIDPP_EVENT_IDLE:   /* the helper's to answer, as it plays the lights */
+        case HIDPP_EVENT_ACTIVE:
+            break;
         }
     }
     gboolean gone = got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR);
@@ -1479,8 +1441,11 @@ void devices_set_keyboard(Devices *d, const char *id, const KeyboardSettings *ba
         return;
     }
     gboolean bright = want->brightness != base->brightness;
-    gboolean light = want->light != base->light
-                     || (key_light_coloured(want->light) && memcmp(want->rgb, base->rgb, 3) != 0);
+    /* Only what the keyboard keeps goes to its profile; the helper plays
+     * the rest (src/helper/livelight.c). */
+    gboolean light = hidpp_kept(want->light)
+                     && (want->light != base->light
+                         || (key_light_coloured(want->light) && memcmp(want->rgb, base->rgb, 3) != 0));
     if ((bright && !s->state.has_brightness) || (light && !s->state.has_profile)) {
         done(FALSE, "Its settings can't be changed right now.", user);
         return;

@@ -1,5 +1,6 @@
 #pragma once
 #include <gio/gio.h>
+#include "keylight.h"
 
 /* Controllers, headphones, keyboards and mice, from BlueZ (pairing and
  * connection), UPower (batteries) and sysfs (keyboards and mice plugged in
@@ -29,20 +30,6 @@ typedef struct {
     LightEffect light;
     guint8 rgb[3];               /* the colour of a solid or breathing light */
 } MouseSettings;
-
-/* The lighting a keyboard's onboard profile holds. KEY_LIGHT_OWN is the
- * effect it came with, such as the G715's factory one; KEY_LIGHT_OTHER one
- * Lares doesn't know, such as an effect another app saved. */
-typedef enum {
-    KEY_LIGHT_OFF, KEY_LIGHT_SOLID, KEY_LIGHT_BREATHING, KEY_LIGHT_CYCLE, KEY_LIGHT_WAVE, KEY_LIGHT_RIPPLE,
-    KEY_LIGHT_OWN, KEY_LIGHT_OTHER,
-} KeyLight;
-
-/* Whether a keyboard's light has a colour of its own to pick. */
-static inline gboolean key_light_coloured(KeyLight light)
-{
-    return light == KEY_LIGHT_SOLID || light == KEY_LIGHT_BREATHING || light == KEY_LIGHT_RIPPLE;
-}
 
 #define KEY_LEVELS 8
 
@@ -108,7 +95,8 @@ void devices_want_settings(Devices *d, DevKind kind, gboolean on);
 void devices_set_mouse(Devices *d, const char *id, const MouseSettings *base, const MouseSettings *want,
                        DevDone done, gpointer user);
 /* The same for a keyboard: its brightness, and the lighting in its onboard
- * profile, which it keeps and plays by itself. */
+ * profile, which it keeps and plays by itself, when it's an effect it keeps
+ * (hidpp_kept); the helper plays the others, from the settings. */
 void devices_set_keyboard(Devices *d, const char *id, const KeyboardSettings *base, const KeyboardSettings *want,
                           DevDone done, gpointer user);
 

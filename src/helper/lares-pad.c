@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* lares-pad: Lares' background helper. It runs connection notices, low
  * battery alerts, keeping the screen awake and idle disconnect while the
- * Lares window is closed, and gives the top-bar addon everything it shows
- * over D-Bus, so the addon holds no logic of its own. GLib only, no GTK.
- * It ends by itself when the settings no longer need it. */
+ * Lares window is closed, plays a keyboard's live lighting, and gives the
+ * top-bar addon everything it shows over D-Bus, so the addon holds no logic
+ * of its own. GLib only, no GTK. It ends by itself when the settings no
+ * longer need it. */
 #include <gio/gio.h>
 #include <glib-unix.h>
 #include "../pad/padactions.h"
@@ -12,6 +13,7 @@
 #include "../pad/padconf.h"
 #include "../pad/padinput.h"
 #include "../pad/pads.h"
+#include "livelight.h"
 
 #define BUS_NAME "com.nahuelgenchi.Lares.Pad"
 #define OBJ_PATH "/com/nahuelgenchi/Lares/Pad"
@@ -40,6 +42,7 @@ typedef struct {
     PadConf *conf;
     Pads *pads;
     PadBg *bg;
+    LiveLight *light;
     GHashTable *live;        /* pad path -> PadReader, while the addon's menu is open */
     GHashTable *watchers;    /* sender -> name watch id */
 } Helper;
@@ -210,9 +213,11 @@ int main(void)
     H.bg = padbg_new(H.pads, H.conf);
     pads_watch(H.pads, on_pads, NULL);
     padconf_watch(H.conf, on_conf, NULL);
+    H.light = livelight_new(H.conf);
     g_bus_own_name(G_BUS_TYPE_SESSION, BUS_NAME, G_BUS_NAME_OWNER_FLAGS_NONE, on_bus, NULL, on_name_lost, NULL, NULL);
     g_unix_signal_add(SIGTERM, on_term, NULL);
     g_unix_signal_add(SIGINT, on_term, NULL);
     g_main_loop_run(H.loop);
+    livelight_free(H.light);   /* the keyboard plays its own lighting again */
     return 0;
 }

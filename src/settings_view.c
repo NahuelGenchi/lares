@@ -66,8 +66,8 @@ GtkWidget *settings_build(Lares *app, Section *self)
     GtkWidget *page = ui_page();
 
     GtkWidget *bg = ui_group(page, "Background");
-    v->sw_background = toggle(v, bg, "Run in the background", "Keeps controller features on with Lares closed.",
-                              &p->background);
+    v->sw_background = toggle(v, bg, "Run in the background",
+                              "Keeps controller features and keyboard lighting on with Lares closed.", &p->background);
     /* The helper's own memory, its PSS: what stopping it frees. */
     ui_setting_saving(gtk_widget_get_parent(v->sw_background), "Off saves 1 MB RAM");
 

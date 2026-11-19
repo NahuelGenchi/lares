@@ -1,8 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "padconf.h"
+#include <string.h>
 
 const int PAD_IDLE_MINUTES[PAD_IDLE_CHOICES] = { 5, 10, 15, 30 };
+
+/* The live keyboard lighting, by name in the file. */
+static const char *const KEY_LIGHTS[] = {
+    [KEY_LIGHT_OFF] = "off", [KEY_LIGHT_SOLID] = "solid", [KEY_LIGHT_BREATHING] = "breathing",
+    [KEY_LIGHT_CYCLE] = "cycle",
+};
 
 typedef struct { PadConfNotify fn; gpointer user; } Watcher;
 
@@ -46,6 +53,17 @@ static void load(PadConf *c)
     p->topbar_level = get_bool(kf, "topbar-battery-level", FALSE);
     p->topbar_hide = get_bool(kf, "topbar-hide-without-controller", FALSE);
     p->background = get_bool(kf, "background", TRUE);
+    char *light = g_key_file_get_string(kf, "keyboard", "light", NULL);
+    p->key_light = KEY_LIGHT_OWN;
+    for (guint i = 0; light && i < G_N_ELEMENTS(KEY_LIGHTS); i++)
+        if (KEY_LIGHTS[i] && g_str_equal(light, KEY_LIGHTS[i])) p->key_light = i;
+    g_free(light);
+    char *colour = g_key_file_get_string(kf, "keyboard", "colour", NULL);
+    guint32 rgb = colour && strlen(colour) == 6 ? (guint32)g_ascii_strtoull(colour, NULL, 16) : 0xff0000;
+    p->key_rgb[0] = rgb >> 16 & 0xff;
+    p->key_rgb[1] = rgb >> 8 & 0xff;
+    p->key_rgb[2] = rgb & 0xff;
+    g_free(colour);
     g_free(p->salt);
     p->salt = g_key_file_get_string(kf, "pad", "nickname-salt", NULL);
 
@@ -73,6 +91,12 @@ void padconf_save(PadConf *c)
     g_key_file_set_boolean(kf, "pad", "topbar-battery-level", p->topbar_level);
     g_key_file_set_boolean(kf, "pad", "topbar-hide-without-controller", p->topbar_hide);
     g_key_file_set_boolean(kf, "pad", "background", p->background);
+    if (key_light_live(p->key_light)) {
+        char colour[8];
+        g_snprintf(colour, sizeof colour, "%02x%02x%02x", p->key_rgb[0], p->key_rgb[1], p->key_rgb[2]);
+        g_key_file_set_string(kf, "keyboard", "light", KEY_LIGHTS[p->key_light]);
+        g_key_file_set_string(kf, "keyboard", "colour", colour);
+    }
     if (p->salt) g_key_file_set_string(kf, "pad", "nickname-salt", p->salt);
     GHashTableIter it;
     gpointer k, v;
@@ -127,7 +151,8 @@ void padconf_watch(PadConf *c, PadConfNotify fn, gpointer user)
 
 gboolean padconf_needs_helper(const PadPrefs *p)
 {
-    return p->background && (p->topbar || p->alerts || p->notices || p->keep_awake || p->idle_disconnect);
+    return p->background && (p->topbar || p->alerts || p->notices || p->keep_awake || p->idle_disconnect
+                             || key_light_live(p->key_light));
 }
 
 PadConf *padconf_new(void)
