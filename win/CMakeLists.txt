@@ -15,12 +15,17 @@ endif()
 add_library(lares_win_core STATIC
     src/cli.cpp
     src/config.cpp
+    src/hw.cpp
     src/theme.cpp
     ../src/art.c
 )
 target_include_directories(lares_win_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_link_libraries(lares_win_core PUBLIC
+    pdh
+    advapi32
 )
 
 # Main native Win32 + Direct2D software-rendered application

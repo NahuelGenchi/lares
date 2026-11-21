@@ -33,7 +33,7 @@ static bool point_in_rect(float x, float y, const D2D1_RECT_F& r)
 }
 
 MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
-    : hinst_(hinst), opts_(opts)
+    : hinst_(hinst), opts_(opts), hw_(opts.dry_run)
 {
     if (opts_.color_scheme == "dark") dark_ = true;
     else if (opts_.color_scheme == "light") dark_ = false;
@@ -166,6 +166,7 @@ bool MainWindow::create()
 
     dpi = GetDpiForWindow(hwnd_);
     dpi_scale_ = static_cast<float>(dpi) / 96.0f;
+    hw_.set_notify_hwnd(hwnd_);
 
     apply_titlebar_theme();
     if (!opts_.section.empty()) {
@@ -180,7 +181,20 @@ void MainWindow::show(int cmd_show)
 {
     if (!hwnd_) return;
     ShowWindow(hwnd_, cmd_show);
+    update_sampling_state();
     UpdateWindow(hwnd_);
+}
+
+void MainWindow::update_sampling_state()
+{
+    if (!hwnd_ || IsIconic(hwnd_) || !IsWindowVisible(hwnd_)) {
+        hw_.set_wanted(false, false);
+        return;
+    }
+    const char* id = sections_[current_sec_].id;
+    bool is_ov = (std::strcmp(id, "overview") == 0);
+    bool is_hw = (std::strcmp(id, "hardware") == 0);
+    hw_.set_wanted(is_ov || is_hw, is_hw);
 }
 
 int MainWindow::visible_index_of(int sec_idx) const
@@ -209,6 +223,7 @@ void MainWindow::select_section(const std::string& id, bool animate)
             } else {
                 start_anim_timer();
             }
+            update_sampling_state();
             if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
@@ -505,6 +520,16 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
     content_height_ = card2_top + card2_h + 36.0f;
 }
 
+static std::wstring utf8_to_wide(const std::string& s)
+{
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), n);
+    return out;
+}
+
 static void draw_info_card(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
                            MainWindow*, const Palette& pal,
                            float x, float y, float w, float h)
@@ -516,42 +541,251 @@ static void draw_info_card(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
     rt->DrawRoundedRectangle(card, brush, 1.0f);
 }
 
+void MainWindow::draw_meter(ID2D1RenderTarget* rt, const Palette& pal,
+                            float x, float y, int blocks, float pixel, double fraction, bool hot)
+{
+    if (!brush_ || blocks <= 0) return;
+    Rgba on = hot ? pal.bad : pal.accent;
+    Rgba off = on;
+    off.a *= 0.16f;
+    int filled = meter_filled_blocks(fraction, blocks);
+    for (int i = 0; i < blocks; ++i) {
+        brush_->SetColor(to_d2d(i < filled ? on : off));
+        float bx = x + i * 4.0f * pixel;
+        rt->FillRectangle(D2D1::RectF(bx, y, bx + 3.0f * pixel, y + 3.0f * pixel), brush_);
+    }
+}
+
+void MainWindow::draw_graph(ID2D1RenderTarget* rt, const Palette& pal,
+                            float x, float y, float w, float h, float pixel, const GraphRing& ring)
+{
+    if (!brush_ || w <= 0.0f || h <= 0.0f || pixel <= 0.0f) return;
+    Rgba c = pal.accent;
+    Rgba base = c;
+    base.a *= 0.14f;
+
+    brush_->SetColor(to_d2d(base));
+    rt->FillRectangle(D2D1::RectF(x, y + h - pixel, x + w, y + h), brush_);
+
+    int steps = static_cast<int>(h / pixel);
+    int max_cols = static_cast<int>(w / pixel);
+    int cols = std::min(max_cols, ring.len);
+    brush_->SetColor(to_d2d(c));
+    for (int i = 0; i < cols; ++i) {
+        int sh = graph_step_height(ring.latest(i), steps);
+        if (sh <= 0) continue;
+        float bar_h = sh * pixel;
+        float bx = x + w - (i + 1) * pixel;
+        float by = y + h - bar_h;
+        rt->FillRectangle(D2D1::RectF(bx, by, bx + pixel, by + bar_h), brush_);
+    }
+}
+
 void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
-    draw_text(rt, L"Overview", fonts_.title(), D2D1::RectF(x, y, x + w, y + 48.0f), pal.text);
-    y += 54.0f;
+    const HwInfo& info = hw_.info();
+    const HwSample& s = hw_sample_;
 
-    const wchar_t* sub = opts_.dry_run
-        ? L"Windows foundation (dry run). Hardware, Remote and device readings land in milestones M5.2-M5.6."
-        : L"Windows foundation. Hardware, Remote and device readings land in milestones M5.2-M5.6.";
-    float sh = measure_text_height(sub, fonts_.caption(), w - 36.0f);
-    float ch = 36.0f + 28.0f + 8.0f + sh;
-    draw_info_card(rt, brush_, this, pal, x, y, w, ch);
-    draw_text(rt, L"Lares on Windows 11", fonts_.body(), D2D1::RectF(x + 18.0f, y + 18.0f, x + w - 18.0f, y + 46.0f), pal.text);
-    draw_text(rt, sub, fonts_.caption(), D2D1::RectF(x + 18.0f, y + 50.0f, x + w - 18.0f, y + 54.0f + sh), pal.muted);
+    bool has_gpu = !info.gpu_name.empty();
+    int cols = has_gpu ? 3 : 2;
+    float gap = 18.0f;
+    float tile_w = (w - gap * (cols - 1)) / static_cast<float>(cols);
+    float tile_h = 132.0f;
 
-    y += ch + 18.0f;
-    const wchar_t* font_status = fonts_.using_monocraft()
-        ? L"Software Direct2D renderer · Embedded Monocraft font active"
-        : L"Software Direct2D renderer · Fallback monospace font";
-    float fh = measure_text_height(font_status, fonts_.caption(), w - 36.0f);
-    float ch2 = 36.0f + 28.0f + 8.0f + fh;
-    draw_info_card(rt, brush_, this, pal, x, y, w, ch2);
-    draw_text(rt, L"Renderer", fonts_.body(), D2D1::RectF(x + 18.0f, y + 18.0f, x + w - 18.0f, y + 46.0f), pal.text);
-    draw_text(rt, font_status, fonts_.caption(), D2D1::RectF(x + 18.0f, y + 50.0f, x + w - 18.0f, y + 54.0f + fh), pal.muted);
+    auto draw_tile = [&](float tx, float ty, float tw, const char* const* art, const wchar_t* heading,
+                         const std::wstring& val, const std::wstring& sub,
+                         int meter_blocks, double fraction, bool hot, const char* target_sec) {
+        draw_info_card(rt, brush_, this, pal, tx, ty, tw, tile_h);
+        card_hits_.push_back({ D2D1::RectF(tx, ty, tx + tw, ty + tile_h), target_sec });
 
-    content_height_ = y + ch2 + 36.0f;
+        float ix = tx + 18.0f;
+        float iy = ty + 16.0f;
+        Rgba ic = pal.muted;
+        Rgba ic_f = ic; ic_f.a *= 0.35f;
+        draw_pixel_art(rt, art, ix, iy + 2.0f, 2.0f, ic, ic_f);
+        draw_text(rt, heading, fonts_.caption(), D2D1::RectF(ix + 26.0f, iy, tx + tw - 14.0f, iy + 22.0f), pal.muted);
+
+        draw_text(rt, val.c_str(), fonts_.big(), D2D1::RectF(ix, iy + 26.0f, tx + tw - 14.0f, iy + 62.0f), pal.text);
+        draw_text(rt, sub.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 64.0f, tx + tw - 14.0f, iy + 86.0f), pal.muted);
+
+        if (meter_blocks > 0) {
+            draw_meter(rt, pal, ix, ty + tile_h - 20.0f, meter_blocks, 2.0f, fraction, hot);
+        }
+    };
+
+    // CPU tile
+    wchar_t cpu_val[32];
+    if (s.cpu < 0.0) std::swprintf(cpu_val, std::size(cpu_val), L"...");
+    else std::swprintf(cpu_val, std::size(cpu_val), L"%d%%", static_cast<int>(std::lround(s.cpu * 100.0)));
+    wchar_t cpu_sub[32];
+    if (std::isnan(s.cpu_temp)) std::swprintf(cpu_sub, std::size(cpu_sub), L"Load");
+    else std::swprintf(cpu_sub, std::size(cpu_sub), L"%d °C", static_cast<int>(std::lround(s.cpu_temp)));
+    draw_tile(x, y, tile_w, ART_CHIP, L"CPU", cpu_val, cpu_sub, 14, s.cpu, s.cpu > 0.9, "hardware");
+
+    float next_x = x + tile_w + gap;
+
+    // GPU tile
+    if (has_gpu) {
+        wchar_t gpu_val[32];
+        if (s.gpu < 0.0) std::swprintf(gpu_val, std::size(gpu_val), L"...");
+        else std::swprintf(gpu_val, std::size(gpu_val), L"%d%%", static_cast<int>(std::lround(s.gpu * 100.0)));
+        wchar_t gpu_sub[32];
+        if (std::isnan(s.gpu_temp)) std::swprintf(gpu_sub, std::size(gpu_sub), L"Load");
+        else std::swprintf(gpu_sub, std::size(gpu_sub), L"%d °C", static_cast<int>(std::lround(s.gpu_temp)));
+        draw_tile(next_x, y, tile_w, ART_SCREEN, L"GPU", gpu_val, gpu_sub, 14, s.gpu, s.gpu > 0.9, "hardware");
+        next_x += tile_w + gap;
+    }
+
+    // Memory tile
+    double mem_frac = s.mem_total ? static_cast<double>(s.mem_used) / static_cast<double>(s.mem_total) : -1.0;
+    std::wstring mem_val = s.mem_total ? utf8_to_wide(format_bytes(s.mem_used)) : L"...";
+    std::wstring mem_sub = s.mem_total ? (L"of " + utf8_to_wide(format_bytes(s.mem_total))) : L"";
+    draw_tile(next_x, y, tile_w, ART_MEMORY, L"Memory", mem_val, mem_sub, 14, mem_frac, mem_frac > 0.9, "hardware");
+
+    y += tile_h + gap;
+
+    // Storage tile spans the full width (34-block meter)
+    double disk_frac = s.disk_total ? static_cast<double>(s.disk_used) / static_cast<double>(s.disk_total) : -1.0;
+    uint64_t disk_free = s.disk_total > s.disk_used ? (s.disk_total - s.disk_used) : 0;
+    std::wstring disk_val = s.disk_total ? (utf8_to_wide(format_bytes(disk_free)) + L" free") : L"...";
+    std::wstring disk_sub = s.disk_total ? (L"of " + utf8_to_wide(format_bytes(s.disk_total))) : L"";
+    draw_tile(x, y, w, ART_DISK, L"Storage", disk_val, disk_sub, 34, disk_frac, disk_frac > 0.9, "hardware");
+
+    content_height_ = y + tile_h + 36.0f;
 }
 
 void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
-    draw_text(rt, L"Hardware", fonts_.title(), D2D1::RectF(x, y, x + w, y + 48.0f), pal.text);
-    y += 54.0f;
-    const wchar_t* body = L"Live CPU, GPU (AMD ADL / PDH), memory and NVMe drive readings will appear here in M5.2.";
-    float bh = measure_text_height(body, fonts_.caption(), w - 36.0f);
-    draw_info_card(rt, brush_, this, pal, x, y, w, 36.0f + bh);
-    draw_text(rt, body, fonts_.caption(), D2D1::RectF(x + 18.0f, y + 18.0f, x + w - 18.0f, y + 22.0f + bh), pal.muted);
-    content_height_ = y + 36.0f + bh + 36.0f;
+    const HwInfo& info = hw_.info();
+    const HwSample& s = hw_sample_;
+    float gap = 18.0f;
+
+    // 1. CPU card
+    {
+        float card_h = 186.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
+        float ix = x + 18.0f, iy = y + 18.0f, iw = w - 36.0f;
+        Rgba ic = pal.muted, ic_f = ic; ic_f.a *= 0.35f;
+        draw_pixel_art(rt, ART_CHIP, ix, iy + 2.0f, 2.0f, ic, ic_f);
+        std::wstring cname = utf8_to_wide(info.cpu_name);
+        draw_text(rt, cname.c_str(), fonts_.body(), D2D1::RectF(ix + 30.0f, iy, ix + iw - 120.0f, iy + 26.0f), pal.text);
+
+        wchar_t threads_buf[32];
+        std::swprintf(threads_buf, std::size(threads_buf), L"%d threads", info.threads);
+        float tw = 115.0f;
+        draw_text(rt, threads_buf, fonts_.caption(), D2D1::RectF(ix + iw - tw, iy + 3.0f, ix + iw, iy + 26.0f), pal.muted);
+
+        wchar_t val_buf[32];
+        if (s.cpu < 0.0) std::swprintf(val_buf, std::size(val_buf), L"...");
+        else std::swprintf(val_buf, std::size(val_buf), L"%d%%", static_cast<int>(std::lround(s.cpu * 100.0)));
+        draw_text(rt, val_buf, fonts_.big(), D2D1::RectF(ix, iy + 34.0f, ix + 180.0f, iy + 70.0f), pal.text);
+
+        if (!std::isnan(s.cpu_temp)) {
+            wchar_t t_buf[32];
+            std::swprintf(t_buf, std::size(t_buf), L"%d °C", static_cast<int>(std::lround(s.cpu_temp)));
+            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 110.0f, iy + 34.0f, ix + iw, iy + 70.0f), pal.muted);
+        }
+
+        draw_graph(rt, pal, ix, iy + 74.0f, iw, 54.0f, 3.0f, cpu_graph_);
+        draw_text(rt, L"Load over the last minutes", fonts_.caption(), D2D1::RectF(ix, iy + 136.0f, ix + iw, iy + 158.0f), pal.muted);
+        y += card_h + gap;
+    }
+
+    // 2. GPU card (if present)
+    if (!info.gpu_name.empty()) {
+        std::wstring facts;
+        if (s.vram_total > 0) {
+            facts = L"Video memory " + utf8_to_wide(format_bytes(s.vram_used)) + L" of " + utf8_to_wide(format_bytes(s.vram_total));
+        }
+        if (!std::isnan(s.gpu_fan_rpm)) {
+            wchar_t fbuf[48];
+            std::swprintf(fbuf, std::size(fbuf), L"Fan %d rpm", static_cast<int>(std::lround(s.gpu_fan_rpm)));
+            if (!facts.empty()) facts += L"   ·   ";
+            facts += fbuf;
+        }
+        float card_h = facts.empty() ? 164.0f : 186.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
+        float ix = x + 18.0f, iy = y + 18.0f, iw = w - 36.0f;
+        Rgba ic = pal.muted, ic_f = ic; ic_f.a *= 0.35f;
+        draw_pixel_art(rt, ART_SCREEN, ix, iy + 2.0f, 2.0f, ic, ic_f);
+        std::wstring gname = utf8_to_wide(info.gpu_name);
+        draw_text(rt, gname.c_str(), fonts_.body(), D2D1::RectF(ix + 30.0f, iy, ix + iw, iy + 26.0f), pal.text);
+
+        wchar_t val_buf[32];
+        if (s.gpu < 0.0) std::swprintf(val_buf, std::size(val_buf), L"...");
+        else std::swprintf(val_buf, std::size(val_buf), L"%d%%", static_cast<int>(std::lround(s.gpu * 100.0)));
+        draw_text(rt, val_buf, fonts_.big(), D2D1::RectF(ix, iy + 34.0f, ix + 180.0f, iy + 70.0f), pal.text);
+
+        if (!std::isnan(s.gpu_temp)) {
+            wchar_t t_buf[32];
+            std::swprintf(t_buf, std::size(t_buf), L"%d °C", static_cast<int>(std::lround(s.gpu_temp)));
+            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 110.0f, iy + 34.0f, ix + iw, iy + 70.0f), pal.muted);
+        }
+
+        draw_graph(rt, pal, ix, iy + 74.0f, iw, 54.0f, 3.0f, gpu_graph_);
+        if (!facts.empty()) {
+            draw_text(rt, facts.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 136.0f, ix + iw, iy + 158.0f), pal.muted);
+        }
+        y += card_h + gap;
+    }
+
+    // 3. Memory card
+    {
+        float card_h = 136.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
+        float ix = x + 18.0f, iy = y + 18.0f, iw = w - 36.0f;
+        Rgba ic = pal.muted, ic_f = ic; ic_f.a *= 0.35f;
+        draw_pixel_art(rt, ART_MEMORY, ix, iy + 2.0f, 2.0f, ic, ic_f);
+        draw_text(rt, L"Memory", fonts_.body(), D2D1::RectF(ix + 30.0f, iy, ix + iw, iy + 26.0f), pal.text);
+
+        std::wstring mval = s.mem_total ? utf8_to_wide(format_bytes(s.mem_used)) : L"...";
+        draw_text(rt, mval.c_str(), fonts_.big(), D2D1::RectF(ix, iy + 34.0f, ix + iw, iy + 70.0f), pal.text);
+
+        double mfrac = s.mem_total ? static_cast<double>(s.mem_used) / static_cast<double>(s.mem_total) : -1.0;
+        draw_meter(rt, pal, ix, iy + 74.0f, 34, 2.0f, mfrac, mfrac > 0.9);
+
+        if (s.mem_total > 0) {
+            std::wstring mfact = L"Used of " + utf8_to_wide(format_bytes(s.mem_total));
+            draw_text(rt, mfact.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 88.0f, ix + iw, iy + 110.0f), pal.muted);
+        }
+        y += card_h + gap;
+    }
+
+    // 4. System drive card
+    {
+        float card_h = 136.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
+        float ix = x + 18.0f, iy = y + 18.0f, iw = w - 36.0f;
+        Rgba ic = pal.muted, ic_f = ic; ic_f.a *= 0.35f;
+        draw_pixel_art(rt, ART_DISK, ix, iy + 2.0f, 2.0f, ic, ic_f);
+        draw_text(rt, L"System drive", fonts_.body(), D2D1::RectF(ix + 30.0f, iy, ix + iw - 80.0f, iy + 26.0f), pal.text);
+
+        if (!info.disk_kind.empty()) {
+            std::wstring dkind = utf8_to_wide(info.disk_kind);
+            draw_text(rt, dkind.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 60.0f, iy + 3.0f, ix + iw, iy + 26.0f), pal.muted);
+        }
+
+        uint64_t dfree = s.disk_total > s.disk_used ? (s.disk_total - s.disk_used) : 0;
+        std::wstring dval = s.disk_total ? utf8_to_wide(format_bytes(dfree)) : L"...";
+        draw_text(rt, dval.c_str(), fonts_.big(), D2D1::RectF(ix, iy + 34.0f, ix + 240.0f, iy + 70.0f), pal.text);
+
+        if (!std::isnan(s.disk_temp)) {
+            wchar_t t_buf[32];
+            std::swprintf(t_buf, std::size(t_buf), L"%d °C", static_cast<int>(std::lround(s.disk_temp)));
+            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 110.0f, iy + 34.0f, ix + iw, iy + 70.0f), pal.muted);
+        }
+
+        double dfrac = s.disk_total ? static_cast<double>(s.disk_used) / static_cast<double>(s.disk_total) : -1.0;
+        draw_meter(rt, pal, ix, iy + 74.0f, 34, 2.0f, dfrac, dfrac > 0.9);
+
+        if (s.disk_total > 0) {
+            std::wstring dfact = L"Free of " + utf8_to_wide(format_bytes(s.disk_total));
+            draw_text(rt, dfact.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 88.0f, ix + iw, iy + 110.0f), pal.muted);
+        }
+        y += card_h + gap;
+    }
+
+    content_height_ = y + 18.0f;
 }
 
 void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
@@ -568,6 +802,7 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
 void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float client_w, float client_h)
 {
     toggle_hits_.clear();
+    card_hits_.clear();
     float col_x = kSidebarWidth + kContentLead + 18.0f;
     float avail_w = std::max(260.0f, client_w - col_x - 36.0f);
     float col_w = std::min(kContentMaxW, avail_w);
@@ -656,6 +891,13 @@ void MainWindow::on_mouse_down(float lx, float ly)
             *hit.field = !(*hit.field);
             save_pad_prefs(pad_path_, pad_prefs_);
             InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+    }
+
+    for (const auto& card : card_hits_) {
+        if (card.target_section && point_in_rect(lx, ly, card.rect)) {
+            select_section(card.target_section, true);
             return;
         }
     }
@@ -763,7 +1005,22 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         mmi->ptMinTrackSize.y = static_cast<LONG>(std::lround(480.0f * dpi_scale_));
         return 0;
     }
+    case WM_SIZE:
+        update_sampling_state();
+        return 0;
+    case WM_SHOWWINDOW:
+        update_sampling_state();
+        return 0;
+    case kMsgHwSample: {
+        hw_sample_ = hw_.latest_sample();
+        if (hw_sample_.cpu >= 0.0) cpu_graph_.push(hw_sample_.cpu);
+        if (hw_sample_.gpu >= 0.0) gpu_graph_.push(hw_sample_.gpu);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
     case WM_DESTROY:
+        hw_.set_wanted(false, false);
+        hw_.set_notify_hwnd(nullptr);
         if (timer_running_) {
             KillTimer(hwnd_, kAnimTimerId);
             timer_running_ = false;

@@ -4,6 +4,7 @@
 #include "cli.h"
 #include "config.h"
 #include "font.h"
+#include "hw.h"
 #include "theme.h"
 
 #include <d2d1.h>
@@ -44,6 +45,11 @@ private:
         bool enabled;
     };
 
+    struct NavCardHit {
+        D2D1_RECT_F rect;
+        const char* target_section;
+    };
+
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT handle_msg(UINT msg, WPARAM wp, LPARAM lp);
 
@@ -73,6 +79,11 @@ private:
                          float x, float& y, float w,
                          const wchar_t* title, const wchar_t* sub, const wchar_t* saving,
                          bool* field, bool enabled);
+    void draw_meter(ID2D1RenderTarget* rt, const Palette& pal,
+                    float x, float y, int blocks, float pixel, double fraction, bool hot);
+    void draw_graph(ID2D1RenderTarget* rt, const Palette& pal,
+                    float x, float y, float w, float h, float pixel, const GraphRing& ring);
+    void update_sampling_state();
 
     void start_anim_timer();
     void stop_anim_timer_if_idle();
@@ -113,6 +124,12 @@ private:
     PadPrefs pad_prefs_;
     std::wstring pad_path_;
     std::vector<ToggleHit> toggle_hits_;
+    std::vector<NavCardHit> card_hits_;
+
+    HardwareSampler hw_;
+    HwSample hw_sample_;
+    GraphRing cpu_graph_;
+    GraphRing gpu_graph_;
 
     bool timer_running_ = false;
     ULONGLONG last_tick_ms_ = 0;

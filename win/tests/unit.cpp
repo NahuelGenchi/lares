@@ -5,6 +5,7 @@ extern "C" {
 }
 #include "cli.h"
 #include "config.h"
+#include "hw.h"
 #include "theme.h"
 
 #include <cmath>
@@ -154,12 +155,45 @@ static void test_shared_art()
     CHECK(ART_SLIDERS[0] != nullptr);
 }
 
+static void test_hw_helpers()
+{
+    constexpr uint64_t GiB = 1073741824ULL;
+    CHECK(lares::format_bytes(0) == "0.0 GB");
+    CHECK(lares::format_bytes(2ULL * GiB) == "2.0 GB");
+    CHECK(lares::format_bytes(16ULL * GiB) == "16 GB");
+    CHECK(lares::format_bytes(1536ULL * GiB) == "1.5 TB");
+
+    CHECK(lares::clean_cpu_name("Intel(R) Core(TM) i5-8400 CPU @ 2.80GHz") == "Intel Core i5-8400");
+    CHECK(lares::clean_cpu_name("   ") == "Processor");
+    CHECK(lares::clean_gpu_name("AMD Radeon (TM) R9 380 Series") == "AMD Radeon R9 380");
+
+    CHECK(lares::meter_filled_blocks(-1.0, 14) == 0);
+    CHECK(lares::meter_filled_blocks(0.0, 14) == 0);
+    CHECK(lares::meter_filled_blocks(0.01, 14) == 1);
+    CHECK(lares::meter_filled_blocks(0.5, 14) == 7);
+    CHECK(lares::meter_filled_blocks(1.0, 14) == 14);
+
+    CHECK(lares::graph_step_height(0.0f, 18) == 0);
+    CHECK(lares::graph_step_height(0.01f, 18) == 1);
+    CHECK(lares::graph_step_height(0.5f, 18) == 9);
+    CHECK(lares::graph_step_height(1.0f, 18) == 18);
+
+    lares::GraphRing ring;
+    CHECK(ring.len == 0);
+    ring.push(0.25);
+    ring.push(0.75);
+    CHECK(ring.len == 2);
+    CHECK(std::fabs(ring.latest(0) - 0.75f) < 1e-5f);
+    CHECK(std::fabs(ring.latest(1) - 0.25f) < 1e-5f);
+}
+
 int main()
 {
     test_cli();
     test_theme();
     test_config();
     test_shared_art();
+    test_hw_helpers();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;
