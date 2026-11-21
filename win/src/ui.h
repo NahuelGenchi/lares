@@ -5,6 +5,7 @@
 #include "config.h"
 #include "devices.h"
 #include "font.h"
+#include "helper.h"
 #include "hw.h"
 #include "pad.h"
 #include "remote.h"

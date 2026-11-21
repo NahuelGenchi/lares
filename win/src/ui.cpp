@@ -206,6 +206,7 @@ bool MainWindow::create()
     remote_.request_refresh();
     devices_.request_refresh();
     pads_.request_refresh();
+    pad_service_sync(pad_prefs_, opts_.dry_run);
 
     apply_titlebar_theme();
     if (!opts_.section.empty()) {
@@ -2040,6 +2041,7 @@ void MainWindow::on_mouse_down(float lx, float ly)
         if (hit.enabled && hit.field && point_in_rect(lx, ly, hit.rect)) {
             *hit.field = !(*hit.field);
             save_pad_prefs(pad_path_, pad_prefs_);
+            pad_service_sync(pad_prefs_, opts_.dry_run);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
@@ -2185,6 +2187,7 @@ void MainWindow::on_mouse_down(float lx, float ly)
                     pad_prefs_.key_light = "own";
                 }
                 save_pad_prefs(pad_path_, pad_prefs_);
+                pad_service_sync(pad_prefs_, opts_.dry_run);
                 devices_.apply_keyboard_async(d.id, want);
             }
             return;

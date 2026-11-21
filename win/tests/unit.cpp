@@ -6,6 +6,7 @@ extern "C" {
 #include "cli.h"
 #include "config.h"
 #include "devices.h"
+#include "helper.h"
 #include "hw.h"
 #include "pad.h"
 #include "remote.h"
@@ -403,6 +404,60 @@ static void test_pad_map_and_controller()
     CHECK(drift_st.has_rest && lares::stick_drifting(drift_st));
 }
 
+static void test_helper()
+{
+    lares::PadPrefs prefs;
+    CHECK(lares::padconf_needs_helper(prefs));
+    prefs.background = false;
+    CHECK(!lares::padconf_needs_helper(prefs));
+    prefs.background = true;
+    prefs.alerts = false;
+    prefs.notices = false;
+    CHECK(!lares::padconf_needs_helper(prefs));
+    prefs.key_light = "cycle";
+    CHECK(lares::padconf_needs_helper(prefs));
+
+    std::vector<lares::PadInfo> pads;
+    prefs.topbar = true;
+    prefs.topbar_hide = true;
+    CHECK(!lares::helper_should_show_tray_icon(pads, prefs));
+    prefs.topbar_hide = false;
+    CHECK(lares::helper_should_show_tray_icon(pads, prefs));
+    CHECK(lares::helper_tooltip_text(pads, prefs) == "Lares \xC2\xB7 No controller connected");
+
+    lares::PadInfo p;
+    p.path = "xinput-0";
+    p.name = "Xbox Wireless Controller";
+    p.connection = lares::PadConnection::Bluetooth;
+    p.battery.known = true;
+    p.battery.percentage = 15.0;
+    p.battery.state = 2;
+    pads.push_back(p);
+
+    prefs.topbar_level = true;
+    CHECK(lares::helper_tooltip_text(pads, prefs) == "Lares \xC2\xB7 Xbox Wireless Controller (15%)");
+
+    std::string title, body;
+    lares::helper_format_connection_notice(p, true, title, body);
+    CHECK(title == "Xbox Wireless Controller connected");
+    CHECK(body == "Bluetooth \xC2\xB7 15%");
+
+    lares::helper_format_battery_alert(p, 1, title, body);
+    CHECK(title == "Xbox Wireless Controller battery low");
+    CHECK(body == "15% left. Charge it or change its batteries soon.");
+
+    p.battery.percentage = 10.0;
+    lares::helper_format_battery_alert(p, 2, title, body);
+    CHECK(title == "Xbox Wireless Controller battery very low");
+    CHECK(body == "10% left. Charge it or change its batteries before it switches off.");
+
+    lares::PadState s0{}, s1{};
+    s1.lx = 0.05f;
+    CHECK(!lares::helper_state_has_activity(s0, s1));
+    s1.lx = 0.30f;
+    CHECK(lares::helper_state_has_activity(s0, s1));
+}
+
 int main()
 {
     test_cli();
@@ -413,6 +468,7 @@ int main()
     test_remote_helpers();
     test_hyperx_and_hidpp();
     test_pad_map_and_controller();
+    test_helper();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;
