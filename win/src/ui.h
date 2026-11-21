@@ -5,6 +5,7 @@
 #include "config.h"
 #include "font.h"
 #include "hw.h"
+#include "remote.h"
 #include "theme.h"
 
 #include <d2d1.h>
@@ -48,6 +49,24 @@ private:
     struct NavCardHit {
         D2D1_RECT_F rect;
         const char* target_section;
+    };
+
+    enum class RemoteActionKind {
+        SwitchModeHome,
+        SwitchModeRemote,
+        ToggleRowExpand,
+        PickChip,
+        AllowSunshine,
+        ReapplyMode,
+        FinishGuide,
+        OpenSunshineWeb,
+    };
+
+    struct RemoteHit {
+        D2D1_RECT_F rect;
+        RemoteActionKind kind;
+        RemoteItem item = RemoteItem::Screen;
+        std::string value;
     };
 
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -130,6 +149,14 @@ private:
     HwSample hw_sample_;
     GraphRing cpu_graph_;
     GraphRing gpu_graph_;
+
+    RemoteController remote_;
+    RemoteConfig remote_cfg_;
+    RemoteLive remote_live_;
+    int expanded_remote_row_ = -1;
+    bool sunshine_needs_perm_ = false;
+    std::string remote_err_msg_;
+    std::vector<RemoteHit> remote_hits_;
 
     bool timer_running_ = false;
     ULONGLONG last_tick_ms_ = 0;

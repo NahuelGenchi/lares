@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cli.h"
+#include "remote.h"
 #include "ui.h"
 
 #include <cstring>
@@ -85,8 +86,10 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
         return 2;
     }
     if (opts.action != lares::CliAction::Window) {
-        write_cli_output("Remote CLI commands (home, remote, restore, status) are scheduled for M5.3.\n");
-        return 0;
+        std::string out_text;
+        int rc = lares::run_remote_cli(opts.action, opts.dry_run, opts.dry_stream, out_text);
+        write_cli_output(out_text.c_str());
+        return rc;
     }
 
     // Single-instance check: activate existing window and forward --section if given.

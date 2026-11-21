@@ -16,6 +16,7 @@ add_library(lares_win_core STATIC
     src/cli.cpp
     src/config.cpp
     src/hw.cpp
+    src/remote.cpp
     src/theme.cpp
     ../src/art.c
 )
@@ -26,6 +27,8 @@ target_include_directories(lares_win_core PUBLIC
 target_link_libraries(lares_win_core PUBLIC
     pdh
     advapi32
+    shell32
+    user32
 )
 
 # Main native Win32 + Direct2D software-rendered application

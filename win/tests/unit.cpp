@@ -6,6 +6,7 @@ extern "C" {
 #include "cli.h"
 #include "config.h"
 #include "hw.h"
+#include "remote.h"
 #include "theme.h"
 
 #include <cmath>
@@ -187,6 +188,55 @@ static void test_hw_helpers()
     CHECK(std::fabs(ring.latest(1) - 0.25f) < 1e-5f);
 }
 
+static void test_remote_helpers()
+{
+    int w = 0, h = 0;
+    double r = 0.0;
+    CHECK(lares::parse_screen_spec("1920x1080@75", w, h, r));
+    CHECK(w == 1920 && h == 1080 && std::fabs(r - 75.0) < 1e-5);
+    CHECK(lares::parse_screen_spec("1680x1050", w, h, r));
+    CHECK(w == 1680 && h == 1050 && std::fabs(r - 60.0) < 1e-5);
+    CHECK(!lares::parse_screen_spec("invalid", w, h, r));
+
+    CHECK(lares::describe_screen_mode(1920, 1080, 75.0) == "1920 \xC3\x97 1080 \xC2\xB7 75 Hz");
+    CHECK(lares::remote_describe(lares::RemoteItem::Screen, "leave") == "Not changed");
+    CHECK(lares::remote_describe(lares::RemoteItem::Sunshine, "on") == "On");
+    CHECK(lares::remote_describe(lares::RemoteItem::Tailscale, "off") == "Off");
+
+    // Apply order: Home stops Sunshine first and Tailscale last; Remote does the opposite.
+    const auto* home_ord = lares::remote_apply_order(lares::RemoteMode::Home);
+    CHECK(home_ord[0] == lares::RemoteItem::Sunshine);
+    CHECK(home_ord[1] == lares::RemoteItem::Screen);
+    CHECK(home_ord[2] == lares::RemoteItem::Tailscale);
+
+    const auto* rem_ord = lares::remote_apply_order(lares::RemoteMode::Remote);
+    CHECK(rem_ord[0] == lares::RemoteItem::Tailscale);
+    CHECK(rem_ord[1] == lares::RemoteItem::Screen);
+    CHECK(rem_ord[2] == lares::RemoteItem::Sunshine);
+
+    // lares.ini round-trip
+    lares::RemoteConfig cfg;
+    cfg.mode = lares::RemoteMode::Remote;
+    cfg.mode_known = true;
+    cfg.ready = true;
+    cfg.value(lares::RemoteMode::Home, lares::RemoteItem::Screen) = "1920x1080@75";
+    cfg.value(lares::RemoteMode::Remote, lares::RemoteItem::Screen) = "1680x1050@60";
+    std::string ini = lares::serialize_lares_ini(cfg);
+    lares::RemoteConfig back = lares::parse_lares_ini(ini);
+    CHECK(back.mode_known && back.mode == lares::RemoteMode::Remote);
+    CHECK(back.ready == true);
+    CHECK(back.value(lares::RemoteMode::Home, lares::RemoteItem::Screen) == "1920x1080@75");
+    CHECK(back.value(lares::RemoteMode::Remote, lares::RemoteItem::Screen) == "1680x1050@60");
+    CHECK(back.value(lares::RemoteMode::Home, lares::RemoteItem::Sunshine) == "off");
+    CHECK(back.value(lares::RemoteMode::Remote, lares::RemoteItem::Sunshine) == "on");
+
+    // Sunshine state and log detection
+    CHECK(!lares::sunshine_state_has_paired_device("{\"named_devices\": []}"));
+    CHECK(lares::sunshine_state_has_paired_device("{\"named_devices\": [{\"name\":\"Mac\"}]}"));
+    CHECK(lares::sunshine_log_is_streaming("Info: CLIENT CONNECTED\n"));
+    CHECK(!lares::sunshine_log_is_streaming("Info: CLIENT CONNECTED\nInfo: CLIENT DISCONNECTED\n"));
+}
+
 int main()
 {
     test_cli();
@@ -194,6 +244,7 @@ int main()
     test_config();
     test_shared_art();
     test_hw_helpers();
+    test_remote_helpers();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;
