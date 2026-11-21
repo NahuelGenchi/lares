@@ -71,6 +71,7 @@ PadPrefs parse_pad_ini(const std::string& text)
             else if (key == "topbar-battery-level") p.topbar_level = parse_bool(val, p.topbar_level);
             else if (key == "topbar-hide-without-controller") p.topbar_hide = parse_bool(val, p.topbar_hide);
             else if (key == "background") p.background = parse_bool(val, p.background);
+            else if (key == "nickname-salt") p.nickname_salt = val;
         } else if (group == "keyboard") {
             if (key == "light") {
                 if (val == "off" || val == "solid" || val == "breathing" || val == "cycle") {
@@ -87,9 +88,29 @@ PadPrefs parse_pad_ini(const std::string& text)
                     p.key_rgb[2] = static_cast<uint8_t>(rgb & 0xff);
                 }
             }
+        } else if (group == "nicknames") {
+            if (!key.empty() && !val.empty()) {
+                // Support both literal tab and GLib keyfile \t escape
+                std::string unescaped;
+                for (size_t i = 0; i < val.size(); ++i) {
+                    if (val[i] == '\\' && i + 1 < val.size() && val[i + 1] == 't') {
+                        unescaped.push_back('\t');
+                        ++i;
+                    } else {
+                        unescaped.push_back(val[i]);
+                    }
+                }
+                p.nicknames[key] = unescaped;
+            }
         }
     }
     return p;
+}
+
+bool padconf_needs_helper(const PadPrefs& p)
+{
+    if (!p.background) return false;
+    return p.topbar || p.alerts || p.notices || p.keep_awake || p.idle_disconnect || (p.key_light != "own");
 }
 
 std::string serialize_pad_ini(const PadPrefs& p)
@@ -106,6 +127,9 @@ std::string serialize_pad_ini(const PadPrefs& p)
         << "topbar-battery-level=" << (p.topbar_level ? "true" : "false") << "\n"
         << "topbar-hide-without-controller=" << (p.topbar_hide ? "true" : "false") << "\n"
         << "background=" << (p.background ? "true" : "false") << "\n";
+    if (!p.nickname_salt.empty()) {
+        out << "nickname-salt=" << p.nickname_salt << "\n";
+    }
 
     if (p.key_light != "own") {
         char hex[8];
@@ -113,6 +137,18 @@ std::string serialize_pad_ini(const PadPrefs& p)
         out << "\n[keyboard]\n"
             << "light=" << p.key_light << "\n"
             << "colour=" << hex << "\n";
+    }
+
+    if (!p.nicknames.empty()) {
+        out << "\n[nicknames]\n";
+        for (const auto& kv : p.nicknames) {
+            std::string escaped;
+            for (char c : kv.second) {
+                if (c == '\t') escaped += "\\t";
+                else escaped.push_back(c);
+            }
+            out << kv.first << "=" << escaped << "\n";
+        }
     }
     return out.str();
 }

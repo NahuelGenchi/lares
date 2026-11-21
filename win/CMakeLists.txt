@@ -17,6 +17,7 @@ add_library(lares_win_core STATIC
     src/config.cpp
     src/devices.cpp
     src/hw.cpp
+    src/pad.cpp
     src/remote.cpp
     src/theme.cpp
     ../src/art.c

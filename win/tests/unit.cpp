@@ -7,12 +7,15 @@ extern "C" {
 #include "config.h"
 #include "devices.h"
 #include "hw.h"
+#include "pad.h"
 #include "remote.h"
 #include "theme.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 static int failures = 0;
 
@@ -319,6 +322,87 @@ static void test_hyperx_and_hidpp()
     CHECK(lares::hidpp_dark_after(120, 600) == 480);
 }
 
+static void test_pad_map_and_controller()
+{
+    // 1. Parse sample map and real data/pad/controller.txt
+    const char* mini =
+        "; comment line\n"
+        ".#aAH(\n"
+        "+=bBY)\n";
+    lares::PadMap map;
+    std::string err;
+    CHECK(lares::pad_map_parse(mini, std::strlen(mini), map, &err));
+    CHECK(map.width == 6 && map.height == 2);
+    CHECK(lares::pad_cell_paint(map.at(0, 0), 0, 0) == lares::PadPaint::None);
+    CHECK(lares::pad_cell_paint(map.at(1, 0), 0, 0) == lares::PadPaint::Line);
+    // Button A area: None -> Seen -> Lit
+    CHECK(lares::pad_cell_paint(map.at(2, 0), 0, 0) == lares::PadPaint::None);
+    CHECK(lares::pad_cell_paint(map.at(2, 0), 0, lares::pb_bit(lares::PB_A)) == lares::PadPaint::Seen);
+    CHECK(lares::pad_cell_paint(map.at(2, 0), lares::pb_bit(lares::PB_A), 0) == lares::PadPaint::Lit);
+    // Button A glyph is cut out when held
+    CHECK(lares::pad_cell_paint(map.at(3, 0), 0, 0) == lares::PadPaint::Line);
+    CHECK(lares::pad_cell_paint(map.at(3, 0), lares::pb_bit(lares::PB_A), 0) == lares::PadPaint::None);
+    // Xbox logo glyph lights itself
+    CHECK(lares::pad_cell_paint(map.at(4, 0), 0, 0) == lares::PadPaint::Line);
+    CHECK(lares::pad_cell_paint(map.at(4, 0), lares::pb_bit(lares::PB_XBOX), 0) == lares::PadPaint::Lit);
+    CHECK(lares::pad_cell_paint(map.at(4, 0), 0, lares::pb_bit(lares::PB_XBOX)) == lares::PadPaint::Seen);
+
+    // Reject uneven row length or unknown legend char
+    const char* bad_len = ".#\n.#.\n";
+    CHECK(!lares::pad_map_parse(bad_len, std::strlen(bad_len), map, &err));
+    const char* bad_ch = ".?\n";
+    CHECK(!lares::pad_map_parse(bad_ch, std::strlen(bad_ch), map, &err));
+
+    // Load real data/pad/controller.txt from repo root or parent
+    std::ifstream f("../data/pad/controller.txt", std::ios::binary);
+    if (!f.is_open()) f.open("../../data/pad/controller.txt", std::ios::binary);
+    if (!f.is_open()) f.open("data/pad/controller.txt", std::ios::binary);
+    CHECK(f.is_open());
+    if (f.is_open()) {
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        std::string txt = ss.str();
+        lares::PadMap full;
+        CHECK(lares::pad_map_parse(txt.data(), txt.size(), full, &err));
+        CHECK(full.width == 216 && full.height == 162);
+        CHECK(full.gauges[0].x1 > full.gauges[0].x0);
+        CHECK(full.gauges[1].x1 > full.gauges[1].x0);
+    }
+
+    // 2. Nickname sanitization & keyed hash
+    CHECK(lares::pad_clean_nickname("   Blue   pad  \n ") == "Blue pad");
+    CHECK(lares::pad_clean_nickname("1234567890123456789012345678901234567890").size() == 32);
+    std::string k1 = lares::pad_nickname_key("address aa:bb:cc", "salt-1");
+    std::string k2 = lares::pad_nickname_key("address aa:bb:cc", "salt-2");
+    CHECK(k1.size() == 64 && k1 != k2);
+
+    // 3. Battery stages & formatting
+    lares::PadBattery bat;
+    bat.known = true;
+    bat.percentage = 85.0;
+    bat.state = 1; // charging
+    CHECK(lares::pad_battery_charging(bat));
+    CHECK(lares::pad_battery_low_stage(bat, 20) == 0);
+    CHECK(lares::pad_battery_text(bat) == "85% \xC2\xB7 Charging");
+    bat.state = 2;
+    bat.percentage = 15.0;
+    CHECK(lares::pad_battery_low_stage(bat, 20) == 1);
+    bat.percentage = 10.0;
+    CHECK(lares::pad_battery_low_stage(bat, 20) == 2);
+
+    // 4. Stick rest & drift tracker
+    lares::StickTracker st;
+    lares::stick_feed(st, 0.02, -0.01, 1000);
+    CHECK(!st.has_rest);
+    lares::stick_feed(st, 0.02, -0.01, 1650);
+    CHECK(st.has_rest && !lares::stick_drifting(st));
+
+    lares::StickTracker drift_st;
+    lares::stick_feed(drift_st, 0.18, 0.0, 2000);
+    lares::stick_feed(drift_st, 0.18, 0.0, 2700);
+    CHECK(drift_st.has_rest && lares::stick_drifting(drift_st));
+}
+
 int main()
 {
     test_cli();
@@ -328,6 +412,7 @@ int main()
     test_hw_helpers();
     test_remote_helpers();
     test_hyperx_and_hidpp();
+    test_pad_map_and_controller();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;
