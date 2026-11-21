@@ -77,6 +77,7 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
     remote_mode_ = (remote_cfg_.ready && remote_cfg_.mode_known && remote_cfg_.mode == RemoteMode::Remote);
     mode_t_ = remote_mode_ ? 1.0f : 0.0f;
     mode_target_ = mode_t_;
+    devices_.set_live_key_light(key_light_from_name(pad_prefs_.key_light), pad_prefs_.key_rgb);
     dev_list_ = devices_.list();
 
     sections_ = {
@@ -1399,7 +1400,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             // 4. Lighting + 9 colour swatches
             draw_text(rt, L"Lighting", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
             cy += 32.0f;
-            static const wchar_t* const kMouseFx[4] = { L"Off", L"Solid", L"Breathing", L"Cycle" };
+            static const wchar_t* const kMouseFx[4] = { L"Off", L"Solid", L"Breathing", L"Colour cycle" };
             float fw = (iw - 24.0f) / 4.0f;
             for (int f = 0; f < 4; ++f) {
                 draw_chip(ix + f * (fw + 8.0f), cy, fw, kMouseFx[f],
@@ -1411,16 +1412,17 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             draw_swatches(cur_rgb, DeviceActionKind::MouseColour);
             draw_divider();
 
-            // 5. Brightness (10-block interactive meter)
+            // 5. Brightness (10-block interactive meter, 4*3=12px stride)
             draw_text(rt, L"Brightness", fonts_.body(), D2D1::RectF(ix, cy, ix + 180.0f, cy + 26.0f), pal.text);
             wchar_t b_pct[16];
             std::swprintf(b_pct, std::size(b_pct), L"%d%%", m.brightness);
             draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 54.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.text);
-            float mx = ix + iw - 190.0f;
+            float mx = ix + iw - 196.0f;
             draw_meter(rt, pal, mx, cy + 7.0f, 10, 3.0f, m.brightness / 100.0, false);
-            for (int b = 0; b <= 10; ++b) {
-                float bx = mx + b * 11.0f - 4.0f;
-                device_hits_.push_back({ D2D1::RectF(bx, cy, bx + 11.0f, cy + 26.0f), d.id, DeviceActionKind::MouseBrightness, b * 10 });
+            device_hits_.push_back({ D2D1::RectF(mx - 16.0f, cy, mx, cy + 26.0f), d.id, DeviceActionKind::MouseBrightness, 0 });
+            for (int b = 1; b <= 10; ++b) {
+                float bx = mx + (b - 1) * 12.0f;
+                device_hits_.push_back({ D2D1::RectF(bx, cy, bx + 12.0f, cy + 26.0f), d.id, DeviceActionKind::MouseBrightness, b * 10 });
             }
         }
 
@@ -1429,17 +1431,29 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             const KeyboardSettings& k = d.keyboard;
             draw_divider();
 
-            // 1. Brightness (4-block stepped meter for 0, 12, 25, 50, 100%)
+            // 1. Brightness (4-block stepped meter for 0, 12, 25, 50, 100%, matching src/device_view.c)
             draw_text(rt, L"Brightness", fonts_.body(), D2D1::RectF(ix, cy, ix + 180.0f, cy + 26.0f), pal.text);
             wchar_t b_pct[16];
             std::swprintf(b_pct, std::size(b_pct), L"%d%%", k.brightness);
             draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 54.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.text);
-            float mx = ix + iw - 130.0f;
-            draw_meter(rt, pal, mx, cy + 7.0f, 4, 3.0f, k.brightness / 100.0, false);
-            static constexpr int kG715Levels[5] = { 0, 12, 25, 50, 100 };
-            for (int b = 0; b < 5; ++b) {
-                float bx = mx + b * 12.0f - 6.0f;
-                device_hits_.push_back({ D2D1::RectF(bx, cy, bx + 12.0f, cy + 26.0f), d.id, DeviceActionKind::KeyBrightness, kG715Levels[b] });
+            float mx = ix + iw - 122.0f;
+            int n_levels = (k.levels > 1) ? k.levels : 5;
+            static constexpr int kDefaultLevels[5] = { 0, 12, 25, 50, 100 };
+            int near_lvl = 0;
+            for (int i = 1; i < n_levels; ++i) {
+                int lv = (k.levels > 1) ? k.level[i] : kDefaultLevels[i];
+                int best = (k.levels > 1) ? k.level[near_lvl] : kDefaultLevels[near_lvl];
+                if (std::abs(lv - k.brightness) < std::abs(best - k.brightness)) near_lvl = i;
+            }
+            int blocks = n_levels - 1;
+            double kfrac = static_cast<double>(near_lvl) / static_cast<double>(blocks);
+            draw_meter(rt, pal, mx, cy + 7.0f, blocks, 3.0f, kfrac, false);
+            int lv0 = (k.levels > 1) ? k.level[0] : kDefaultLevels[0];
+            device_hits_.push_back({ D2D1::RectF(mx - 16.0f, cy, mx, cy + 26.0f), d.id, DeviceActionKind::KeyBrightness, lv0 });
+            for (int b = 1; b < n_levels; ++b) {
+                float bx = mx + (b - 1) * 12.0f;
+                int lv = (k.levels > 1) ? k.level[b] : kDefaultLevels[b];
+                device_hits_.push_back({ D2D1::RectF(bx, cy, bx + 12.0f, cy + 26.0f), d.id, DeviceActionKind::KeyBrightness, lv });
             }
             cy += 38.0f;
             draw_divider();
@@ -1450,7 +1464,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
                       fonts_.caption(), D2D1::RectF(ix, cy + 26.0f, ix + iw, cy + 68.0f), pal.muted);
             cy += 70.0f;
             static const wchar_t* const kKeyFx[7] = {
-                L"Off", L"Solid", L"Breathing", L"Cycle", L"Wave", L"Ripple", L"Built-in"
+                L"Off", L"Solid", L"Breathing", L"Colour cycle", L"Wave", L"Ripple", L"Built-in"
             };
             float fw = (iw - 24.0f) / 4.0f;
             for (int f = 0; f < 7; ++f) {
@@ -1464,12 +1478,21 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             draw_swatches(cur_rgb, DeviceActionKind::KeyColour);
             draw_divider();
 
-            // 3. Startup & Shutdown effect switches
-            draw_text(rt, L"Startup effect", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
-            draw_chip(ix + iw - 74.0f, cy - 2.0f, 74.0f, k.startup ? L"On" : L"Off", k.startup, DeviceActionKind::KeyStartup, k.startup ? 0 : 1);
+            // 3. Startup & Shutdown effect switches (54x27px switch matching Linux)
+            auto draw_key_switch = [&](const wchar_t* label, bool on, DeviceActionKind act) {
+                draw_text(rt, label, fonts_.body(), D2D1::RectF(ix, cy + 1.0f, ix + iw - 70.0f, cy + 27.0f), pal.text);
+                D2D1_RECT_F sw_rc = D2D1::RectF(ix + iw - 54.0f, cy, ix + iw, cy + 27.0f);
+                brush_->SetColor(to_d2d(on ? pal.accent : pal.chip));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(sw_rc, 9.0f, 9.0f), brush_);
+                float kx = on ? (sw_rc.right - 24.0f) : (sw_rc.left + 3.0f);
+                D2D1_RECT_F knob = D2D1::RectF(kx, sw_rc.top + 3.0f, kx + 21.0f, sw_rc.bottom - 3.0f);
+                brush_->SetColor(to_d2d(on ? pal.on_accent : pal.card));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(knob, 6.0f, 6.0f), brush_);
+                device_hits_.push_back({ sw_rc, d.id, act, on ? 0 : 1 });
+            };
+            draw_key_switch(L"Startup effect", k.startup, DeviceActionKind::KeyStartup);
             cy += 36.0f;
-            draw_text(rt, L"Shutdown effect", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
-            draw_chip(ix + iw - 74.0f, cy - 2.0f, 74.0f, k.shutdown ? L"On" : L"Off", k.shutdown, DeviceActionKind::KeyShutdown, k.shutdown ? 0 : 1);
+            draw_key_switch(L"Shutdown effect", k.shutdown, DeviceActionKind::KeyShutdown);
             cy += 40.0f;
             draw_divider();
 
@@ -1791,10 +1814,11 @@ void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal,
                     draw_text(rt, heading, fonts_.body(), D2D1::RectF(ix, cy, ix + iw - 80.0f, cy + 24.0f), pal.text);
                     draw_text(rt, val_lbl, fonts_.caption(), D2D1::RectF(ix + iw - 68.0f, cy + 2.0f, ix + iw, cy + 24.0f), pal.text);
                     draw_meter(rt, pal, ix, cy + 28.0f, 20, 2.0f, frac, false);
-                    for (int b = 0; b <= 20; ++b) {
+                    pad_hits_.push_back({ D2D1::RectF(ix - 12.0f, cy + 22.0f, ix, cy + 44.0f), p.path, act, 0 });
+                    for (int b = 1; b <= 20; ++b) {
                         int v = ((b * max_val / 20) / step) * step;
-                        float bx = ix + b * 11.0f - 4.0f;
-                        pad_hits_.push_back({ D2D1::RectF(bx, cy + 22.0f, bx + 11.0f, cy + 44.0f), p.path, act, v });
+                        float bx = ix + (b - 1) * 8.0f;
+                        pad_hits_.push_back({ D2D1::RectF(bx, cy + 22.0f, bx + 8.0f, cy + 44.0f), p.path, act, v });
                     }
                     cy += 52.0f;
                 };
@@ -2226,15 +2250,18 @@ void MainWindow::on_mouse_down(float lx, float ly)
                     break;
                 }
                 // Live keyboard lighting effects also save to pad.ini for the helper.
-                static const char* const kLiveNames[4] = { "off", "solid", "breathing", "cycle" };
-                if (key_light_live(want.light)) {
-                    pad_prefs_.key_light = kLiveNames[static_cast<int>(want.light)];
-                    std::memcpy(pad_prefs_.key_rgb, want.rgb, 3);
-                } else {
-                    pad_prefs_.key_light = "own";
+                if (dh.kind == DeviceActionKind::KeyLight || dh.kind == DeviceActionKind::KeyColour) {
+                    static const char* const kLiveNames[4] = { "off", "solid", "breathing", "cycle" };
+                    if (key_light_live(want.light)) {
+                        pad_prefs_.key_light = kLiveNames[static_cast<int>(want.light)];
+                        std::memcpy(pad_prefs_.key_rgb, want.rgb, 3);
+                    } else {
+                        pad_prefs_.key_light = "own";
+                    }
+                    devices_.set_live_key_light(key_light_from_name(pad_prefs_.key_light), pad_prefs_.key_rgb);
+                    save_pad_prefs(pad_path_, pad_prefs_);
+                    pad_service_sync(pad_prefs_, opts_.dry_run);
                 }
-                save_pad_prefs(pad_path_, pad_prefs_);
-                pad_service_sync(pad_prefs_, opts_.dry_run);
                 devices_.apply_keyboard_async(d.id, want);
             }
             return;

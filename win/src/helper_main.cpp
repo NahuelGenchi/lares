@@ -40,7 +40,7 @@ static constexpr UINT kMenuCmdQuit       = 1005;
 class HelperApp {
 public:
     HelperApp(HINSTANCE hinst, bool dry_run)
-        : hinst_(hinst), dry_run_(dry_run), pads_(dry_run), devices_(dry_run)
+        : hinst_(hinst), dry_run_(dry_run), pads_(dry_run), devices_(dry_run, kHidppSwHelper)
     {
         pad_path_ = pad_ini_path(dry_run_);
         load_pad_prefs(pad_path_, prefs_);
@@ -188,17 +188,39 @@ private:
     void sync_keyboard_live_light()
     {
         if (dry_run_) return;
+        KeyLight want_light = key_light_from_name(prefs_.key_light);
+        devices_.set_live_key_light(want_light, prefs_.key_rgb);
+
         auto devs = devices_.list();
+        const DeviceEntry* kbd = nullptr;
         for (const auto& d : devs) {
-            if (d.kind != DevKind::Keyboard) continue;
-            KeyboardSettings want = d.keyboard;
-            if (prefs_.key_light == "off") want.light = KeyLight::Off;
-            else if (prefs_.key_light == "solid") want.light = KeyLight::Solid;
-            else if (prefs_.key_light == "breathing") want.light = KeyLight::Breathing;
-            else if (prefs_.key_light == "cycle") want.light = KeyLight::Cycle;
-            else continue;
+            if (d.kind == DevKind::Keyboard) {
+                kbd = &d;
+                break;
+            }
+        }
+        if (!kbd || kbd->asleep) {
+            last_kbd_ready_ = false;
+            return;
+        }
+
+        bool light_changed = (prefs_.key_light != last_applied_light_) ||
+                             (key_light_live(want_light) && std::memcmp(prefs_.key_rgb, last_applied_rgb_, 3) != 0);
+        bool woke_up = !last_kbd_ready_;
+        last_kbd_ready_ = true;
+
+        if (key_light_live(want_light) && (light_changed || woke_up)) {
+            KeyboardSettings want = kbd->keyboard;
+            want.light = want_light;
             std::memcpy(want.rgb, prefs_.key_rgb, 3);
-            devices_.apply_keyboard_async(d.id, want);
+            last_applied_light_ = prefs_.key_light;
+            std::memcpy(last_applied_rgb_, prefs_.key_rgb, 3);
+            devices_.apply_keyboard_async(kbd->id, want);
+        } else if (!key_light_live(want_light) && !last_applied_light_.empty() && last_applied_light_ != "own") {
+            KeyboardSettings want = kbd->keyboard;
+            want.light = KeyLight::Own;
+            last_applied_light_ = "own";
+            devices_.apply_keyboard_async(kbd->id, want);
         }
     }
 
@@ -381,6 +403,21 @@ private:
         sync_keyboard_live_light();
     }
 
+    bool pad_ini_changed()
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad = {};
+        if (!GetFileAttributesExW(pad_path_.c_str(), GetFileExInfoStandard, &fad)) {
+            return false;
+        }
+        ULONGLONG mtime = (static_cast<ULONGLONG>(fad.ftLastWriteTime.dwHighDateTime) << 32) |
+                          fad.ftLastWriteTime.dwLowDateTime;
+        if (mtime != last_ini_mtime_) {
+            last_ini_mtime_ = mtime;
+            return true;
+        }
+        return false;
+    }
+
     LRESULT handle_msg(UINT msg, WPARAM wp, LPARAM lp)
     {
         switch (msg) {
@@ -390,10 +427,13 @@ private:
                     SetThreadExecutionState(ES_CONTINUOUS);
                     keeping_awake_ = false;
                 }
-                reload_config();
+                if (pad_ini_changed()) {
+                    reload_config();
+                }
             }
             return 0;
         case kMsgHelperReloadConfig:
+            pad_ini_changed();
             reload_config();
             return 0;
         case kMsgPadsUpdated:
@@ -439,6 +479,10 @@ private:
     std::map<std::string, PadState> prev_states_;
     ULONGLONG last_activity_ms_ = 0;
     bool keeping_awake_ = false;
+    ULONGLONG last_ini_mtime_ = 0;
+    bool last_kbd_ready_ = false;
+    std::string last_applied_light_;
+    uint8_t last_applied_rgb_[3] = {};
 };
 
 } // namespace lares

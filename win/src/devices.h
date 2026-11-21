@@ -59,6 +59,15 @@ inline bool key_light_live(KeyLight l)
            l == KeyLight::Breathing || l == KeyLight::Cycle;
 }
 
+inline KeyLight key_light_from_name(const std::string& name)
+{
+    if (name == "off") return KeyLight::Off;
+    if (name == "solid") return KeyLight::Solid;
+    if (name == "breathing") return KeyLight::Breathing;
+    if (name == "cycle") return KeyLight::Cycle;
+    return KeyLight::Own;
+}
+
 inline constexpr int kMouseStages = 5;
 inline constexpr int kKeyLevels = 8;
 
@@ -290,7 +299,7 @@ inline constexpr UINT kMsgDevicesUpdated = WM_APP + 4;
 
 class DevicesManager {
 public:
-    explicit DevicesManager(bool dry_run);
+    explicit DevicesManager(bool dry_run, uint8_t hidpp_sw = kHidppSwId);
     ~DevicesManager();
 
     DevicesManager(const DevicesManager&) = delete;
@@ -303,6 +312,7 @@ public:
     std::vector<DeviceEntry> list() const;
     bool any_of(DevKind kind) const;
 
+    void set_live_key_light(KeyLight light, const uint8_t rgb[3]);
     void apply_mouse_async(const std::string& id, const MouseSettings& want);
     void apply_keyboard_async(const std::string& id, const KeyboardSettings& want);
 
@@ -311,6 +321,7 @@ private:
     void scan_devices(bool read_mouse_cfg, bool read_kbd_cfg);
 
     bool dry_run_ = false;
+    uint8_t hidpp_sw_ = kHidppSwId;
     bool dry_seeded_ = false;
     mutable std::mutex mu_;
     std::mutex io_mu_;
@@ -321,6 +332,8 @@ private:
     bool hidpp_loaded_ = false;
     HidppEffects hidpp_effects_{};
     bool hidpp_effects_loaded_ = false;
+    KeyLight live_key_light_ = KeyLight::Own;
+    uint8_t live_key_rgb_[3] = { 0xff, 0x00, 0x00 };
 
     std::atomic<HWND> notify_hwnd_{ nullptr };
     std::atomic<bool> want_list_{ false };
