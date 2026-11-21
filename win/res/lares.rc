@@ -1,0 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Nahuel Genchi
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "resource.h"
+
+IDR_FONT_MONOCRAFT RCDATA "../../data/fonts/Monocraft.ttf"
+IDR_PAD_MAP        RCDATA "../../data/pad/controller.txt"

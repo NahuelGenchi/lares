@@ -28,3 +28,18 @@ jobs:
           persist-credentials: false
       - name: Build and test
         run: make check
+
+  windows-checks:
+    name: Windows build and tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure and build (MSVC /W4 /WX)
+        run: |
+          cmake -S win -B win/build -A x64
+          cmake --build win/build --config Release
+      - name: Run Windows unit tests
+        run: ctest --test-dir win/build -C Release --output-on-failure
