@@ -3,6 +3,7 @@
 #pragma once
 #include "cli.h"
 #include "config.h"
+#include "devices.h"
 #include "font.h"
 #include "hw.h"
 #include "remote.h"
@@ -69,6 +70,30 @@ private:
         std::string value;
     };
 
+    enum class DeviceActionKind {
+        MouseStage,
+        MouseDpiDelta,
+        MouseRate,
+        MouseLift,
+        MouseLight,
+        MouseColour,
+        MouseBrightness,
+        KeyBrightness,
+        KeyLight,
+        KeyColour,
+        KeyStartup,
+        KeyShutdown,
+        KeyDim,
+        KeyOff,
+    };
+
+    struct DeviceHit {
+        D2D1_RECT_F rect;
+        std::string dev_id;
+        DeviceActionKind kind;
+        int value = 0;
+    };
+
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT handle_msg(UINT msg, WPARAM wp, LPARAM lp);
 
@@ -89,6 +114,7 @@ private:
     void draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
+    void draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, DevKind kind);
     void draw_pixel_art(ID2D1RenderTarget* rt, const char* const* art, float x, float y, float scale,
                         const Rgba& solid, const Rgba& faint);
     void draw_text(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTextFormat* fmt,
@@ -157,6 +183,10 @@ private:
     bool sunshine_needs_perm_ = false;
     std::string remote_err_msg_;
     std::vector<RemoteHit> remote_hits_;
+
+    DevicesManager devices_;
+    std::vector<DeviceEntry> dev_list_;
+    std::vector<DeviceHit> device_hits_;
 
     bool timer_running_ = false;
     ULONGLONG last_tick_ms_ = 0;

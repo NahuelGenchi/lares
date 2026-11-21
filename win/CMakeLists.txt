@@ -15,6 +15,7 @@ endif()
 add_library(lares_win_core STATIC
     src/cli.cpp
     src/config.cpp
+    src/devices.cpp
     src/hw.cpp
     src/remote.cpp
     src/theme.cpp
@@ -29,6 +30,9 @@ target_link_libraries(lares_win_core PUBLIC
     advapi32
     shell32
     user32
+    setupapi
+    hid
+    bthprops
 )
 
 # Main native Win32 + Direct2D software-rendered application
