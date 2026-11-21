@@ -206,6 +206,7 @@ private:
     bool nav_pill_init_ = false;
 
     float scroll_y_ = 0.0f;
+    float scroll_target_y_ = 0.0f;
     float content_height_ = 0.0f;
 
     PadPrefs pad_prefs_;
