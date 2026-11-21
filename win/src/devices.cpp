@@ -848,7 +848,9 @@ bool hid_write_overlapped(HANDLE h, const uint8_t* data, DWORD len, DWORD timeou
         if (WaitForSingleObject(ev, timeout_ms) == WAIT_OBJECT_0) {
             ok = GetOverlappedResult(h, &ov, &written, FALSE);
         } else {
-            CancelIo(h);
+            CancelIoEx(h, &ov);
+            DWORD dummy = 0;
+            GetOverlappedResult(h, &ov, &dummy, TRUE);
         }
     }
     CloseHandle(ev);
@@ -867,20 +869,25 @@ bool hid_read_overlapped(HANDLE h, uint8_t* out, DWORD len, DWORD timeout_ms, DW
         if (WaitForSingleObject(ev, timeout_ms) == WAIT_OBJECT_0) {
             ok = GetOverlappedResult(h, &ov, &got, FALSE);
         } else {
-            CancelIo(h);
+            CancelIoEx(h, &ov);
+            DWORD dummy = 0;
+            GetOverlappedResult(h, &ov, &dummy, TRUE);
         }
     }
     CloseHandle(ev);
     return ok && got > 0;
 }
 
-bool hyperx_ask_win(HANDLE h, const uint8_t req[kHyperxReport], uint8_t ans[kHyperxReport], DWORD timeout_ms)
+bool hyperx_ask_once_win(HANDLE h, const uint8_t req[kHyperxReport], uint8_t ans[kHyperxReport], DWORD timeout_ms)
 {
     Sleep(10);
+    HidD_FlushQueue(h);
     if (!hid_write_overlapped(h, req, kHyperxReport, timeout_ms)) return false;
     ULONGLONG end = GetTickCount64() + timeout_ms;
-    while (GetTickCount64() < end) {
-        DWORD left = static_cast<DWORD>(end - GetTickCount64());
+    while (true) {
+        ULONGLONG now = GetTickCount64();
+        if (now >= end) break;
+        DWORD left = static_cast<DWORD>(end - now);
         uint8_t r[kHyperxReport] = {};
         DWORD got = 0;
         if (!hid_read_overlapped(h, r, kHyperxReport, left, got)) return false;
@@ -892,13 +899,68 @@ bool hyperx_ask_win(HANDLE h, const uint8_t req[kHyperxReport], uint8_t ans[kHyp
     return false;
 }
 
+bool hyperx_ask_live_win(HANDLE h, uint8_t cmd, uint8_t sub, uint8_t ans[kHyperxReport])
+{
+    uint8_t q[kHyperxReport] = { cmd, sub, 0 };
+    for (int i = 0; i < 3; ++i) {
+        if (hyperx_ask_once_win(h, q, ans, 500)) return true;
+    }
+    return false;
+}
+
+bool hyperx_linked_win(HANDLE h, DWORD wait_ms)
+{
+    uint8_t q[kHyperxReport] = { kHxLink, 0x01 };
+    uint8_t a[kHyperxReport] = {};
+    ULONGLONG end = GetTickCount64() + wait_ms;
+    while (true) {
+        if (hyperx_ask_once_win(h, q, a, 200)) {
+            if (a[2] == 1) return true;
+        }
+        if (GetTickCount64() >= end) break;
+        Sleep(100);
+    }
+    return false;
+}
+
+bool hyperx_battery_win(HANDLE h, int& level, bool& charging)
+{
+    uint8_t q[kHyperxReport] = { kHxBattery, 0x02 };
+    uint8_t a[kHyperxReport] = {};
+    for (int round = 0; round < 2; ++round) {
+        DWORD ms = (round == 0) ? 400 : 800;
+        Sleep(10);
+        HidD_FlushQueue(h);
+        if (!hid_write_overlapped(h, q, kHyperxReport, ms)) return false;
+        ULONGLONG end = GetTickCount64() + ms;
+        while (true) {
+            ULONGLONG now = GetTickCount64();
+            if (now >= end) break;
+            DWORD left = static_cast<DWORD>(end - now);
+            DWORD got = 0;
+            if (!hid_read_overlapped(h, a, kHyperxReport, left, got)) break;
+            int lvl = -1;
+            bool chg = false;
+            if (hyperx_battery_parse(a, got, &lvl, &chg)) {
+                level = lvl;
+                charging = chg;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool hyperx_send_ack_win(HANDLE h, const uint8_t req[kHyperxReport], DWORD timeout_ms)
 {
     Sleep(10);
+    HidD_FlushQueue(h);
     if (!hid_write_overlapped(h, req, kHyperxReport, timeout_ms)) return false;
     ULONGLONG end = GetTickCount64() + timeout_ms;
-    while (GetTickCount64() < end) {
-        DWORD left = static_cast<DWORD>(end - GetTickCount64());
+    while (true) {
+        ULONGLONG now = GetTickCount64();
+        if (now >= end) break;
+        DWORD left = static_cast<DWORD>(end - now);
         uint8_t r[kHyperxReport] = {};
         DWORD got = 0;
         if (!hid_read_overlapped(h, r, kHyperxReport, left, got)) return false;
@@ -909,17 +971,19 @@ bool hyperx_send_ack_win(HANDLE h, const uint8_t req[kHyperxReport], DWORD timeo
     return false;
 }
 
+bool hyperx_show_win(HANDLE h, const uint8_t rgb[3])
+{
+    uint8_t frame[kHyperxReport] = { kHxFrame, 0x02, 0x00, 0x00, rgb[0], rgb[1], rgb[2] };
+    return hyperx_send_ack_win(h, frame, 500);
+}
+
 bool read_hyperx_blocks_win(HANDLE h, HyperxState& state)
 {
-    uint8_t q_dpi[kHyperxReport] = { kHxDpi, kHxGet, 0 };
-    uint8_t q_sen[kHyperxReport] = { kHxSensor, kHxGet, 0 };
-    uint8_t q_bri[kHyperxReport] = { kHxBrightness, kHxGet, 0 };
-    uint8_t q_lit[kHyperxReport] = { kHxLighting, kHxLightGet, 0 };
     HyperxState tmp = state;
-    if (hyperx_ask_win(h, q_dpi, tmp.dpi, 500) &&
-        hyperx_ask_win(h, q_sen, tmp.sensor, 500) &&
-        hyperx_ask_win(h, q_bri, tmp.brightness, 500) &&
-        hyperx_ask_win(h, q_lit, tmp.light, 500)) {
+    if (hyperx_ask_live_win(h, kHxDpi, kHxGet, tmp.dpi) &&
+        hyperx_ask_live_win(h, kHxSensor, kHxGet, tmp.sensor) &&
+        hyperx_ask_live_win(h, kHxBrightness, kHxGet, tmp.brightness) &&
+        hyperx_ask_live_win(h, kHxLighting, kHxLightGet, tmp.light)) {
         state = tmp;
         return true;
     }
@@ -934,25 +998,16 @@ void read_hyperx_device_win(DeviceEntry& dev, HyperxState& state, bool& loaded, 
     if (h == INVALID_HANDLE_VALUE) return;
 
     const HyperxModel* model = hyperx_model(dev.usb_vid, dev.usb_pid);
-    bool linked = true;
-    if (model && model->receiver) {
-        uint8_t q[kHyperxReport] = { kHxLink, 0x01 };
-        uint8_t a[kHyperxReport] = {};
-        linked = hyperx_ask_win(h, q, a, 250) && (a[2] == 1);
-    }
+    bool linked = (!model || !model->receiver) ? true : hyperx_linked_win(h, 600);
     dev.asleep = !linked;
     dev.connected = linked;
 
     if (linked) {
-        uint8_t qb[kHyperxReport] = { kHxBattery, 0x02 };
-        uint8_t ab[kHyperxReport] = {};
-        if (hyperx_ask_win(h, qb, ab, 400)) {
-            int lvl = -1;
-            bool chg = false;
-            if (hyperx_battery_parse(ab, kHyperxReport, &lvl, &chg)) {
-                dev.battery = lvl;
-                dev.charging = chg;
-            }
+        int lvl = -1;
+        bool chg = false;
+        if (hyperx_battery_win(h, lvl, chg)) {
+            dev.battery = lvl;
+            dev.charging = chg;
         }
         if (read_full_settings || !loaded) {
             if (read_hyperx_blocks_win(h, state)) {
@@ -1014,8 +1069,11 @@ bool hid_read_dual_overlapped(HANDLE h_short, HANDLE h_long, uint8_t* out, DWORD
 
     BOOL r1 = ReadFile(h_short, b1, kHidppShortLen, &g1, &o1);
     DWORD err1 = r1 ? 0 : GetLastError();
+    bool p1 = (!r1 && err1 == ERROR_IO_PENDING);
+
     BOOL r2 = ReadFile(h_long, b2, kHidppLongLen, &g2, &o2);
     DWORD err2 = r2 ? 0 : GetLastError();
+    bool p2 = (!r2 && err2 == ERROR_IO_PENDING);
 
     bool ok = false;
     if (r1 && g1 > 0) {
@@ -1026,21 +1084,25 @@ bool hid_read_dual_overlapped(HANDLE h_short, HANDLE h_long, uint8_t* out, DWORD
         std::memcpy(out, b2, g2);
         got = g2;
         ok = true;
-    } else {
+    } else if (p1 || p2) {
         HANDLE hs[2];
         int map[2];
         DWORD n = 0;
-        if (err1 == ERROR_IO_PENDING) { hs[n] = e1; map[n++] = 1; }
-        if (err2 == ERROR_IO_PENDING) { hs[n] = e2; map[n++] = 2; }
-        if (n > 0) {
-            DWORD wr = WaitForMultipleObjects(n, hs, FALSE, timeout_ms);
-            if (wr >= WAIT_OBJECT_0 && wr < WAIT_OBJECT_0 + n) {
-                int which = map[wr - WAIT_OBJECT_0];
-                if (which == 1 && GetOverlappedResult(h_short, &o1, &g1, FALSE) && g1 > 0) {
+        if (p1) { hs[n] = e1; map[n++] = 1; }
+        if (p2) { hs[n] = e2; map[n++] = 2; }
+        DWORD wr = WaitForMultipleObjects(n, hs, FALSE, timeout_ms);
+        if (wr >= WAIT_OBJECT_0 && wr < WAIT_OBJECT_0 + n) {
+            int which = map[wr - WAIT_OBJECT_0];
+            if (which == 1) {
+                p1 = false;
+                if (GetOverlappedResult(h_short, &o1, &g1, FALSE) && g1 > 0) {
                     std::memcpy(out, b1, g1);
                     got = g1;
                     ok = true;
-                } else if (which == 2 && GetOverlappedResult(h_long, &o2, &g2, FALSE) && g2 > 0) {
+                }
+            } else if (which == 2) {
+                p2 = false;
+                if (GetOverlappedResult(h_long, &o2, &g2, FALSE) && g2 > 0) {
                     std::memcpy(out, b2, g2);
                     got = g2;
                     ok = true;
@@ -1048,8 +1110,17 @@ bool hid_read_dual_overlapped(HANDLE h_short, HANDLE h_long, uint8_t* out, DWORD
             }
         }
     }
-    CancelIo(h_short);
-    CancelIo(h_long);
+
+    if (p1) {
+        CancelIoEx(h_short, &o1);
+        DWORD dummy = 0;
+        GetOverlappedResult(h_short, &o1, &dummy, TRUE);
+    }
+    if (p2) {
+        CancelIoEx(h_long, &o2);
+        DWORD dummy = 0;
+        GetOverlappedResult(h_long, &o2, &dummy, TRUE);
+    }
     CloseHandle(e1);
     CloseHandle(e2);
     return ok;
@@ -1069,6 +1140,8 @@ bool hidpp_call_win(HidppLinkWin& l, DWORD timeout_ms, uint16_t feature, uint8_t
         err = "Invalid HID++ packet.";
         return false;
     }
+    HidD_FlushQueue(l.h_short);
+    HidD_FlushQueue(l.h_long);
     HANDLE target = (packet[0] == kHidppShort) ? l.h_short : l.h_long;
     if (!hid_write_overlapped(target, packet, static_cast<DWORD>(len), timeout_ms)) {
         err = "Its receiver couldn't be asked.";
@@ -1076,8 +1149,10 @@ bool hidpp_call_win(HidppLinkWin& l, DWORD timeout_ms, uint16_t feature, uint8_t
     }
 
     ULONGLONG end = GetTickCount64() + timeout_ms;
-    while (GetTickCount64() < end) {
-        DWORD left = static_cast<DWORD>(end - GetTickCount64());
+    while (true) {
+        ULONGLONG now = GetTickCount64();
+        if (now >= end) break;
+        DWORD left = static_cast<DWORD>(end - now);
         uint8_t r[kHidppLongLen] = {};
         DWORD got = 0;
         if (!hid_read_dual_overlapped(l.h_short, l.h_long, r, got, left)) break;
@@ -1107,20 +1182,20 @@ bool hidpp_feature_index_win(HidppLinkWin& l, uint16_t feature, uint8_t& index_o
 {
     const uint8_t id[2] = { static_cast<uint8_t>(feature >> 8), static_cast<uint8_t>(feature & 0xff) };
     uint8_t a[kHidppParams] = {};
-    if (!hidpp_call_win(l, 600, HIDPP_ROOT, 0, 0, id, 2, a, err, asleep_out)) return false;
+    if (!hidpp_call_win(l, 1000, HIDPP_ROOT, 0, kRootGetFeature, id, 2, a, err, asleep_out)) return false;
     index_out = a[0];
     return true;
 }
 
 bool hidpp_read_nv_win(HidppLinkWin& l, uint8_t fi, uint16_t cap, HidppNv& out, std::string& err, bool* asleep_out)
 {
-    const uint8_t get[3] = { 0x00, static_cast<uint8_t>(cap >> 8), static_cast<uint8_t>(cap & 0xff) };
+    const uint8_t get[3] = { kNvGet, static_cast<uint8_t>(cap >> 8), static_cast<uint8_t>(cap & 0xff) };
     uint8_t a[kHidppParams] = {};
     out = HidppNv{};
     l.refused = 0;
     std::string sub_err;
     bool sub_asleep = false;
-    if (hidpp_call_win(l, 600, HIDPP_RGB_EFFECTS, fi, 12, get, 3, a, sub_err, &sub_asleep)) {
+    if (hidpp_call_win(l, 1000, HIDPP_RGB_EFFECTS, fi, kRgbNvConfig, get, 3, a, sub_err, &sub_asleep)) {
         hidpp_nv_decode(cap, a, sizeof(a), &out);
         return true;
     }
@@ -1151,8 +1226,8 @@ bool hidpp_read_all_win(HidppLinkWin& l, HidppKeyboard& out, std::string& err, b
 
     if (bi) {
         uint8_t info[kHidppParams] = {}, now[kHidppParams] = {};
-        if (!hidpp_call_win(l, 600, HIDPP_BRIGHTNESS, bi, 0, nullptr, 0, info, err, asleep_out) ||
-            !hidpp_call_win(l, 600, HIDPP_BRIGHTNESS, bi, 1, nullptr, 0, now, err, asleep_out)) {
+        if (!hidpp_call_win(l, 1000, HIDPP_BRIGHTNESS, bi, kBrightnessInfo, nullptr, 0, info, err, asleep_out) ||
+            !hidpp_call_win(l, 1000, HIDPP_BRIGHTNESS, bi, kBrightnessGet, nullptr, 0, now, err, asleep_out)) {
             return false;
         }
         hidpp_decode_brightness(info, now, &k);
@@ -1160,9 +1235,9 @@ bool hidpp_read_all_win(HidppLinkWin& l, HidppKeyboard& out, std::string& err, b
 
     if (pi) {
         uint8_t info[kHidppParams] = {}, mode[kHidppParams] = {}, cur[kHidppParams] = {};
-        if (!hidpp_call_win(l, 600, HIDPP_PROFILES, pi, 0, nullptr, 0, info, err, asleep_out) ||
-            !hidpp_call_win(l, 600, HIDPP_PROFILES, pi, 2, nullptr, 0, mode, err, asleep_out) ||
-            !hidpp_call_win(l, 600, HIDPP_PROFILES, pi, 4, nullptr, 0, cur, err, asleep_out)) {
+        if (!hidpp_call_win(l, 1000, HIDPP_PROFILES, pi, kProfilesInfo, nullptr, 0, info, err, asleep_out) ||
+            !hidpp_call_win(l, 1000, HIDPP_PROFILES, pi, kProfilesMode, nullptr, 0, mode, err, asleep_out) ||
+            !hidpp_call_win(l, 1000, HIDPP_PROFILES, pi, kProfilesCurrent, nullptr, 0, cur, err, asleep_out)) {
             return false;
         }
         size_t size = (static_cast<size_t>(info[7]) << 8) | info[8];
@@ -1177,7 +1252,7 @@ bool hidpp_read_all_win(HidppLinkWin& l, HidppKeyboard& out, std::string& err, b
                     static_cast<uint8_t>(at >> 8), static_cast<uint8_t>(at & 0xff)
                 };
                 uint8_t chunk[kHidppParams] = {};
-                if (!hidpp_call_win(l, 600, HIDPP_PROFILES, pi, 5, where, 4, chunk, err, asleep_out)) return false;
+                if (!hidpp_call_win(l, 1000, HIDPP_PROFILES, pi, kProfilesRead, where, 4, chunk, err, asleep_out)) return false;
                 std::memcpy(sector + at, chunk, 16);
                 got = at + 16;
             }
@@ -1188,7 +1263,7 @@ bool hidpp_read_all_win(HidppLinkWin& l, HidppKeyboard& out, std::string& err, b
     if (ri) {
         const uint8_t get[1] = { 0x00 };
         uint8_t a[kHidppParams] = {};
-        if (!hidpp_call_win(l, 600, HIDPP_RGB_EFFECTS, ri, 8, get, 1, a, err, asleep_out)) return false;
+        if (!hidpp_call_win(l, 1000, HIDPP_RGB_EFFECTS, ri, kRgbSwControl, get, 1, a, err, asleep_out)) return false;
         if (a[1] != 0) k.app_controls = true;
         if (!hidpp_read_nv_win(l, ri, kHidppNvStartup, k.startup, err, asleep_out) ||
             !hidpp_read_nv_win(l, ri, kHidppNvShutdown, k.shutdown, err, asleep_out)) {
@@ -1210,15 +1285,15 @@ bool hidpp_read_effects_win(HidppLinkWin& l, HidppEffects& out, std::string& err
     if (!out.feature) return false;
     const uint8_t dev_q[3] = { 0xff, 0xff, 0x00 };
     uint8_t a[kHidppParams] = {};
-    if (!hidpp_call_win(l, 600, HIDPP_RGB_EFFECTS, out.feature, 0, dev_q, 3, a, err, asleep_out)) return false;
+    if (!hidpp_call_win(l, 1000, HIDPP_RGB_EFFECTS, out.feature, kRgbInfo, dev_q, 3, a, err, asleep_out)) return false;
     out.clusters = std::min<int>(a[2], kHidppClusters);
     for (int c = 0; c < out.clusters; ++c) {
         const uint8_t grp_q[3] = { static_cast<uint8_t>(c), 0xff, 0x00 };
-        if (!hidpp_call_win(l, 600, HIDPP_RGB_EFFECTS, out.feature, 0, grp_q, 3, a, err, asleep_out)) return false;
+        if (!hidpp_call_win(l, 1000, HIDPP_RGB_EFFECTS, out.feature, kRgbInfo, grp_q, 3, a, err, asleep_out)) return false;
         out.count[c] = std::min<int>(a[4], kHidppEffects);
         for (int i = 0; i < out.count[c]; ++i) {
             const uint8_t which[3] = { static_cast<uint8_t>(c), static_cast<uint8_t>(i), 0x00 };
-            if (!hidpp_call_win(l, 600, HIDPP_RGB_EFFECTS, out.feature, 0, which, 3, a, err, asleep_out)) return false;
+            if (!hidpp_call_win(l, 1000, HIDPP_RGB_EFFECTS, out.feature, kRgbInfo, which, 3, a, err, asleep_out)) return false;
             out.effect[c][i] = static_cast<uint16_t>((a[2] << 8) | a[3]);
         }
     }
@@ -1229,7 +1304,7 @@ bool hidpp_sw_set_win(HidppLinkWin& l, const HidppEffects& fx, uint8_t mode, uin
 {
     const uint8_t set[3] = { 0x01, mode, flags };
     uint8_t a[kHidppParams] = {};
-    return hidpp_call_win(l, 600, HIDPP_RGB_EFFECTS, fx.feature, 8, set, 3, a, err, asleep_out);
+    return hidpp_call_win(l, 1000, HIDPP_RGB_EFFECTS, fx.feature, kRgbSwControl, set, 3, a, err, asleep_out);
 }
 
 bool hidpp_live_play_win(HidppLinkWin& l, const HidppEffects& fx, const HidppLighting& light, std::string& err, bool* asleep_out)
@@ -1237,9 +1312,9 @@ bool hidpp_live_play_win(HidppLinkWin& l, const HidppEffects& fx, const HidppLig
     uint8_t params[10] = {};
     int id = hidpp_effect(&light, false, params);
     if (id < 0 || hidpp_kept(light.effect)) return false;
-    // Take software control: firmware(0) then software(1) with flag 0x05 (HIDPP_LIVE_TAKE)
-    if (!hidpp_sw_set_win(l, fx, 0x00, 0x05, err, asleep_out) ||
-        !hidpp_sw_set_win(l, fx, 0x01, 0x05, err, asleep_out)) {
+    const uint8_t take_flags = kSwFlags[static_cast<int>(HidppLive::Take)];
+    if (!hidpp_sw_set_win(l, fx, kSwFirmware, take_flags, err, asleep_out) ||
+        !hidpp_sw_set_win(l, fx, kSwSoftware, take_flags, err, asleep_out)) {
         return false;
     }
     bool any = false;
@@ -1248,9 +1323,9 @@ bool hidpp_live_play_win(HidppLinkWin& l, const HidppEffects& fx, const HidppLig
         if (at < 0) continue;
         uint8_t set[13] = { static_cast<uint8_t>(c), static_cast<uint8_t>(at) };
         std::memcpy(set + 2, params, 10);
-        set[12] = 0x00; // VOLATILE
+        set[12] = kVolatile;
         uint8_t a[kHidppParams] = {};
-        if (!hidpp_call_win(l, 600, HIDPP_RGB_EFFECTS, fx.feature, 1, set, 13, a, err, asleep_out)) return false;
+        if (!hidpp_call_win(l, 1000, HIDPP_RGB_EFFECTS, fx.feature, kRgbSetEffect, set, 13, a, err, asleep_out)) return false;
         any = true;
     }
     return any;
@@ -1264,19 +1339,41 @@ bool hidpp_write_profile_win(HidppLinkWin& l, uint8_t fi, uint16_t sector, const
         static_cast<uint8_t>(size >> 8), static_cast<uint8_t>(size & 0xff)
     };
     uint8_t a[kHidppParams] = {};
-    if (!hidpp_call_win(l, 600, HIDPP_PROFILES, fi, 6, begin, 6, a, err, asleep_out)) return false;
+    if (!hidpp_call_win(l, 1000, HIDPP_PROFILES, fi, kProfilesBegin, begin, 6, a, err, asleep_out)) return false;
     for (size_t at = 0; at < size; at += 16) {
         uint8_t chunk[16] = {};
         std::memcpy(chunk, data + at, std::min<size_t>(16, size - at));
-        if (!hidpp_call_win(l, 600, HIDPP_PROFILES, fi, 7, chunk, 16, a, err, asleep_out)) return false;
+        if (!hidpp_call_win(l, 1000, HIDPP_PROFILES, fi, kProfilesWrite, chunk, 16, a, err, asleep_out)) return false;
     }
-    return hidpp_call_win(l, 2500, HIDPP_PROFILES, fi, 8, nullptr, 0, a, err, asleep_out);
+    return hidpp_call_win(l, 3000, HIDPP_PROFILES, fi, kProfilesEnd, nullptr, 0, a, err, asleep_out);
 }
+
+struct ScopedWinMutex {
+    HANDLE h = nullptr;
+    bool locked = false;
+
+    explicit ScopedWinMutex(const wchar_t* name, DWORD timeout_ms = 5000)
+    {
+        h = CreateMutexW(nullptr, FALSE, name);
+        if (h) {
+            DWORD wr = WaitForSingleObject(h, timeout_ms);
+            locked = (wr == WAIT_OBJECT_0 || wr == WAIT_ABANDONED);
+        }
+    }
+
+    ~ScopedWinMutex()
+    {
+        if (h) {
+            if (locked) ReleaseMutex(h);
+            CloseHandle(h);
+        }
+    }
+};
 
 } // namespace
 
-DevicesManager::DevicesManager(bool dry_run)
-    : dry_run_(dry_run)
+DevicesManager::DevicesManager(bool dry_run, uint8_t hidpp_sw)
+    : dry_run_(dry_run), hidpp_sw_(hidpp_sw)
 {
     hyperx_sample(&hyperx_state_);
     hidpp_sample(&hidpp_state_);
@@ -1463,7 +1560,9 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
         kbd.usb_pid = 0xc547;
         if (read_kbd_cfg || !hidpp_loaded_) {
             std::lock_guard<std::mutex> io_lk(io_mu_);
+            ScopedWinMutex xproc(L"Local\\LaresHidppLock");
             HidppLinkWin link;
+            link.sw = hidpp_sw_;
             if (link.open(g715_short_path, g715_long_path)) {
                 HidppKeyboard live_k;
                 std::string err;
@@ -1483,6 +1582,11 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
         {
             std::lock_guard<std::mutex> lk(mu_);
             hidpp_decode(&hidpp_state_, hidpp_model(0xc547, 0x40a2), &kbd.keyboard);
+            if (kbd.keyboard.has_lighting && key_light_live(live_key_light_)) {
+                kbd.keyboard.light = live_key_light_;
+                std::memcpy(kbd.keyboard.rgb, live_key_rgb_, 3);
+                kbd.keyboard.app_controls = false;
+            }
         }
         found.push_back(kbd);
     }
@@ -1503,6 +1607,7 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
         mse.usb_pid = on_cable ? 0x0d97 : 0x0f98;
         {
             std::lock_guard<std::mutex> io_lk(io_mu_);
+            ScopedWinMutex xproc(L"Local\\LaresHyperxLock");
             HyperxState st_copy;
             bool loaded_copy = false;
             {
@@ -1535,15 +1640,30 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
     }
 }
 
+void DevicesManager::set_live_key_light(KeyLight light, const uint8_t rgb[3])
+{
+    std::lock_guard<std::mutex> lock(mu_);
+    live_key_light_ = key_light_live(light) ? light : KeyLight::Own;
+    if (rgb) std::memcpy(live_key_rgb_, rgb, 3);
+    for (auto& d : devices_) {
+        if (d.kind == DevKind::Keyboard) {
+            hidpp_decode(&hidpp_state_, hidpp_model(0xc547, 0x40a2), &d.keyboard);
+            if (d.keyboard.has_lighting && key_light_live(live_key_light_)) {
+                d.keyboard.light = live_key_light_;
+                std::memcpy(d.keyboard.rgb, live_key_rgb_, 3);
+                d.keyboard.app_controls = false;
+            }
+        }
+    }
+}
+
 void DevicesManager::apply_mouse_async(const std::string& id, const MouseSettings& want)
 {
-    HyperxState prev_state{};
     MouseSettings base_settings{};
     std::wstring path;
     uint16_t vid = 0x03f0, pid = 0x0f98;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        prev_state = hyperx_state_;
         for (auto& d : devices_) {
             if (d.id == id) {
                 base_settings = d.mouse;
@@ -1567,51 +1687,81 @@ void DevicesManager::apply_mouse_async(const std::string& id, const MouseSetting
     if (dry_run_ || path.empty()) return;
 
     if (write_thread_.joinable()) write_thread_.join();
-    write_thread_ = std::thread([this, id, want, base_settings, prev_state, path, vid, pid]() mutable {
+    write_thread_ = std::thread([this, id, want, base_settings, path, vid, pid]() mutable {
         std::lock_guard<std::mutex> io_lk(io_mu_);
+        ScopedWinMutex xproc(L"Local\\LaresHyperxLock");
         HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                FILE_FLAG_OVERLAPPED, nullptr);
         std::string err;
+        bool asleep = false;
         bool ok = false;
         if (h != INVALID_HANDLE_VALUE) {
-            bool loaded = false;
-            {
-                std::lock_guard<std::mutex> lk(mu_);
-                loaded = hyperx_loaded_;
-            }
-            MouseSettings eff_want = want;
-            if (!loaded) {
-                if (read_hyperx_blocks_win(h, prev_state)) {
-                    loaded = true;
-                    hyperx_merge(&prev_state, &base_settings, &want, &eff_want);
-                }
-            }
-            uint8_t pkts0[kHyperxBlocks][kHyperxReport];
-            int n0 = hyperx_packets(&prev_state, &eff_want, 0, pkts0);
-            ok = (n0 > 0);
-            for (int i = 0; i < n0 && ok; ++i) {
-                if (!hyperx_send_ack_win(h, pkts0[i], 600)) {
-                    ok = false;
-                    err = "Mouse didn't answer; move it to wake it.";
-                }
-            }
-            if (ok) {
-                uint8_t pkts1[kHyperxBlocks][kHyperxReport];
-                int n1 = hyperx_packets(&prev_state, &eff_want, 1, pkts1);
-                for (int i = 0; i < n1; ++i) {
-                    hid_write_overlapped(h, pkts1[i], kHyperxReport, 600);
-                }
-                for (int i = 0; i < n0; ++i) hyperx_apply(&prev_state, pkts0[i]);
-                std::lock_guard<std::mutex> lk(mu_);
-                hyperx_state_ = prev_state;
-                hyperx_loaded_ = loaded;
-                for (auto& d : devices_) {
-                    if (d.id == id) {
-                        hyperx_decode(hyperx_model(vid, pid), &hyperx_state_, &d.mouse);
-                        d.asleep = false;
-                        d.status_error.clear();
-                        break;
+            const HyperxModel* model = hyperx_model(vid, pid);
+            if (model && model->receiver && !hyperx_linked_win(h, 1500)) {
+                asleep = true;
+                err = "It's asleep. Move it to wake it.";
+            } else {
+                HyperxState now{};
+                if (!read_hyperx_blocks_win(h, now)) {
+                    asleep = true;
+                    err = "It didn't answer; it may have fallen asleep.";
+                } else {
+                    MouseSettings was{}, merged{};
+                    hyperx_decode(model, &now, &was);
+                    hyperx_merge(&now, &base_settings, &want, &merged);
+
+                    ok = true;
+                    for (uint16_t slot = 0; slot < 2 && ok; ++slot) {
+                        uint8_t pkts[kHyperxBlocks][kHyperxReport];
+                        int n = hyperx_packets(&now, &merged, slot, pkts);
+                        if (n < 0) {
+                            ok = false;
+                            err = "The mouse can't hold that setting.";
+                            break;
+                        }
+                        for (int i = 0; i < n && ok; ++i) {
+                            if (slot == 0) {
+                                if (!hyperx_send_ack_win(h, pkts[i], 500)) {
+                                    ok = false;
+                                    err = "It didn't take the change; it may have fallen asleep.";
+                                }
+                            } else {
+                                Sleep(10);
+                                if (!hid_write_overlapped(h, pkts[i], kHyperxReport, 500)) {
+                                    ok = false;
+                                    err = "It didn't take the change; it may have fallen asleep.";
+                                } else {
+                                    uint8_t ack_dpi[kHyperxReport] = {};
+                                    if (!hyperx_ask_live_win(h, kHxDpi, kHxGet, ack_dpi)) {
+                                        ok = false;
+                                        err = "It didn't answer; it may have fallen asleep.";
+                                    }
+                                }
+                            }
+                        }
+                        if (ok && slot == 0 && hyperx_shows(&was, &merged)) {
+                            hyperx_show_win(h, merged.rgb);
+                        }
+                    }
+
+                    if (ok) {
+                        HyperxState fresh = now;
+                        if (read_hyperx_blocks_win(h, fresh)) {
+                            now = fresh;
+                        }
+                        std::lock_guard<std::mutex> lk(mu_);
+                        hyperx_state_ = now;
+                        hyperx_loaded_ = true;
+                        for (auto& d : devices_) {
+                            if (d.id == id) {
+                                hyperx_decode(model, &hyperx_state_, &d.mouse);
+                                d.asleep = false;
+                                d.connected = true;
+                                d.status_error.clear();
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -1623,6 +1773,8 @@ void DevicesManager::apply_mouse_async(const std::string& id, const MouseSetting
             std::lock_guard<std::mutex> lk(mu_);
             for (auto& d : devices_) {
                 if (d.id == id) {
+                    d.mouse = base_settings;
+                    d.asleep = asleep;
                     d.status_error = err;
                     break;
                 }
@@ -1639,6 +1791,8 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
     std::wstring short_path, long_path;
     {
         std::lock_guard<std::mutex> lock(mu_);
+        live_key_light_ = key_light_live(want.light) ? want.light : KeyLight::Own;
+        std::memcpy(live_key_rgb_, want.rgb, 3);
         for (auto& d : devices_) {
             if (d.id == id) {
                 prev_settings = d.keyboard;
@@ -1658,7 +1812,9 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
     if (write_thread_.joinable()) write_thread_.join();
     write_thread_ = std::thread([this, id, want, prev_settings, short_path, long_path]() {
         std::lock_guard<std::mutex> io_lk(io_mu_);
+        ScopedWinMutex xproc(L"Local\\LaresHidppLock");
         HidppLinkWin link;
+        link.sw = hidpp_sw_;
         std::string err;
         bool asleep = false;
         bool ok = false;
@@ -1673,7 +1829,7 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
                     int val = hidpp_brightness_value(&k, want.brightness);
                     const uint8_t v[2] = { static_cast<uint8_t>(val >> 8), static_cast<uint8_t>(val & 0xff) };
                     uint8_t a[kHidppParams] = {};
-                    if (hidpp_call_win(link, 600, HIDPP_BRIGHTNESS, k.brightness_index, 2, v, 2, a, err, &asleep)) {
+                    if (hidpp_call_win(link, 1000, HIDPP_BRIGHTNESS, k.brightness_index, kBrightnessSet, v, 2, a, err, &asleep)) {
                         k.brightness = val;
                     } else {
                         ok = false;
@@ -1686,7 +1842,7 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
                 bool timers_changed = (want.dim_s != prev_settings.dim_s || want.off_s != prev_settings.off_s);
                 bool nv_changed = (want.startup != prev_settings.startup || want.shutdown != prev_settings.shutdown);
 
-                if (ok && light_changed && key_light_live(want.light)) {
+                if (ok && key_light_live(want.light) && (light_changed || !k.app_controls)) {
                     if (!hidpp_effects_loaded_) {
                         hidpp_effects_loaded_ = hidpp_read_effects_win(link, hidpp_effects_, err, &asleep);
                     }
@@ -1696,16 +1852,19 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
                     } else {
                         ok = false;
                     }
-                } else if (ok && (light_changed || timers_changed)) {
-                    // Release software control if switching back to onboard lighting
-                    if (light_changed && k.rgb_index) {
+                } else if (ok && (!key_light_live(want.light) && (light_changed || k.app_controls))) {
+                    // Release software control when using an onboard lighting effect
+                    if (k.rgb_index) {
                         if (!hidpp_effects_loaded_) {
                             hidpp_effects_loaded_ = hidpp_read_effects_win(link, hidpp_effects_, err, &asleep);
                         }
                         if (hidpp_effects_loaded_) {
-                            hidpp_sw_set_win(link, hidpp_effects_, 0x00, 0x00, err, &asleep);
+                            ok = hidpp_sw_set_win(link, hidpp_effects_, kSwFirmware, 0x00, err, &asleep);
                         }
                     }
+                }
+
+                if (ok && ((light_changed && !key_light_live(want.light)) || timers_changed)) {
                     if (k.profiles_index && k.has_profile && k.sector == kHidppSector) {
                         uint8_t sector[kHidppSectorMax] = {};
                         std::memcpy(sector, k.profile, k.profile_size);
@@ -1722,17 +1881,17 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
                     }
                 }
 
-                // 3. Startup & Shutdown NV effects (0x8071 fn 12)
+                // 3. Startup & Shutdown NV effects (0x8071 RGB_NV_CONFIG)
                 if (ok && nv_changed && k.rgb_index) {
                     if (want.startup != prev_settings.startup && k.startup.known) {
                         uint8_t set[kHidppNvLen] = {}, a[kHidppParams] = {};
                         hidpp_nv_encode(kHidppNvStartup, want.startup, &k.startup, set);
-                        ok = hidpp_call_win(link, 600, HIDPP_RGB_EFFECTS, k.rgb_index, 12, set, kHidppNvLen, a, err, &asleep);
+                        ok = hidpp_call_win(link, 1000, HIDPP_RGB_EFFECTS, k.rgb_index, kRgbNvConfig, set, kHidppNvLen, a, err, &asleep);
                     }
                     if (ok && want.shutdown != prev_settings.shutdown && k.shutdown.known) {
                         uint8_t set[kHidppNvLen] = {}, a[kHidppParams] = {};
                         hidpp_nv_encode(kHidppNvShutdown, want.shutdown, &k.shutdown, set);
-                        ok = hidpp_call_win(link, 600, HIDPP_RGB_EFFECTS, k.rgb_index, 12, set, kHidppNvLen, a, err, &asleep);
+                        ok = hidpp_call_win(link, 1000, HIDPP_RGB_EFFECTS, k.rgb_index, kRgbNvConfig, set, kHidppNvLen, a, err, &asleep);
                     }
                 }
 
@@ -1749,9 +1908,10 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
                     for (auto& d : devices_) {
                         if (d.id == id) {
                             hidpp_decode(&hidpp_state_, hidpp_model(0xc547, 0x40a2), &d.keyboard);
-                            if (key_light_live(want.light)) {
-                                d.keyboard.light = want.light;
-                                std::memcpy(d.keyboard.rgb, want.rgb, 3);
+                            if (d.keyboard.has_lighting && key_light_live(live_key_light_)) {
+                                d.keyboard.light = live_key_light_;
+                                std::memcpy(d.keyboard.rgb, live_key_rgb_, 3);
+                                d.keyboard.app_controls = false;
                             }
                             d.asleep = false;
                             d.status_error.clear();
@@ -1766,8 +1926,11 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
 
         if (!ok) {
             std::lock_guard<std::mutex> lk(mu_);
+            live_key_light_ = key_light_live(prev_settings.light) ? prev_settings.light : KeyLight::Own;
+            std::memcpy(live_key_rgb_, prev_settings.rgb, 3);
             for (auto& d : devices_) {
                 if (d.id == id) {
+                    d.keyboard = prev_settings;
                     d.asleep = asleep;
                     d.status_error = err;
                     break;

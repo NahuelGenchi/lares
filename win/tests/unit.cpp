@@ -458,6 +458,46 @@ static void test_helper()
     CHECK(lares::helper_state_has_activity(s0, s1));
 }
 
+static void test_hidpp_allowed_matrix()
+{
+    // Verify every HID++ 2.0 function ID & payload shape used by win/src/devices.cpp
+    const uint8_t sw_get[1] = { 0x00 };
+    const uint8_t sw_take_fw[3] = { 0x01, 0x00, 0x06 };
+    const uint8_t sw_take_sw[3] = { 0x01, 0x03, 0x06 };
+    const uint8_t sw_rel[3] = { 0x01, 0x00, 0x00 };
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 5, sw_get, 1));
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 5, sw_take_fw, 3));
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 5, sw_take_sw, 3));
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 5, sw_rel, 3));
+    CHECK(!lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 8, sw_get, 1));
+
+    const uint8_t nv_get_start[3] = { 0x00, 0x00, 0x01 };
+    const uint8_t nv_get_shut[3] = { 0x00, 0x00, 0x40 };
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 3, nv_get_start, 3));
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 3, nv_get_shut, 3));
+    CHECK(!lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 12, nv_get_start, 3));
+
+    lares::HidppNv nv;
+    nv.known = true;
+    uint8_t nv_set[lares::kHidppNvLen] = {};
+    lares::hidpp_nv_encode(lares::kHidppNvStartup, true, &nv, nv_set);
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 3, nv_set, sizeof(nv_set)));
+    lares::hidpp_nv_encode(lares::kHidppNvShutdown, false, &nv, nv_set);
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 3, nv_set, sizeof(nv_set)));
+
+    uint8_t fx_set[13] = { 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+    CHECK(lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 1, fx_set, 13));
+    fx_set[12] = 0; // non-volatile must be rejected
+    CHECK(!lares::hidpp_allowed(lares::HIDPP_RGB_EFFECTS, 1, fx_set, 13));
+
+    CHECK(lares::key_light_from_name("off") == lares::KeyLight::Off);
+    CHECK(lares::key_light_from_name("solid") == lares::KeyLight::Solid);
+    CHECK(lares::key_light_from_name("breathing") == lares::KeyLight::Breathing);
+    CHECK(lares::key_light_from_name("cycle") == lares::KeyLight::Cycle);
+    CHECK(lares::key_light_from_name("own") == lares::KeyLight::Own);
+    CHECK(lares::key_light_from_name("") == lares::KeyLight::Own);
+}
+
 int main()
 {
     test_cli();
@@ -469,6 +509,7 @@ int main()
     test_hyperx_and_hidpp();
     test_pad_map_and_controller();
     test_helper();
+    test_hidpp_allowed_matrix();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;
