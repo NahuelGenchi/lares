@@ -35,7 +35,7 @@ static bool point_in_rect(float x, float y, const D2D1_RECT_F& r)
 }
 
 MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
-    : hinst_(hinst), opts_(opts), hw_(opts.dry_run), remote_(opts.dry_run, opts.dry_stream)
+    : hinst_(hinst), opts_(opts), hw_(opts.dry_run), remote_(opts.dry_run, opts.dry_stream), devices_(opts.dry_run)
 {
     if (opts_.color_scheme == "dark") dark_ = true;
     else if (opts_.color_scheme == "light") dark_ = false;
@@ -47,14 +47,15 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
     remote_mode_ = (remote_cfg_.ready && remote_cfg_.mode_known && remote_cfg_.mode == RemoteMode::Remote);
     mode_t_ = remote_mode_ ? 1.0f : 0.0f;
     mode_target_ = mode_t_;
+    dev_list_ = devices_.list();
 
     sections_ = {
         { "overview",   L"Overview",      ART_OVERVIEW,   true  },
         { "hardware",   L"Hardware",      ART_CHIP,       true  },
         { "controller", L"Controller",    ART_GAMEPAD,    false },
-        { "headphones", L"Headphones",    ART_HEADPHONES, false },
-        { "keyboard",   L"Keyboard",      ART_KEYBOARD,   false },
-        { "mouse",      L"Mouse",         ART_MOUSE,      false },
+        { "headphones", L"Headphones",    ART_HEADPHONES, devices_.any_of(DevKind::Audio) },
+        { "keyboard",   L"Keyboard",      ART_KEYBOARD,   devices_.any_of(DevKind::Keyboard) },
+        { "mouse",      L"Mouse",         ART_MOUSE,      devices_.any_of(DevKind::Mouse) },
         { "remote",     remote_cfg_.ready ? L"Remote" : L"Set up remote", ART_LAPTOP, true },
         { "settings",   L"Settings",      ART_SLIDERS,    true  },
     };
@@ -174,7 +175,9 @@ bool MainWindow::create()
     dpi_scale_ = static_cast<float>(dpi) / 96.0f;
     hw_.set_notify_hwnd(hwnd_);
     remote_.set_notify_hwnd(hwnd_);
+    devices_.set_notify_hwnd(hwnd_);
     remote_.request_refresh();
+    devices_.request_refresh();
 
     apply_titlebar_theme();
     if (!opts_.section.empty()) {
@@ -198,14 +201,19 @@ void MainWindow::update_sampling_state()
     if (!hwnd_ || IsIconic(hwnd_) || !IsWindowVisible(hwnd_)) {
         hw_.set_wanted(false, false);
         remote_.set_wanted(false);
+        devices_.set_wanted(false, false, false);
         return;
     }
     const char* id = sections_[current_sec_].id;
     bool is_ov = (std::strcmp(id, "overview") == 0);
     bool is_hw = (std::strcmp(id, "hardware") == 0);
     bool is_rem = (std::strcmp(id, "remote") == 0);
+    bool is_hp = (std::strcmp(id, "headphones") == 0);
+    bool is_kbd = (std::strcmp(id, "keyboard") == 0);
+    bool is_mse = (std::strcmp(id, "mouse") == 0);
     hw_.set_wanted(is_ov || is_hw, is_hw);
     remote_.set_wanted(is_ov || is_rem);
+    devices_.set_wanted(is_ov || is_hp || is_kbd || is_mse, is_mse, is_kbd);
 }
 
 int MainWindow::visible_index_of(int sec_idx) const
@@ -663,6 +671,47 @@ void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, f
     draw_tile(x, y, w, ART_DISK, L"Storage", disk_val, disk_sub, 34, disk_frac, disk_frac > 0.9, "hardware");
     y += tile_h + gap;
 
+    // Devices card (one row per paired/connected device, matching src/overview.c)
+    if (!dev_list_.empty()) {
+        float row_h = 58.0f;
+        float card_h = static_cast<float>(dev_list_.size()) * row_h;
+        draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
+        float ix = x + 18.0f, iw = w - 36.0f;
+
+        for (size_t i = 0; i < dev_list_.size(); ++i) {
+            const auto& d = dev_list_[i];
+            float ry = y + static_cast<float>(i) * row_h;
+            if (i > 0) {
+                brush_->SetColor(to_d2d(pal.line));
+                rt->FillRectangle(D2D1::RectF(ix, ry, ix + iw, ry + 1.0f), brush_);
+            }
+            const char* target_sec = (d.kind == DevKind::Audio) ? "headphones"
+                : (d.kind == DevKind::Keyboard) ? "keyboard" : "mouse";
+            card_hits_.push_back({ D2D1::RectF(x, ry, x + w, ry + row_h), target_sec });
+
+            const char* const* d_art = (d.kind == DevKind::Audio) ? ART_HEADPHONES
+                : (d.kind == DevKind::Keyboard) ? ART_KEYBOARD : ART_MOUSE;
+            Rgba ic = pal.muted, icf = ic; icf.a *= 0.35f;
+            draw_pixel_art(rt, d_art, ix, ry + 20.0f, 2.0f, ic, icf);
+
+            std::wstring dname = utf8_to_wide(d.name);
+            draw_text(rt, dname.c_str(), fonts_.body(), D2D1::RectF(ix + 30.0f, ry + 16.0f, ix + iw - 112.0f, ry + 44.0f), pal.text);
+
+            if (!d.connected || d.asleep) {
+                draw_text(rt, d.asleep ? L"Asleep" : L"Not connected", fonts_.caption(),
+                          D2D1::RectF(ix + iw - 112.0f, ry + 19.0f, ix + iw, ry + 44.0f), pal.muted);
+            } else if (d.battery >= 0) {
+                wchar_t btxt[16];
+                std::swprintf(btxt, std::size(btxt), L"%d%%", d.battery);
+                bool low = (d.battery <= 20);
+                draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 114.0f, ry + 19.0f, ix + iw - 74.0f, ry + 44.0f),
+                          low ? pal.bad : pal.text);
+                draw_meter(rt, pal, ix + iw - 70.0f, ry + 26.0f, 10, 2.0f, d.battery / 100.0, low);
+            }
+        }
+        y += card_h + gap;
+    }
+
     // Mode tile (shown once remote play is set up, matching src/overview.c)
     if (remote_cfg_.ready) {
         std::wstring mval = remote_cfg_.mode_known
@@ -1095,6 +1144,249 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
     content_height_ = y + 24.0f;
 }
 
+void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, DevKind kind)
+{
+    device_hits_.clear();
+    static constexpr uint32_t kSwatchColours[9] = {
+        0xff0000, 0xff5000, 0xffc800, 0x00ff00, 0x00ffff, 0x0000ff, 0x8000ff, 0xff00a0, 0xffffff
+    };
+    static constexpr int kTimerMinutes[5] = { 1, 2, 5, 10, 15 };
+
+    float gap = 18.0f;
+    for (const auto& d : dev_list_) {
+        if (d.kind != kind) continue;
+        float ix = x + 18.0f, iw = w - 36.0f;
+
+        // Calculate card height according to device kind & settings
+        float card_h = 148.0f;
+        if (d.has_settings && kind == DevKind::Mouse) card_h = 564.0f;
+        else if (d.has_settings && kind == DevKind::Keyboard) card_h = 642.0f;
+
+        draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
+        float cy = y + 18.0f;
+
+        // Header: icon + name + battery or sleep state
+        const char* const* d_art = (kind == DevKind::Audio) ? ART_HEADPHONES
+            : (kind == DevKind::Keyboard) ? ART_KEYBOARD : ART_MOUSE;
+        Rgba ic = pal.muted, icf = ic; icf.a *= 0.35f;
+        draw_pixel_art(rt, d_art, ix, cy + 2.0f, 2.0f, ic, icf);
+        std::wstring dname = utf8_to_wide(d.name);
+        draw_text(rt, dname.c_str(), fonts_.body(), D2D1::RectF(ix + 30.0f, cy, ix + iw - 112.0f, cy + 28.0f), pal.text);
+
+        if (d.asleep) {
+            draw_text(rt, L"Asleep", fonts_.caption(), D2D1::RectF(ix + iw - 90.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.muted);
+        } else if (d.battery >= 0) {
+            wchar_t btxt[16];
+            std::swprintf(btxt, std::size(btxt), L"%d%%", d.battery);
+            bool low = (d.battery <= 20);
+            draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 114.0f, cy + 3.0f, ix + iw - 74.0f, cy + 26.0f),
+                      low ? pal.bad : pal.text);
+            draw_meter(rt, pal, ix + iw - 70.0f, cy + 9.0f, 10, 2.0f, d.battery / 100.0, low);
+        }
+        cy += 38.0f;
+
+        // Detail rows: Made by & Connection
+        if (!d.vendor_name.empty()) {
+            draw_text(rt, L"Made by", fonts_.caption(), D2D1::RectF(ix, cy, ix + 160.0f, cy + 24.0f), pal.muted);
+            std::wstring vname = utf8_to_wide(d.vendor_name);
+            draw_text(rt, vname.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 200.0f, cy, ix + iw, cy + 24.0f), pal.text);
+            cy += 28.0f;
+        }
+        draw_text(rt, L"Connection", fonts_.caption(), D2D1::RectF(ix, cy, ix + 160.0f, cy + 24.0f), pal.muted);
+        std::wstring ltxt = utf8_to_wide(dev_link_text(d.link));
+        draw_text(rt, ltxt.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 200.0f, cy, ix + iw, cy + 24.0f), pal.text);
+        cy += 32.0f;
+
+        auto draw_divider = [&]() {
+            brush_->SetColor(to_d2d(pal.line));
+            rt->FillRectangle(D2D1::RectF(ix, cy, ix + iw, cy + 1.0f), brush_);
+            cy += 14.0f;
+        };
+
+        auto draw_chip = [&](float cx, float r_y, float cw, const wchar_t* lbl, bool active,
+                             DeviceActionKind act, int val) {
+            D2D1_RECT_F rc = D2D1::RectF(cx, r_y, cx + cw, r_y + 30.0f);
+            brush_->SetColor(to_d2d(active ? pal.accent : pal.chip));
+            rt->FillRoundedRectangle(D2D1::RoundedRect(rc, 8.0f, 8.0f), brush_);
+            draw_text(rt, lbl, fonts_.caption(),
+                      D2D1::RectF(rc.left + 12.0f, rc.top + 5.0f, rc.right - 6.0f, rc.bottom),
+                      active ? pal.on_accent : pal.text);
+            device_hits_.push_back({ rc, d.id, act, val });
+        };
+
+        auto draw_swatches = [&](uint32_t cur_rgb, DeviceActionKind act) {
+            float sw_size = 26.0f;
+            float sw_gap = 10.0f;
+            for (int c = 0; c < 9; ++c) {
+                uint32_t rgb = kSwatchColours[c];
+                float sx = ix + c * (sw_size + sw_gap);
+                D2D1_RECT_F s_rc = D2D1::RectF(sx, cy, sx + sw_size, cy + sw_size);
+                bool active = (rgb == cur_rgb);
+                brush_->SetColor(to_d2d(active ? pal.accent : pal.line));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(s_rc, 6.0f, 6.0f), brush_);
+                D2D1_RECT_F inner = D2D1::RectF(sx + 3.0f, cy + 3.0f, sx + sw_size - 3.0f, cy + sw_size - 3.0f);
+                Rgba col = {
+                    static_cast<float>((rgb >> 16) & 0xff) / 255.0f,
+                    static_cast<float>((rgb >> 8) & 0xff) / 255.0f,
+                    static_cast<float>(rgb & 0xff) / 255.0f,
+                    1.0f
+                };
+                brush_->SetColor(to_d2d(col));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(inner, 4.0f, 4.0f), brush_);
+                device_hits_.push_back({ s_rc, d.id, act, static_cast<int>(rgb) });
+            }
+            cy += 38.0f;
+        };
+
+        // Mouse settings (HyperX Pulsefire Haste 2 Wireless)
+        if (d.has_settings && kind == DevKind::Mouse) {
+            const MouseSettings& m = d.mouse;
+            draw_divider();
+
+            // 1. DPI row + [- / +] buttons + 5 stage chips
+            draw_text(rt, L"DPI", fonts_.body(), D2D1::RectF(ix, cy, ix + 160.0f, cy + 26.0f), pal.text);
+            int cur_dpi = (m.active >= 0 && m.active < m.stages) ? m.dpi[m.active] : 1600;
+            wchar_t dpi_txt[32];
+            std::swprintf(dpi_txt, std::size(dpi_txt), L"%d", cur_dpi);
+            draw_chip(ix + iw - 166.0f, cy - 2.0f, 36.0f, L"-", false, DeviceActionKind::MouseDpiDelta, -100);
+            draw_text(rt, dpi_txt, fonts_.body(), D2D1::RectF(ix + iw - 118.0f, cy, ix + iw - 44.0f, cy + 26.0f), pal.text);
+            draw_chip(ix + iw - 36.0f, cy - 2.0f, 36.0f, L"+", false, DeviceActionKind::MouseDpiDelta, 100);
+            cy += 34.0f;
+
+            float st_w = (iw - 8.0f * (m.stages - 1)) / static_cast<float>(std::max(1, m.stages));
+            for (int s = 0; s < m.stages; ++s) {
+                wchar_t slbl[24];
+                std::swprintf(slbl, std::size(slbl), L"%d", m.dpi[s]);
+                draw_chip(ix + s * (st_w + 8.0f), cy, st_w, slbl, s == m.active, DeviceActionKind::MouseStage, s);
+            }
+            cy += 44.0f;
+            draw_divider();
+
+            // 2. Polling rate
+            draw_text(rt, L"Polling rate", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            cy += 32.0f;
+            static constexpr int kRates[4] = { 125, 250, 500, 1000 };
+            float rw = (iw - 24.0f) / 4.0f;
+            for (int r = 0; r < 4; ++r) {
+                wchar_t rlbl[24];
+                std::swprintf(rlbl, std::size(rlbl), L"%d Hz", kRates[r]);
+                draw_chip(ix + r * (rw + 8.0f), cy, rw, rlbl, m.rate == kRates[r], DeviceActionKind::MouseRate, kRates[r]);
+            }
+            cy += 44.0f;
+            draw_divider();
+
+            // 3. Lift-off distance
+            draw_text(rt, L"Lift-off distance", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            draw_chip(ix + iw - 148.0f, cy - 2.0f, 68.0f, L"1 mm", m.lift_mm == 1, DeviceActionKind::MouseLift, 1);
+            draw_chip(ix + iw - 70.0f, cy - 2.0f, 68.0f, L"2 mm", m.lift_mm == 2, DeviceActionKind::MouseLift, 2);
+            cy += 40.0f;
+            draw_divider();
+
+            // 4. Lighting + 9 colour swatches
+            draw_text(rt, L"Lighting", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            cy += 32.0f;
+            static const wchar_t* const kMouseFx[4] = { L"Off", L"Solid", L"Breathing", L"Cycle" };
+            float fw = (iw - 24.0f) / 4.0f;
+            for (int f = 0; f < 4; ++f) {
+                draw_chip(ix + f * (fw + 8.0f), cy, fw, kMouseFx[f],
+                          static_cast<int>(m.light) == f, DeviceActionKind::MouseLight, f);
+            }
+            cy += 40.0f;
+            uint32_t cur_rgb = (static_cast<uint32_t>(m.rgb[0]) << 16) |
+                               (static_cast<uint32_t>(m.rgb[1]) << 8) | m.rgb[2];
+            draw_swatches(cur_rgb, DeviceActionKind::MouseColour);
+            draw_divider();
+
+            // 5. Brightness (10-block interactive meter)
+            draw_text(rt, L"Brightness", fonts_.body(), D2D1::RectF(ix, cy, ix + 180.0f, cy + 26.0f), pal.text);
+            wchar_t b_pct[16];
+            std::swprintf(b_pct, std::size(b_pct), L"%d%%", m.brightness);
+            draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 54.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.text);
+            float mx = ix + iw - 190.0f;
+            draw_meter(rt, pal, mx, cy + 7.0f, 10, 3.0f, m.brightness / 100.0, false);
+            for (int b = 0; b <= 10; ++b) {
+                float bx = mx + b * 11.0f - 4.0f;
+                device_hits_.push_back({ D2D1::RectF(bx, cy, bx + 11.0f, cy + 26.0f), d.id, DeviceActionKind::MouseBrightness, b * 10 });
+            }
+        }
+
+        // Keyboard settings (Logitech G715 HID++ 2.0)
+        if (d.has_settings && kind == DevKind::Keyboard) {
+            const KeyboardSettings& k = d.keyboard;
+            draw_divider();
+
+            // 1. Brightness (4-block stepped meter for 0, 12, 25, 50, 100%)
+            draw_text(rt, L"Brightness", fonts_.body(), D2D1::RectF(ix, cy, ix + 180.0f, cy + 26.0f), pal.text);
+            wchar_t b_pct[16];
+            std::swprintf(b_pct, std::size(b_pct), L"%d%%", k.brightness);
+            draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 54.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.text);
+            float mx = ix + iw - 130.0f;
+            draw_meter(rt, pal, mx, cy + 7.0f, 4, 3.0f, k.brightness / 100.0, false);
+            static constexpr int kG715Levels[5] = { 0, 12, 25, 50, 100 };
+            for (int b = 0; b < 5; ++b) {
+                float bx = mx + b * 12.0f - 6.0f;
+                device_hits_.push_back({ D2D1::RectF(bx, cy, bx + 12.0f, cy + 26.0f), d.id, DeviceActionKind::KeyBrightness, kG715Levels[b] });
+            }
+            cy += 38.0f;
+            draw_divider();
+
+            // 2. Lighting (7 effects in two rows + 9 colour swatches)
+            draw_text(rt, L"Lighting", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            draw_text(rt, L"Wave, Ripple and Built-in stay on the keyboard; the others play live.",
+                      fonts_.caption(), D2D1::RectF(ix, cy + 26.0f, ix + iw, cy + 68.0f), pal.muted);
+            cy += 70.0f;
+            static const wchar_t* const kKeyFx[7] = {
+                L"Off", L"Solid", L"Breathing", L"Cycle", L"Wave", L"Ripple", L"Built-in"
+            };
+            float fw = (iw - 24.0f) / 4.0f;
+            for (int f = 0; f < 7; ++f) {
+                float cx = ix + (f % 4) * (fw + 8.0f);
+                float ry = cy + (f / 4) * 36.0f;
+                draw_chip(cx, ry, fw, kKeyFx[f], static_cast<int>(k.light) == f, DeviceActionKind::KeyLight, f);
+            }
+            cy += 78.0f;
+            uint32_t cur_rgb = (static_cast<uint32_t>(k.rgb[0]) << 16) |
+                               (static_cast<uint32_t>(k.rgb[1]) << 8) | k.rgb[2];
+            draw_swatches(cur_rgb, DeviceActionKind::KeyColour);
+            draw_divider();
+
+            // 3. Startup & Shutdown effect switches
+            draw_text(rt, L"Startup effect", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            draw_chip(ix + iw - 74.0f, cy - 2.0f, 74.0f, k.startup ? L"On" : L"Off", k.startup, DeviceActionKind::KeyStartup, k.startup ? 0 : 1);
+            cy += 36.0f;
+            draw_text(rt, L"Shutdown effect", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            draw_chip(ix + iw - 74.0f, cy - 2.0f, 74.0f, k.shutdown ? L"On" : L"Off", k.shutdown, DeviceActionKind::KeyShutdown, k.shutdown ? 0 : 1);
+            cy += 40.0f;
+            draw_divider();
+
+            // 4. Dim after & Lights off after (1, 2, 5, 10, 15 min)
+            float tw = (iw - 32.0f) / 5.0f;
+            draw_text(rt, L"Dim after", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            cy += 30.0f;
+            for (int t = 0; t < 5; ++t) {
+                wchar_t tlbl[16];
+                std::swprintf(tlbl, std::size(tlbl), L"%d min", kTimerMinutes[t]);
+                int secs = kTimerMinutes[t] * 60;
+                draw_chip(ix + t * (tw + 8.0f), cy, tw, tlbl, k.dim_s == secs, DeviceActionKind::KeyDim, secs);
+            }
+            cy += 42.0f;
+
+            draw_text(rt, L"Lights off after", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            cy += 30.0f;
+            for (int t = 0; t < 5; ++t) {
+                wchar_t tlbl[16];
+                std::swprintf(tlbl, std::size(tlbl), L"%d min", kTimerMinutes[t]);
+                int secs = kTimerMinutes[t] * 60;
+                draw_chip(ix + t * (tw + 8.0f), cy, tw, tlbl, k.off_s == secs, DeviceActionKind::KeyOff, secs);
+            }
+        }
+
+        y += card_h + gap;
+    }
+
+    content_height_ = y + 24.0f;
+}
+
 void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float client_w, float client_h)
 {
     toggle_hits_.clear();
@@ -1111,6 +1403,9 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
     if (std::strcmp(id, "settings") == 0) draw_settings_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "hardware") == 0) draw_hardware_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "remote") == 0) draw_remote_page(rt, pal, col_x, col_y, col_w);
+    else if (std::strcmp(id, "headphones") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Audio);
+    else if (std::strcmp(id, "keyboard") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Keyboard);
+    else if (std::strcmp(id, "mouse") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Mouse);
     else draw_overview_page(rt, pal, col_x, col_y, col_w);
 
     rt->PopAxisAlignedClip();
@@ -1240,6 +1535,99 @@ void MainWindow::on_mouse_down(float lx, float ly)
             return;
         case RemoteActionKind::OpenSunshineWeb:
             ShellExecuteW(hwnd_, L"open", L"https://localhost:47990", nullptr, nullptr, SW_SHOWNORMAL);
+            return;
+        }
+    }
+
+    for (const auto& dh : device_hits_) {
+        if (!point_in_rect(lx, ly, dh.rect)) continue;
+        for (auto& d : dev_list_) {
+            if (d.id != dh.dev_id) continue;
+            if (d.kind == DevKind::Mouse) {
+                MouseSettings want = d.mouse;
+                switch (dh.kind) {
+                case DeviceActionKind::MouseStage:
+                    want.active = std::clamp(dh.value, 0, std::max(0, want.stages - 1));
+                    break;
+                case DeviceActionKind::MouseDpiDelta:
+                    if (want.active >= 0 && want.active < want.stages) {
+                        int dpi = ((want.dpi[want.active] + dh.value) / 50) * 50;
+                        want.dpi[want.active] = std::clamp(dpi, want.dpi_min, want.dpi_max);
+                    }
+                    break;
+                case DeviceActionKind::MouseRate:
+                    want.rate = dh.value;
+                    break;
+                case DeviceActionKind::MouseLift:
+                    want.lift_mm = dh.value;
+                    break;
+                case DeviceActionKind::MouseLight:
+                    want.light = static_cast<LightEffect>(dh.value);
+                    if ((want.light == LightEffect::Solid || want.light == LightEffect::Breathing) &&
+                        want.rgb[0] == 0 && want.rgb[1] == 0 && want.rgb[2] == 0) {
+                        want.rgb[0] = 0xff;
+                    }
+                    break;
+                case DeviceActionKind::MouseColour:
+                    if (want.light != LightEffect::Solid && want.light != LightEffect::Breathing) {
+                        want.light = LightEffect::Solid;
+                    }
+                    want.rgb[0] = static_cast<uint8_t>((dh.value >> 16) & 0xff);
+                    want.rgb[1] = static_cast<uint8_t>((dh.value >> 8) & 0xff);
+                    want.rgb[2] = static_cast<uint8_t>(dh.value & 0xff);
+                    break;
+                case DeviceActionKind::MouseBrightness:
+                    want.brightness = std::clamp(dh.value, 0, 100);
+                    break;
+                default:
+                    break;
+                }
+                devices_.apply_mouse_async(d.id, want);
+            } else if (d.kind == DevKind::Keyboard) {
+                KeyboardSettings want = d.keyboard;
+                switch (dh.kind) {
+                case DeviceActionKind::KeyBrightness:
+                    want.brightness = std::clamp(dh.value, 0, 100);
+                    break;
+                case DeviceActionKind::KeyLight:
+                    want.light = static_cast<KeyLight>(dh.value);
+                    if (key_light_coloured(want.light) &&
+                        want.rgb[0] == 0 && want.rgb[1] == 0 && want.rgb[2] == 0) {
+                        want.rgb[0] = 0xff;
+                    }
+                    break;
+                case DeviceActionKind::KeyColour:
+                    if (!key_light_coloured(want.light)) want.light = KeyLight::Solid;
+                    want.rgb[0] = static_cast<uint8_t>((dh.value >> 16) & 0xff);
+                    want.rgb[1] = static_cast<uint8_t>((dh.value >> 8) & 0xff);
+                    want.rgb[2] = static_cast<uint8_t>(dh.value & 0xff);
+                    break;
+                case DeviceActionKind::KeyStartup:
+                    want.startup = (dh.value != 0);
+                    break;
+                case DeviceActionKind::KeyShutdown:
+                    want.shutdown = (dh.value != 0);
+                    break;
+                case DeviceActionKind::KeyDim:
+                    want.dim_s = dh.value;
+                    break;
+                case DeviceActionKind::KeyOff:
+                    want.off_s = dh.value;
+                    break;
+                default:
+                    break;
+                }
+                // Live keyboard lighting effects also save to pad.ini for the helper.
+                static const char* const kLiveNames[4] = { "off", "solid", "breathing", "cycle" };
+                if (key_light_live(want.light)) {
+                    pad_prefs_.key_light = kLiveNames[static_cast<int>(want.light)];
+                    std::memcpy(pad_prefs_.key_rgb, want.rgb, 3);
+                } else {
+                    pad_prefs_.key_light = "own";
+                }
+                save_pad_prefs(pad_path_, pad_prefs_);
+                devices_.apply_keyboard_async(d.id, want);
+            }
             return;
         }
     }
@@ -1389,11 +1777,29 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
+    case kMsgDevicesUpdated: {
+        dev_list_ = devices_.list();
+        for (auto& sec : sections_) {
+            if (std::strcmp(sec.id, "headphones") == 0) sec.visible = devices_.any_of(DevKind::Audio);
+            else if (std::strcmp(sec.id, "keyboard") == 0) sec.visible = devices_.any_of(DevKind::Keyboard);
+            else if (std::strcmp(sec.id, "mouse") == 0) sec.visible = devices_.any_of(DevKind::Mouse);
+        }
+        if (!opts_.section.empty() && opts_.section != sections_[current_sec_].id) {
+            select_section(opts_.section, false);
+        }
+        int vis = visible_index_of(current_sec_);
+        nav_pill_target_y_ = kNavPadTop + vis * (kNavItemHeight + kNavItemGap);
+        if (!timer_running_) nav_pill_y_ = nav_pill_target_y_;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
     case WM_DESTROY:
         hw_.set_wanted(false, false);
         hw_.set_notify_hwnd(nullptr);
         remote_.set_wanted(false);
         remote_.set_notify_hwnd(nullptr);
+        devices_.set_wanted(false, false, false);
+        devices_.set_notify_hwnd(nullptr);
         if (timer_running_) {
             KillTimer(hwnd_, kAnimTimerId);
             timer_running_ = false;

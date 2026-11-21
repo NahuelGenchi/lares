@@ -5,6 +5,7 @@ extern "C" {
 }
 #include "cli.h"
 #include "config.h"
+#include "devices.h"
 #include "hw.h"
 #include "remote.h"
 #include "theme.h"
@@ -237,6 +238,87 @@ static void test_remote_helpers()
     CHECK(!lares::sunshine_log_is_streaming("Info: CLIENT CONNECTED\nInfo: CLIENT DISCONNECTED\n"));
 }
 
+static void test_hyperx_and_hidpp()
+{
+    // HyperX Pulsefire Haste 2 Wireless receiver and cable models
+    const auto* rx = lares::hyperx_model(0x03f0, 0x0f98);
+    const auto* cb = lares::hyperx_model(0x03f0, 0x0d97);
+    CHECK(rx != nullptr && rx->receiver);
+    CHECK(cb != nullptr && !cb->receiver);
+    const lares::HyperxModel* plugged[] = { rx, cb };
+    CHECK(lares::hyperx_on_cable(rx, plugged, 2));
+
+    // Battery & event parse
+    uint8_t batt_rep[64] = { 0x51, 0x02, 85, 1 };
+    int lvl = 0; bool chg = false;
+    CHECK(lares::hyperx_battery_parse(batt_rep, 64, &lvl, &chg));
+    CHECK(lvl == 85 && chg == true);
+
+    lares::HyperxState hx;
+    lares::hyperx_sample(&hx);
+    lares::MouseSettings ms;
+    lares::hyperx_decode(rx, &hx, &ms);
+    CHECK(ms.stages == 5 && ms.active == 2 && ms.dpi[2] == 1600);
+    CHECK(ms.rate == 1000 && ms.lift_mm == 1 && ms.brightness == 100);
+
+    lares::MouseSettings want = ms;
+    want.active = 3;
+    want.dpi[3] = 3600;
+    want.rate = 500;
+    want.lift_mm = 2;
+    want.brightness = 50;
+    want.light = lares::LightEffect::Solid;
+    want.rgb[0] = 0x10; want.rgb[1] = 0x20; want.rgb[2] = 0x30;
+
+    uint8_t pkts[lares::kHyperxBlocks][lares::kHyperxReport];
+    int n_pkts = lares::hyperx_packets(&hx, &want, 0, pkts);
+    CHECK(n_pkts == 4);
+    for (int i = 0; i < n_pkts; ++i) lares::hyperx_apply(&hx, pkts[i]);
+    lares::MouseSettings after;
+    lares::hyperx_decode(rx, &hx, &after);
+    CHECK(after.active == 3 && after.dpi[3] == 3600 && after.rate == 500);
+    CHECK(after.lift_mm == 2 && after.brightness == 50 && after.light == lares::LightEffect::Solid);
+    CHECK(lares::hyperx_shows(&ms, &after));
+
+    // Logitech G715 HID++ 2.0 allowlist safety gate, CRC-16, and profile codecs
+    const auto* gm = lares::hidpp_model(0xc547, 0x40a2);
+    CHECK(gm != nullptr && gm->levels == 5);
+
+    // Allowed: reading root feature and writing whole sector 0x0001
+    const uint8_t ok_sec[6] = { 0x00, 0x01, 0x00, 0x00, 0x00, 0xff };
+    CHECK(lares::hidpp_allowed(lares::HIDPP_PROFILES, 6, ok_sec, 6));
+    // Refused: writing sector 0 (directory) or ROM (0x0100)
+    const uint8_t bad_sec0[6] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0xff };
+    const uint8_t bad_rom[6]  = { 0x01, 0x01, 0x00, 0x00, 0x00, 0xff };
+    CHECK(!lares::hidpp_allowed(lares::HIDPP_PROFILES, 6, bad_sec0, 6));
+    CHECK(!lares::hidpp_allowed(lares::HIDPP_PROFILES, 6, bad_rom, 6));
+    // Refused: unknown feature (e.g. firmware update 0x00c2)
+    CHECK(!lares::hidpp_allowed(0x00c2, 0, nullptr, 0));
+
+    lares::HidppKeyboard hk;
+    lares::hidpp_sample(&hk);
+    CHECK(hk.has_profile && hk.has_brightness);
+    CHECK(lares::hidpp_sector_valid(hk.profile, hk.profile_size));
+
+    lares::KeyboardSettings ks;
+    lares::hidpp_decode(&hk, gm, &ks);
+    CHECK(ks.brightness == 12 && ks.dim_s == 60 && ks.off_s == 300);
+    CHECK(ks.startup == true && ks.shutdown == false);
+
+    // Rewrite onboard profile lighting to Wave and timers to 120s / 600s
+    uint8_t updated[lares::kHidppSectorMax];
+    lares::HidppLighting wave_l = { lares::KeyLight::Wave, { 0, 0, 0 } };
+    CHECK(lares::hidpp_profile_lit(hk.profile, hk.profile_size, &wave_l, updated));
+    CHECK(lares::hidpp_profile_timed(updated, hk.profile_size, 120, 600, updated));
+    CHECK(lares::hidpp_sector_valid(updated, hk.profile_size));
+
+    lares::HidppKeyboard hk2 = hk;
+    lares::hidpp_decode_profile(updated, hk.profile_size, &hk2);
+    CHECK(hk2.light.effect == lares::KeyLight::Wave);
+    CHECK(hk2.dim_s == 120 && hk2.off_s == 600);
+    CHECK(lares::hidpp_dark_after(120, 600) == 480);
+}
+
 int main()
 {
     test_cli();
@@ -245,6 +327,7 @@ int main()
     test_shared_art();
     test_hw_helpers();
     test_remote_helpers();
+    test_hyperx_and_hidpp();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;
