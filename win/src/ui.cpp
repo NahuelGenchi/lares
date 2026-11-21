@@ -35,7 +35,8 @@ static bool point_in_rect(float x, float y, const D2D1_RECT_F& r)
 }
 
 MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
-    : hinst_(hinst), opts_(opts), hw_(opts.dry_run), remote_(opts.dry_run, opts.dry_stream), devices_(opts.dry_run)
+    : hinst_(hinst), opts_(opts), hw_(opts.dry_run), remote_(opts.dry_run, opts.dry_stream),
+      devices_(opts.dry_run), pads_(opts.dry_run)
 {
     if (opts_.color_scheme == "dark") dark_ = true;
     else if (opts_.color_scheme == "light") dark_ = false;
@@ -43,6 +44,31 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
 
     pad_path_ = pad_ini_path(opts_.dry_run);
     load_pad_prefs(pad_path_, pad_prefs_);
+    pad_map_load_resource(hinst_, pad_map_);
+    pads_.apply_nicknames(pad_prefs_);
+    pad_list_ = pads_.list();
+    wchar_t env_tab[32] = {};
+    int default_tab = 0;
+    if (GetEnvironmentVariableW(L"LARES_PAD_TAB", env_tab, 32) > 0) {
+        if (_wcsicmp(env_tab, L"sticks") == 0) default_tab = 1;
+        else if (_wcsicmp(env_tab, L"vibration") == 0) default_tab = 2;
+    }
+    for (const auto& p : pad_list_) {
+        auto& mem = pad_memory_[p.path];
+        mem.tab = default_tab;
+        uint32_t pressed = p.state.buttons;
+        if (p.state.lt >= kTriggerPullThreshold) pressed |= pb_bit(PB_LT);
+        if (p.state.rt >= kTriggerPullThreshold) pressed |= pb_bit(PB_RT);
+        mem.seen |= (pressed & p.checklist);
+        if (opts_.dry_run) {
+            mem.seen |= pb_bit(PB_X) | pb_bit(PB_Y) | pb_bit(PB_UP);
+        }
+        stick_feed(mem.sticks[0], p.state.lx, p.state.ly, 1000);
+        stick_feed(mem.sticks[0], p.state.lx, p.state.ly, 1700);
+        stick_feed(mem.sticks[1], p.state.rx, p.state.ry, 1000);
+        stick_feed(mem.sticks[1], p.state.rx, p.state.ry, 1700);
+    }
+
     remote_cfg_ = remote_.config();
     remote_mode_ = (remote_cfg_.ready && remote_cfg_.mode_known && remote_cfg_.mode == RemoteMode::Remote);
     mode_t_ = remote_mode_ ? 1.0f : 0.0f;
@@ -52,7 +78,7 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
     sections_ = {
         { "overview",   L"Overview",      ART_OVERVIEW,   true  },
         { "hardware",   L"Hardware",      ART_CHIP,       true  },
-        { "controller", L"Controller",    ART_GAMEPAD,    false },
+        { "controller", L"Controller",    ART_GAMEPAD,    true  },
         { "headphones", L"Headphones",    ART_HEADPHONES, devices_.any_of(DevKind::Audio) },
         { "keyboard",   L"Keyboard",      ART_KEYBOARD,   devices_.any_of(DevKind::Keyboard) },
         { "mouse",      L"Mouse",         ART_MOUSE,      devices_.any_of(DevKind::Mouse) },
@@ -176,8 +202,10 @@ bool MainWindow::create()
     hw_.set_notify_hwnd(hwnd_);
     remote_.set_notify_hwnd(hwnd_);
     devices_.set_notify_hwnd(hwnd_);
+    pads_.set_notify_hwnd(hwnd_);
     remote_.request_refresh();
     devices_.request_refresh();
+    pads_.request_refresh();
 
     apply_titlebar_theme();
     if (!opts_.section.empty()) {
@@ -202,11 +230,13 @@ void MainWindow::update_sampling_state()
         hw_.set_wanted(false, false);
         remote_.set_wanted(false);
         devices_.set_wanted(false, false, false);
+        pads_.set_wanted(false, false);
         return;
     }
     const char* id = sections_[current_sec_].id;
     bool is_ov = (std::strcmp(id, "overview") == 0);
     bool is_hw = (std::strcmp(id, "hardware") == 0);
+    bool is_pad = (std::strcmp(id, "controller") == 0);
     bool is_rem = (std::strcmp(id, "remote") == 0);
     bool is_hp = (std::strcmp(id, "headphones") == 0);
     bool is_kbd = (std::strcmp(id, "keyboard") == 0);
@@ -214,6 +244,7 @@ void MainWindow::update_sampling_state()
     hw_.set_wanted(is_ov || is_hw, is_hw);
     remote_.set_wanted(is_ov || is_rem);
     devices_.set_wanted(is_ov || is_hp || is_kbd || is_mse, is_mse, is_kbd);
+    pads_.set_wanted(is_ov || is_pad, is_pad);
 }
 
 int MainWindow::visible_index_of(int sec_idx) const
@@ -269,7 +300,14 @@ void MainWindow::stop_anim_timer_if_idle()
 {
     bool pill_done = std::fabs(nav_pill_y_ - nav_pill_target_y_) < 0.25f && std::fabs(nav_pill_vel_) < 0.5f;
     bool mode_done = std::fabs(mode_t_ - mode_target_) < 0.002f;
-    if (pill_done && mode_done && timer_running_ && hwnd_) {
+    bool shake_done = true;
+    for (const auto& kv : pad_memory_) {
+        if (kv.second.shake_start_ms != 0) {
+            shake_done = false;
+            break;
+        }
+    }
+    if (pill_done && mode_done && shake_done && timer_running_ && hwnd_) {
         nav_pill_y_ = nav_pill_target_y_;
         nav_pill_vel_ = 0.0f;
         mode_t_ = mode_target_;
@@ -299,6 +337,23 @@ void MainWindow::on_timer()
         if (mode_t_ < mode_target_) mode_t_ = std::min(mode_target_, mode_t_ + step);
         else mode_t_ = std::max(mode_target_, mode_t_ - step);
         apply_titlebar_theme();
+    }
+
+    // Controller picture shake animation (8 steps x 45 ms, matching src/pad_picture.c)
+    for (auto& kv : pad_memory_) {
+        auto& mem = kv.second;
+        if (mem.shake_start_ms != 0) {
+            double elapsed = static_cast<double>(now - mem.shake_start_ms);
+            if (elapsed >= 45.0 * 8.0) {
+                mem.shake_start_ms = 0;
+                mem.shake_offset = 0;
+            } else {
+                double phase = std::fmod(elapsed / 45.0, 2.0);
+                double p = (phase < 1.0) ? phase : (2.0 - phase);
+                double eased = 0.5 - 0.5 * std::cos(3.14159265358979323846 * p);
+                mem.shake_offset = static_cast<int>(std::lround(2.0 * eased - 1.0));
+            }
+        }
     }
 
     stop_anim_timer_if_idle();
@@ -671,17 +726,43 @@ void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, f
     draw_tile(x, y, w, ART_DISK, L"Storage", disk_val, disk_sub, 34, disk_frac, disk_frac > 0.9, "hardware");
     y += tile_h + gap;
 
-    // Devices card (one row per paired/connected device, matching src/overview.c)
-    if (!dev_list_.empty()) {
+    // Devices card (one row per connected controller or paired/connected device, matching src/overview.c)
+    size_t total_rows = pad_list_.size() + dev_list_.size();
+    if (total_rows > 0) {
         float row_h = 58.0f;
-        float card_h = static_cast<float>(dev_list_.size()) * row_h;
+        float card_h = static_cast<float>(total_rows) * row_h;
         draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
         float ix = x + 18.0f, iw = w - 36.0f;
+        size_t row_idx = 0;
 
-        for (size_t i = 0; i < dev_list_.size(); ++i) {
+        for (const auto& p : pad_list_) {
+            float ry = y + static_cast<float>(row_idx) * row_h;
+            if (row_idx > 0) {
+                brush_->SetColor(to_d2d(pal.line));
+                rt->FillRectangle(D2D1::RectF(ix, ry, ix + iw, ry + 1.0f), brush_);
+            }
+            card_hits_.push_back({ D2D1::RectF(x, ry, x + w, ry + row_h), "controller" });
+
+            Rgba ic = pal.muted, icf = ic; icf.a *= 0.35f;
+            draw_pixel_art(rt, ART_GAMEPAD, ix, ry + 20.0f, 2.0f, ic, icf);
+
+            std::wstring pname = utf8_to_wide(pad_display_name(p));
+            draw_text(rt, pname.c_str(), fonts_.body(), D2D1::RectF(ix + 30.0f, ry + 16.0f, ix + iw - 112.0f, ry + 44.0f), pal.text);
+
+            if (p.battery.known) {
+                std::wstring btxt = utf8_to_wide(pad_battery_charge(p.battery));
+                bool low = (pad_battery_low_stage(p.battery, pad_prefs_.low_level) > 0 && !pad_battery_charging(p.battery));
+                draw_text(rt, btxt.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 114.0f, ry + 19.0f, ix + iw - 74.0f, ry + 44.0f),
+                          low ? pal.bad : pal.text);
+                draw_meter(rt, pal, ix + iw - 70.0f, ry + 26.0f, 10, 2.0f, pad_battery_fraction(p.battery), low);
+            }
+            ++row_idx;
+        }
+
+        for (size_t i = 0; i < dev_list_.size(); ++i, ++row_idx) {
             const auto& d = dev_list_[i];
-            float ry = y + static_cast<float>(i) * row_h;
-            if (i > 0) {
+            float ry = y + static_cast<float>(row_idx) * row_h;
+            if (row_idx > 0) {
                 brush_->SetColor(to_d2d(pal.line));
                 rt->FillRectangle(D2D1::RectF(ix, ry, ix + iw, ry + 1.0f), brush_);
             }
@@ -1387,6 +1468,483 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
     content_height_ = y + 24.0f;
 }
 
+static int count_bits32(uint32_t v)
+{
+    int c = 0;
+    while (v) {
+        v &= (v - 1);
+        ++c;
+    }
+    return c;
+}
+
+void MainWindow::draw_pad_picture(ID2D1RenderTarget* rt, const Palette& pal,
+                                  float x, float y, float w,
+                                  const PadState& state, uint32_t seen,
+                                  bool placeholder, int shake_px)
+{
+    if (pad_map_.width <= 0 || pad_map_.height <= 0 || !brush_) return;
+
+    float scale = (!placeholder && w >= pad_map_.width * 2.0f) ? 2.0f : 1.0f;
+    float pic_w = pad_map_.width * scale;
+    float ox = x + std::floor((w - pic_w) * 0.5f) + shake_px * scale;
+    float oy = y;
+
+    PadLook look = pad_compute_look(pad_map_, state, seen, placeholder);
+    float strength = placeholder ? 0.30f : 1.0f;
+
+    // Compose a temporary grid of PadPaint for the two passes (static + moving caps)
+    size_t total = static_cast<size_t>(pad_map_.width) * static_cast<size_t>(pad_map_.height);
+    std::vector<PadPaint> grid(total, PadPaint::None);
+
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int py = 0; py < pad_map_.height; ++py) {
+            for (int px = 0; px < pad_map_.width; ++px) {
+                uint8_t cell = pad_map_.at(px, py);
+                PadCellKind kind = pad_cell_kind(cell);
+                PadButton b = pad_cell_button(cell);
+                bool is_cap = (kind == PAD_CELL_CAP_LINE || kind == PAD_CELL_CAP_AREA);
+                if (is_cap != (pass == 1)) continue;
+                if (placeholder && kind == PAD_CELL_GAUGE) continue;
+
+                uint32_t held = look.held;
+                if (kind == PAD_CELL_AREA && (b == PB_LT || b == PB_RT) && pad_gauge_lit(pad_map_, look, b, px)) {
+                    held |= pb_bit(b);
+                }
+                int dx = 0, dy = 0;
+                if (is_cap) {
+                    int idx = (b == PB_RS) ? 1 : 0;
+                    dx = look.caps[idx][0];
+                    dy = look.caps[idx][1];
+                }
+                int tx = px + dx;
+                int ty = py + dy;
+                if (tx < 0 || ty < 0 || tx >= pad_map_.width || ty >= pad_map_.height) continue;
+
+                PadPaint pt = pad_cell_paint(cell, held, look.seen);
+                if (pt != PadPaint::None) {
+                    grid[static_cast<size_t>(ty) * static_cast<size_t>(pad_map_.width) + static_cast<size_t>(tx)] = pt;
+                }
+            }
+        }
+    }
+
+    auto paint_color = [&](PadPaint pt) -> D2D1_COLOR_F {
+        switch (pt) {
+        case PadPaint::Line:  return to_d2d(pal.text, strength);
+        case PadPaint::Faint: return to_d2d(pal.text, 0.40f * strength);
+        case PadPaint::Lit:   return to_d2d(pal.accent, strength);
+        case PadPaint::Seen:  return to_d2d(pal.accent, 0.36f * strength);
+        default:              return D2D1::ColorF(0, 0, 0, 0);
+        }
+    };
+
+    // Draw merged horizontal runs for crisp, fast Direct2D rendering
+    for (int py = 0; py < pad_map_.height; ++py) {
+        int px = 0;
+        while (px < pad_map_.width) {
+            PadPaint pt = grid[static_cast<size_t>(py) * static_cast<size_t>(pad_map_.width) + static_cast<size_t>(px)];
+            if (pt == PadPaint::None) {
+                ++px;
+                continue;
+            }
+            int run_end = px + 1;
+            while (run_end < pad_map_.width &&
+                   grid[static_cast<size_t>(py) * static_cast<size_t>(pad_map_.width) + static_cast<size_t>(run_end)] == pt) {
+                ++run_end;
+            }
+            brush_->SetColor(paint_color(pt));
+            rt->FillRectangle(D2D1::RectF(
+                ox + px * scale,
+                oy + py * scale,
+                ox + run_end * scale,
+                oy + (py + 1) * scale), brush_);
+            px = run_end;
+        }
+    }
+}
+
+void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
+{
+    pad_hits_.clear();
+    float gap = 18.0f;
+
+    wchar_t env_tab[32] = {};
+    int default_tab = 0;
+    if (GetEnvironmentVariableW(L"LARES_PAD_TAB", env_tab, 32) > 0) {
+        if (_wcsicmp(env_tab, L"sticks") == 0) default_tab = 1;
+        else if (_wcsicmp(env_tab, L"vibration") == 0) default_tab = 2;
+    }
+
+    auto draw_chip_btn = [&](float cx, float cy, float cw, const wchar_t* lbl, bool active,
+                             const std::string& path, PadActionKind act, int val = 0) {
+        D2D1_RECT_F rc = D2D1::RectF(cx, cy, cx + cw, cy + 32.0f);
+        brush_->SetColor(to_d2d(active ? pal.accent : pal.chip));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(rc, 9.0f, 9.0f), brush_);
+        draw_text(rt, lbl, fonts_.caption(),
+                  D2D1::RectF(rc.left + 12.0f, rc.top + 6.0f, rc.right - 6.0f, rc.bottom),
+                  active ? pal.on_accent : pal.text);
+        pad_hits_.push_back({ rc, path, act, val });
+    };
+
+    // 1. Connected controller cards (or placeholder card if none connected)
+    if (pad_list_.empty()) {
+        float empty_h = 248.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, empty_h);
+        PadState idle{};
+        draw_pad_picture(rt, pal, x + 18.0f, y + 18.0f, w - 36.0f, idle, 0, true, 0);
+        draw_text(rt, L"No controller connected. Plug in a USB cable, or connect one over Bluetooth.",
+                  fonts_.caption(), D2D1::RectF(x + 24.0f, y + 196.0f, x + w - 24.0f, y + 236.0f), pal.muted);
+        y += empty_h + gap;
+    } else {
+        for (const auto& p : pad_list_) {
+            auto it = pad_memory_.find(p.path);
+            if (it == pad_memory_.end()) {
+                PadCardMemory init_m;
+                init_m.tab = default_tab;
+                it = pad_memory_.emplace(p.path, init_m).first;
+            }
+            PadCardMemory& mem = it->second;
+            int tab = p.rumble ? mem.tab : std::min(mem.tab, 1);
+
+            float tab_body_h = (tab == 0) ? 368.0f : (tab == 1) ? 264.0f : 230.0f;
+            float card_h = 116.0f + tab_body_h + 166.0f;
+            draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
+            float ix = x + 18.0f, iw = w - 36.0f, cy = y + 18.0f;
+
+            // Header: gamepad art + nickname/name + connection subtitle + pencil button
+            Rgba ac_f = pal.accent; ac_f.a *= 0.35f;
+            draw_pixel_art(rt, ART_GAMEPAD, ix, cy + 4.0f, 3.0f, pal.accent, ac_f);
+
+            if (editing_pad_path_ == p.path) {
+                D2D1_RECT_F box = D2D1::RectF(ix + 44.0f, cy - 2.0f, ix + iw - 92.0f, cy + 28.0f);
+                brush_->SetColor(to_d2d(pal.bg));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f, 6.0f), brush_);
+                brush_->SetColor(to_d2d(pal.accent));
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(box, 6.0f, 6.0f), brush_, 1.5f);
+                std::wstring edit_w = editing_nickname_.empty()
+                    ? L"Type nickname + Enter"
+                    : (utf8_to_wide(editing_nickname_) + L"_");
+                draw_text(rt, edit_w.c_str(), fonts_.body(),
+                          D2D1::RectF(box.left + 8.0f, box.top + 2.0f, box.right - 8.0f, box.bottom),
+                          editing_nickname_.empty() ? pal.muted : pal.text);
+                draw_chip_btn(ix + iw - 82.0f, cy - 2.0f, 82.0f, L"Save", true, p.path, PadActionKind::EditNickname, 1);
+            } else {
+                std::wstring title_w = utf8_to_wide(pad_display_name(p));
+                draw_text(rt, title_w.c_str(), fonts_.body(),
+                          D2D1::RectF(ix + 44.0f, cy, ix + iw - 44.0f, cy + 26.0f), pal.text);
+                D2D1_RECT_F pen_rc = D2D1::RectF(ix + iw - 36.0f, cy, ix + iw, cy + 32.0f);
+                brush_->SetColor(to_d2d(pal.chip));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(pen_rc, 8.0f, 8.0f), brush_);
+                Rgba mc = pal.text, mcf = mc; mcf.a *= 0.35f;
+                draw_pixel_art(rt, ART_PENCIL, pen_rc.left + 9.0f, pen_rc.top + 7.0f, 2.0f, mc, mcf);
+                pad_hits_.push_back({ pen_rc, p.path, PadActionKind::EditNickname, 0 });
+            }
+
+            std::string sub_utf8 = !p.nickname.empty()
+                ? (p.name + " \xC2\xB7 " + pad_connection_name(p.connection))
+                : pad_connection_name(p.connection);
+            std::wstring sub_w = utf8_to_wide(sub_utf8);
+            draw_text(rt, sub_w.c_str(), fonts_.caption(),
+                      D2D1::RectF(ix + 44.0f, cy + 26.0f, ix + iw - 44.0f, cy + 48.0f), pal.muted);
+            cy += 56.0f;
+
+            // Tabs: Buttons | Sticks | Vibration
+            static const wchar_t* const kTabs[3] = { L"Buttons", L"Sticks", L"Vibration" };
+            int n_tabs = p.rumble ? 3 : 2;
+            for (int t = 0; t < n_tabs; ++t) {
+                draw_chip_btn(ix + t * 116.0f, cy, 108.0f, kTabs[t], tab == t, p.path, PadActionKind::SelectTab, t);
+            }
+            cy += 44.0f;
+
+            if (tab == 0) {
+                // Buttons tab: 2x pixel-art controller canvas + checklist count + Reset
+                draw_pad_picture(rt, pal, ix, cy, iw, p.state, mem.seen, false, mem.shake_offset);
+                cy += 328.0f;
+
+                int total_btn = count_bits32(p.checklist);
+                int seen_btn = count_bits32(mem.seen & p.checklist);
+                wchar_t cnt_buf[64];
+                if (seen_btn == total_btn && total_btn > 0) {
+                    std::swprintf(cnt_buf, std::size(cnt_buf), L"Every button responded");
+                } else {
+                    std::swprintf(cnt_buf, std::size(cnt_buf), L"Press every button: %d of %d", seen_btn, total_btn);
+                }
+                draw_text(rt, cnt_buf, fonts_.caption(), D2D1::RectF(ix, cy + 6.0f, ix + iw - 96.0f, cy + 32.0f),
+                          (seen_btn == total_btn && total_btn > 0) ? pal.text : pal.muted);
+                draw_chip_btn(ix + iw - 84.0f, cy, 84.0f, L"Reset", false, p.path, PadActionKind::ResetChecklist, 0);
+                cy += 40.0f;
+            } else if (tab == 1) {
+                // Sticks tab: two circular stick gauges + drift check + 15-block trigger meters
+                float col_w = (iw - 18.0f) * 0.5f;
+                const wchar_t* s_names[2] = { L"Left stick", L"Right stick" };
+                const wchar_t* t_names[2] = { L"Left trigger", L"Right trigger" };
+                float trig_vals[2] = { p.state.lt, p.state.rt };
+
+                for (int i = 0; i < 2; ++i) {
+                    float sx = ix + i * (col_w + 18.0f);
+                    draw_text(rt, s_names[i], fonts_.body(), D2D1::RectF(sx, cy, sx + col_w, cy + 24.0f), pal.text);
+
+                    // 126x126 circular stick gauge (ported from draw_gauge in src/pad_view.c)
+                    float gx = sx + 63.0f, gy = cy + 28.0f + 63.0f, rad = 59.0f;
+                    D2D1_ELLIPSE outer = D2D1::Ellipse(D2D1::Point2F(gx, gy), rad, rad);
+                    brush_->SetColor(to_d2d(pal.text, 0.07f));
+                    rt->FillEllipse(outer, brush_);
+                    brush_->SetColor(to_d2d(pal.text, 0.22f));
+                    rt->DrawEllipse(outer, brush_, 1.0f);
+
+                    brush_->SetColor(to_d2d(pal.text, 0.12f));
+                    rt->DrawLine(D2D1::Point2F(gx - rad, gy), D2D1::Point2F(gx + rad, gy), brush_, 1.0f);
+                    rt->DrawLine(D2D1::Point2F(gx, gy - rad), D2D1::Point2F(gx, gy + rad), brush_, 1.0f);
+
+                    D2D1_ELLIPSE dz = D2D1::Ellipse(D2D1::Point2F(gx, gy),
+                                                    static_cast<float>(rad * kStickDeadZone),
+                                                    static_cast<float>(rad * kStickDeadZone));
+                    brush_->SetColor(to_d2d(pal.text, 0.16f));
+                    rt->FillEllipse(dz, brush_);
+                    brush_->SetColor(to_d2d(pal.text, 0.40f));
+                    rt->DrawEllipse(dz, brush_, 1.0f);
+
+                    const StickTracker& st = mem.sticks[i];
+                    bool drift = stick_drifting(st);
+                    if (st.has_rest) {
+                        double rx = st.rx, ry = st.ry, r_reach = std::hypot(rx, ry);
+                        if (r_reach > 1.0) { rx /= r_reach; ry /= r_reach; }
+                        D2D1_ELLIPSE rest_el = D2D1::Ellipse(
+                            D2D1::Point2F(gx + static_cast<float>(rx * rad), gy + static_cast<float>(ry * rad)),
+                            6.0f, 6.0f);
+                        brush_->SetColor(drift ? to_d2d(pal.warn) : to_d2d(pal.text, 0.55f));
+                        rt->DrawEllipse(rest_el, brush_, 1.5f);
+                    }
+
+                    double cur_x = st.x, cur_y = st.y, c_reach = std::hypot(cur_x, cur_y);
+                    if (c_reach > 1.0) { cur_x /= c_reach; cur_y /= c_reach; }
+                    D2D1_ELLIPSE dot_el = D2D1::Ellipse(
+                        D2D1::Point2F(gx + static_cast<float>(cur_x * rad), gy + static_cast<float>(cur_y * rad)),
+                        4.0f, 4.0f);
+                    brush_->SetColor(to_d2d(pal.live));
+                    rt->FillEllipse(dot_el, brush_);
+
+                    int px_pct = static_cast<int>(std::lround(st.x * 100.0));
+                    int py_pct = static_cast<int>(std::lround(-st.y * 100.0));
+                    wchar_t st_txt[96];
+                    if (drift) {
+                        int off_pct = static_cast<int>(std::lround(std::hypot(st.rx, st.ry) * 100.0));
+                        std::swprintf(st_txt, std::size(st_txt), L"%d%%, %d%% · Rests %d%% off centre", px_pct, py_pct, off_pct);
+                    } else if (st.has_rest) {
+                        std::swprintf(st_txt, std::size(st_txt), L"%d%%, %d%% · Rests in the centre", px_pct, py_pct);
+                    } else {
+                        std::swprintf(st_txt, std::size(st_txt), L"%d%%, %d%% · Hold still to check rest", px_pct, py_pct);
+                    }
+                    draw_text(rt, st_txt, fonts_.caption(),
+                              D2D1::RectF(sx, cy + 158.0f, sx + col_w, cy + 198.0f),
+                              drift ? pal.warn : pal.muted);
+
+                    // Trigger meter row (15 blocks)
+                    draw_text(rt, t_names[i], fonts_.caption(),
+                              D2D1::RectF(sx, cy + 204.0f, sx + col_w - 50.0f, cy + 226.0f), pal.text);
+                    wchar_t tp_txt[16];
+                    std::swprintf(tp_txt, std::size(tp_txt), L"%d%%", static_cast<int>(std::lround(trig_vals[i] * 100.0f)));
+                    draw_text(rt, tp_txt, fonts_.caption(),
+                              D2D1::RectF(sx + col_w - 48.0f, cy + 204.0f, sx + col_w, cy + 226.0f), pal.text);
+                    draw_meter(rt, pal, sx, cy + 232.0f, 15, 2.0f, trig_vals[i], false);
+                }
+                cy += 264.0f;
+            } else {
+                // Vibration tab: Strong motor, Weak motor, Length + Play button
+                auto draw_vib_slider = [&](const wchar_t* heading, const wchar_t* val_lbl, double frac,
+                                           PadActionKind act, int max_val, int step) {
+                    draw_text(rt, heading, fonts_.body(), D2D1::RectF(ix, cy, ix + iw - 80.0f, cy + 24.0f), pal.text);
+                    draw_text(rt, val_lbl, fonts_.caption(), D2D1::RectF(ix + iw - 68.0f, cy + 2.0f, ix + iw, cy + 24.0f), pal.text);
+                    draw_meter(rt, pal, ix, cy + 28.0f, 20, 2.0f, frac, false);
+                    for (int b = 0; b <= 20; ++b) {
+                        int v = ((b * max_val / 20) / step) * step;
+                        float bx = ix + b * 11.0f - 4.0f;
+                        pad_hits_.push_back({ D2D1::RectF(bx, cy + 22.0f, bx + 11.0f, cy + 44.0f), p.path, act, v });
+                    }
+                    cy += 52.0f;
+                };
+
+                wchar_t s_lbl[16], w_lbl[16], l_lbl[24];
+                std::swprintf(s_lbl, std::size(s_lbl), L"%d%%", mem.strong);
+                std::swprintf(w_lbl, std::size(w_lbl), L"%d%%", mem.weak);
+                std::swprintf(l_lbl, std::size(l_lbl), L"%.1f s", mem.length_ms / 1000.0);
+
+                draw_vib_slider(L"Strong motor, on the left", s_lbl, mem.strong / 100.0, PadActionKind::StrongMotor, 100, 5);
+                draw_vib_slider(L"Weak motor, on the right", w_lbl, mem.weak / 100.0, PadActionKind::WeakMotor, 100, 5);
+                draw_vib_slider(L"Length", l_lbl, mem.length_ms / 2000.0, PadActionKind::LengthMs, 2000, 100);
+
+                draw_text(rt, L"XInput drives these two motors; the ones in the triggers aren't part of it.",
+                          fonts_.caption(), D2D1::RectF(ix, cy + 4.0f, ix + iw - 118.0f, cy + 48.0f), pal.muted);
+                draw_chip_btn(ix + iw - 104.0f, cy + 6.0f, 104.0f,
+                              p.playing_rumble ? L"Playing…" : L"Play", true,
+                              p.path, PadActionKind::PlayVibration, 0);
+                cy += 74.0f;
+            }
+
+            // Divider before Facts & Actions
+            brush_->SetColor(to_d2d(pal.line));
+            rt->FillRectangle(D2D1::RectF(ix, cy, ix + iw, cy + 1.0f), brush_);
+            cy += 14.0f;
+
+            // Facts row: Battery, Model, Firmware
+            draw_text(rt, L"Battery", fonts_.caption(), D2D1::RectF(ix, cy, ix + 140.0f, cy + 20.0f), pal.muted);
+            if (p.battery.known) {
+                bool low = (pad_battery_low_stage(p.battery, pad_prefs_.low_level) > 0 && !pad_battery_charging(p.battery));
+                draw_meter(rt, pal, ix, cy + 26.0f, 10, 2.0f, pad_battery_fraction(p.battery), low);
+                std::wstring bt = utf8_to_wide(pad_battery_text(p.battery));
+                draw_text(rt, bt.c_str(), fonts_.body(), D2D1::RectF(ix + 78.0f, cy + 20.0f, ix + 220.0f, cy + 44.0f),
+                          low ? pal.bad : pal.text);
+            } else {
+                draw_text(rt, p.connection == PadConnection::Usb ? L"On USB power" : L"No reading yet",
+                          fonts_.body(), D2D1::RectF(ix, cy + 20.0f, ix + 220.0f, cy + 44.0f), pal.text);
+            }
+
+            if (!p.model.empty()) {
+                draw_text(rt, L"Model", fonts_.caption(), D2D1::RectF(ix + 230.0f, cy, ix + 340.0f, cy + 20.0f), pal.muted);
+                std::wstring mw = utf8_to_wide(p.model);
+                draw_text(rt, mw.c_str(), fonts_.body(), D2D1::RectF(ix + 230.0f, cy + 20.0f, ix + 340.0f, cy + 44.0f), pal.text);
+            }
+            if (!p.firmware.empty()) {
+                draw_text(rt, L"Firmware", fonts_.caption(), D2D1::RectF(ix + 350.0f, cy, ix + iw, cy + 20.0f), pal.muted);
+                std::wstring fw = utf8_to_wide(p.firmware);
+                draw_text(rt, fw.c_str(), fonts_.body(), D2D1::RectF(ix + 350.0f, cy + 20.0f, ix + iw, cy + 44.0f), pal.text);
+            }
+            cy += 50.0f;
+
+            std::wstring det_w = utf8_to_wide((p.driver.empty() ? "XInput" : p.driver) + " \xC2\xB7 " + p.event_node);
+            draw_text(rt, det_w.c_str(), fonts_.caption(), D2D1::RectF(ix, cy, ix + iw, cy + 24.0f), pal.muted);
+            cy += 32.0f;
+
+            // Action chips row: Test vibration & Find controller (matching src/pad_view.c)
+            if (p.rumble) {
+                float ax = ix;
+                if (tab != 2) {
+                    draw_chip_btn(ax, cy, 158.0f, L"Test vibration", false,
+                                  p.path, PadActionKind::TestVibration, 0);
+                    ax += 168.0f;
+                }
+                if (p.connection != PadConnection::Usb) {
+                    draw_chip_btn(ax, cy, 168.0f,
+                                  p.finding ? L"Stop finding" : L"Find controller", p.finding,
+                                  p.path, PadActionKind::FindController, 0);
+                }
+            }
+
+            y += card_h + gap;
+        }
+    }
+
+    // 2. Pair a controller card
+    {
+        float pair_h = 98.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, pair_h);
+        float ix = x + 18.0f, iw = w - 36.0f;
+        draw_text(rt, L"Hold the pair button on top of the controller until the Xbox button flashes quickly.",
+                  fonts_.caption(), D2D1::RectF(ix, y + 16.0f, ix + iw, y + 56.0f), pal.muted);
+        draw_chip_btn(ix + iw - 188.0f, y + 54.0f, 188.0f, L"Pair a controller", true,
+                      "", PadActionKind::OpenBluetoothSettings, 0);
+        y += pair_h + gap;
+    }
+
+    // 3. Background off banner if background helper is disabled
+    if (!pad_prefs_.background) {
+        float off_h = 74.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, off_h);
+        float ix = x + 18.0f, iw = w - 36.0f;
+        draw_text(rt, L"Background is off", fonts_.body(), D2D1::RectF(ix, y + 14.0f, ix + iw - 150.0f, y + 38.0f), pal.text);
+        draw_text(rt, L"Alerts and play features need it.", fonts_.caption(),
+                  D2D1::RectF(ix, y + 38.0f, ix + iw - 150.0f, y + 62.0f), pal.muted);
+        draw_chip_btn(ix + iw - 134.0f, y + 21.0f, 134.0f, L"Open Settings", false,
+                      "", PadActionKind::OpenSettings, 0);
+        y += off_h + gap;
+    }
+
+    // 4. Alerts group
+    draw_text(rt, L"Alerts", fonts_.body(), D2D1::RectF(x, y, x + w, y + 30.0f), pal.text);
+    y += 34.0f;
+    draw_toggle_row(rt, pal, x, y, w,
+                    L"Low battery alerts",
+                    L"Notifies when low, and again at 10%.",
+                    nullptr, &pad_prefs_.alerts, pad_prefs_.background);
+
+    // Low battery level (- / 20% / +)
+    {
+        float lvl_h = 74.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, lvl_h);
+        float ix = x + 18.0f, iw = w - 36.0f;
+        draw_text(rt, L"Low battery level", fonts_.body(), D2D1::RectF(ix, y + 14.0f, ix + iw - 160.0f, y + 38.0f), pal.text);
+        draw_text(rt, L"The battery turns orange at this level.", fonts_.caption(),
+                  D2D1::RectF(ix, y + 38.0f, ix + iw - 160.0f, y + 62.0f), pal.muted);
+        draw_chip_btn(ix + iw - 144.0f, y + 21.0f, 36.0f, L"-", false, "", PadActionKind::LowLevelDelta, -5);
+        wchar_t l_txt[16];
+        std::swprintf(l_txt, std::size(l_txt), L"%d%%", pad_prefs_.low_level);
+        draw_text(rt, l_txt, fonts_.body(), D2D1::RectF(ix + iw - 98.0f, y + 24.0f, ix + iw - 40.0f, y + 52.0f), pal.text);
+        draw_chip_btn(ix + iw - 36.0f, y + 21.0f, 36.0f, L"+", false, "", PadActionKind::LowLevelDelta, 5);
+        y += lvl_h + 10.0f;
+    }
+
+    draw_toggle_row(rt, pal, x, y, w,
+                    L"Connection notices",
+                    L"Notifies when a controller connects or leaves.",
+                    nullptr, &pad_prefs_.notices, pad_prefs_.background);
+    y += 14.0f;
+
+    // 5. While you play group
+    draw_text(rt, L"While you play", fonts_.body(), D2D1::RectF(x, y, x + w, y + 30.0f), pal.text);
+    y += 34.0f;
+    draw_toggle_row(rt, pal, x, y, w,
+                    L"Keep the screen awake",
+                    L"No dimming or locking while you play.",
+                    nullptr, &pad_prefs_.keep_awake, pad_prefs_.background);
+    draw_toggle_row(rt, pal, x, y, w,
+                    L"Disconnect idle controllers",
+                    L"Saves controller battery. They stay paired.",
+                    nullptr, &pad_prefs_.idle_disconnect, pad_prefs_.background);
+
+    if (pad_prefs_.idle_disconnect) {
+        float cw = (w - 27.0f) / 4.0f;
+        int nearest = 0;
+        for (int i = 0; i < kPadIdleChoices; ++i) {
+            if (std::abs(kPadIdleMinutes[i] - pad_prefs_.idle_minutes) <
+                std::abs(kPadIdleMinutes[nearest] - pad_prefs_.idle_minutes)) {
+                nearest = i;
+            }
+        }
+        for (int i = 0; i < kPadIdleChoices; ++i) {
+            wchar_t mlbl[16];
+            std::swprintf(mlbl, std::size(mlbl), L"%d min", kPadIdleMinutes[i]);
+            draw_chip_btn(x + i * (cw + 9.0f), y, cw, mlbl, i == nearest,
+                          "", PadActionKind::IdleMinutesChip, kPadIdleMinutes[i]);
+        }
+        y += 46.0f;
+    }
+
+    // 6. Saved Nicknames group
+    if (!pad_prefs_.nicknames.empty()) {
+        y += 14.0f;
+        draw_text(rt, L"Nicknames", fonts_.body(), D2D1::RectF(x, y, x + w, y + 30.0f), pal.text);
+        y += 34.0f;
+        for (const auto& kv : pad_prefs_.nicknames) {
+            float nh = 68.0f;
+            draw_info_card(rt, brush_, this, pal, x, y, w, nh);
+            float ix = x + 18.0f, iw = w - 36.0f;
+            size_t tab_pos = kv.second.find('\t');
+            std::string n_title = (tab_pos != std::string::npos) ? kv.second.substr(0, tab_pos) : kv.second;
+            std::string n_sub = (tab_pos != std::string::npos) ? kv.second.substr(tab_pos + 1) : "";
+            std::wstring nw = utf8_to_wide(n_title);
+            std::wstring sw = utf8_to_wide(n_sub);
+            draw_text(rt, nw.c_str(), fonts_.body(), D2D1::RectF(ix, y + 12.0f, ix + iw - 110.0f, y + 36.0f), pal.text);
+            draw_text(rt, sw.c_str(), fonts_.caption(), D2D1::RectF(ix, y + 36.0f, ix + iw - 110.0f, y + 58.0f), pal.muted);
+            draw_chip_btn(ix + iw - 88.0f, y + 18.0f, 88.0f, L"Forget", false,
+                          kv.first, PadActionKind::ForgetNickname, 0);
+            y += nh + 10.0f;
+        }
+    }
+
+    content_height_ = y + 24.0f;
+}
+
 void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float client_w, float client_h)
 {
     toggle_hits_.clear();
@@ -1402,6 +1960,7 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
     const char* id = sections_[current_sec_].id;
     if (std::strcmp(id, "settings") == 0) draw_settings_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "hardware") == 0) draw_hardware_page(rt, pal, col_x, col_y, col_w);
+    else if (std::strcmp(id, "controller") == 0) draw_controller_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "remote") == 0) draw_remote_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "headphones") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Audio);
     else if (std::strcmp(id, "keyboard") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Keyboard);
@@ -1631,6 +2190,89 @@ void MainWindow::on_mouse_down(float lx, float ly)
             return;
         }
     }
+
+    for (const auto& ph : pad_hits_) {
+        if (!point_in_rect(lx, ly, ph.rect)) continue;
+        switch (ph.kind) {
+        case PadActionKind::SelectTab:
+            pad_memory_[ph.pad_path].tab = std::clamp(ph.value, 0, 2);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::ResetChecklist:
+            pad_memory_[ph.pad_path].seen = 0;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::TestVibration:
+            pad_memory_[ph.pad_path].shake_start_ms = GetTickCount64();
+            start_anim_timer();
+            pads_.rumble_async(ph.pad_path, kPadRumbleStrength, kPadRumbleStrength, kPadRumbleMs);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::FindController:
+            pads_.toggle_find_controller(ph.pad_path);
+            return;
+        case PadActionKind::PlayVibration: {
+            const auto& mem = pad_memory_[ph.pad_path];
+            pads_.rumble_async(ph.pad_path, mem.strong, mem.weak, mem.length_ms);
+            return;
+        }
+        case PadActionKind::StrongMotor:
+            pad_memory_[ph.pad_path].strong = std::clamp(ph.value, 0, 100);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::WeakMotor:
+            pad_memory_[ph.pad_path].weak = std::clamp(ph.value, 0, 100);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::LengthMs:
+            pad_memory_[ph.pad_path].length_ms = std::clamp(ph.value, 100, 2000);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::EditNickname:
+            if (ph.value == 0) {
+                editing_pad_path_ = ph.pad_path;
+                editing_nickname_.clear();
+                for (const auto& p : pad_list_) {
+                    if (p.path == ph.pad_path) {
+                        editing_nickname_ = p.nickname;
+                        break;
+                    }
+                }
+            } else {
+                if (pads_.set_nickname(pad_prefs_, ph.pad_path, editing_nickname_)) {
+                    save_pad_prefs(pad_path_, pad_prefs_);
+                    pad_list_ = pads_.list();
+                }
+                editing_pad_path_.clear();
+                editing_nickname_.clear();
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::LowLevelDelta:
+            pad_prefs_.low_level = std::clamp(pad_prefs_.low_level + ph.value, 5, 50);
+            save_pad_prefs(pad_path_, pad_prefs_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::IdleMinutesChip:
+            pad_prefs_.idle_minutes = ph.value;
+            save_pad_prefs(pad_path_, pad_prefs_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::ForgetNickname:
+            pad_prefs_.nicknames.erase(ph.pad_path);
+            save_pad_prefs(pad_path_, pad_prefs_);
+            pads_.apply_nicknames(pad_prefs_);
+            pad_list_ = pads_.list();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        case PadActionKind::OpenSettings:
+            select_section("settings", true);
+            return;
+        case PadActionKind::OpenBluetoothSettings:
+            ShellExecuteW(hwnd_, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL);
+            return;
+        }
+    }
 }
 
 void MainWindow::on_mouse_wheel(int delta)
@@ -1645,6 +2287,37 @@ void MainWindow::on_mouse_wheel(int delta)
 
 void MainWindow::on_key_down(WPARAM vk)
 {
+    if (!editing_pad_path_.empty()) {
+        if (vk == VK_ESCAPE) {
+            editing_pad_path_.clear();
+            editing_nickname_.clear();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        if (vk == VK_RETURN) {
+            if (pads_.set_nickname(pad_prefs_, editing_pad_path_, editing_nickname_)) {
+                save_pad_prefs(pad_path_, pad_prefs_);
+                pad_list_ = pads_.list();
+            }
+            editing_pad_path_.clear();
+            editing_nickname_.clear();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        if (vk == VK_BACK) {
+            if (!editing_nickname_.empty()) {
+                while (!editing_nickname_.empty() &&
+                       (static_cast<unsigned char>(editing_nickname_.back()) & 0xC0) == 0x80) {
+                    editing_nickname_.pop_back();
+                }
+                if (!editing_nickname_.empty()) editing_nickname_.pop_back();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return;
+        }
+        return;
+    }
+
     if (vk == VK_UP || vk == VK_DOWN) {
         int dir = (vk == VK_DOWN) ? 1 : -1;
         int n = static_cast<int>(sections_.size());
@@ -1655,6 +2328,20 @@ void MainWindow::on_key_down(WPARAM vk)
                 break;
             }
         }
+    }
+}
+
+void MainWindow::on_char(wchar_t ch)
+{
+    if (editing_pad_path_.empty()) return;
+    if (ch < 32 || ch == 127) return;
+    if (editing_nickname_.size() >= kPadNicknameLength * 2) return;
+    wchar_t ws[2] = { ch, L'\0' };
+    char utf8[8] = {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, ws, 1, utf8, sizeof(utf8) - 1, nullptr, nullptr);
+    if (n > 0) {
+        editing_nickname_.append(utf8, static_cast<size_t>(n));
+        InvalidateRect(hwnd_, nullptr, FALSE);
     }
 }
 
@@ -1696,6 +2383,9 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_KEYDOWN:
         on_key_down(wp);
+        return 0;
+    case WM_CHAR:
+        on_char(static_cast<wchar_t>(wp));
         return 0;
     case WM_DPICHANGED: {
         UINT new_dpi = HIWORD(wp);
@@ -1793,6 +2483,21 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
+    case kMsgPadsUpdated: {
+        pad_list_ = pads_.list();
+        ULONGLONG now_ms = GetTickCount64();
+        for (const auto& p : pad_list_) {
+            auto& mem = pad_memory_[p.path];
+            uint32_t pressed = p.state.buttons;
+            if (p.state.lt >= kTriggerPullThreshold) pressed |= pb_bit(PB_LT);
+            if (p.state.rt >= kTriggerPullThreshold) pressed |= pb_bit(PB_RT);
+            mem.seen |= (pressed & p.checklist);
+            stick_feed(mem.sticks[0], p.state.lx, p.state.ly, now_ms);
+            stick_feed(mem.sticks[1], p.state.rx, p.state.ry, now_ms);
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
     case WM_DESTROY:
         hw_.set_wanted(false, false);
         hw_.set_notify_hwnd(nullptr);
@@ -1800,6 +2505,8 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         remote_.set_notify_hwnd(nullptr);
         devices_.set_wanted(false, false, false);
         devices_.set_notify_hwnd(nullptr);
+        pads_.set_wanted(false, false);
+        pads_.set_notify_hwnd(nullptr);
         if (timer_running_) {
             KillTimer(hwnd_, kAnimTimerId);
             timer_running_ = false;

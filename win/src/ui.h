@@ -6,10 +6,12 @@
 #include "devices.h"
 #include "font.h"
 #include "hw.h"
+#include "pad.h"
 #include "remote.h"
 #include "theme.h"
 
 #include <d2d1.h>
+#include <map>
 #include <string>
 #include <vector>
 #include <windows.h>
@@ -94,6 +96,41 @@ private:
         int value = 0;
     };
 
+    enum class PadActionKind {
+        SelectTab,
+        ResetChecklist,
+        TestVibration,
+        FindController,
+        PlayVibration,
+        StrongMotor,
+        WeakMotor,
+        LengthMs,
+        EditNickname,
+        LowLevelDelta,
+        IdleMinutesChip,
+        ForgetNickname,
+        OpenSettings,
+        OpenBluetoothSettings,
+    };
+
+    struct PadHit {
+        D2D1_RECT_F rect;
+        std::string pad_path;
+        PadActionKind kind;
+        int value = 0;
+    };
+
+    struct PadCardMemory {
+        int tab = 0; // 0 = Buttons, 1 = Sticks, 2 = Vibration
+        uint32_t seen = 0;
+        int strong = kPadRumbleStrength;
+        int weak = kPadRumbleStrength;
+        int length_ms = kPadRumbleMs;
+        StickTracker sticks[2];
+        ULONGLONG shake_start_ms = 0;
+        int shake_offset = 0;
+    };
+
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT handle_msg(UINT msg, WPARAM wp, LPARAM lp);
 
@@ -107,6 +144,7 @@ private:
     void on_mouse_down(float lx, float ly);
     void on_mouse_wheel(int delta);
     void on_key_down(WPARAM vk);
+    void on_char(wchar_t ch);
 
     void draw_sidebar(ID2D1RenderTarget* rt, const Palette& pal, float client_h);
     void draw_page(ID2D1RenderTarget* rt, const Palette& pal, float client_w, float client_h);
@@ -115,6 +153,9 @@ private:
     void draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, DevKind kind);
+    void draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
+    void draw_pad_picture(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w,
+                          const PadState& state, uint32_t seen, bool placeholder, int shake_px);
     void draw_pixel_art(ID2D1RenderTarget* rt, const char* const* art, float x, float y, float scale,
                         const Rgba& solid, const Rgba& faint);
     void draw_text(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTextFormat* fmt,
@@ -187,6 +228,14 @@ private:
     DevicesManager devices_;
     std::vector<DeviceEntry> dev_list_;
     std::vector<DeviceHit> device_hits_;
+
+    PadManager pads_;
+    PadMap pad_map_;
+    std::vector<PadInfo> pad_list_;
+    std::map<std::string, PadCardMemory> pad_memory_;
+    std::vector<PadHit> pad_hits_;
+    std::string editing_pad_path_;
+    std::string editing_nickname_;
 
     bool timer_running_ = false;
     ULONGLONG last_tick_ms_ = 0;

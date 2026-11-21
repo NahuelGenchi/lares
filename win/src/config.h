@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <map>
 #include <string>
 
 namespace lares {
+
+inline constexpr int kPadIdleChoices = 4;
+inline constexpr int kPadIdleMinutes[kPadIdleChoices] = { 5, 10, 15, 30 };
 
 // Mirrors src/pad/padconf.h and ~/.config/lares/pad.ini keys so Linux and
 // Windows keep the same config format.
@@ -21,7 +25,11 @@ struct PadPrefs {
     bool background = true;
     std::string key_light = "own";
     uint8_t key_rgb[3] = { 0xff, 0x00, 0x00 };
+    std::string nickname_salt;
+    std::map<std::string, std::string> nicknames; // key -> "nickname\tmodel name"
 };
+
+bool padconf_needs_helper(const PadPrefs& p);
 
 PadPrefs parse_pad_ini(const std::string& text);
 std::string serialize_pad_ini(const PadPrefs& prefs);
