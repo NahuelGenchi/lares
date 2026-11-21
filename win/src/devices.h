@@ -187,6 +187,23 @@ struct HidppNv {
     uint8_t colours[kHidppNvColours] = {};
 };
 
+struct HidppEffects {
+    uint8_t feature = 0;
+    uint8_t status = 0;
+    int clusters = 0;
+    int count[kHidppClusters] = {};
+    uint16_t effect[kHidppClusters][kHidppEffects] = {};
+};
+
+inline int hidpp_effect_index(const HidppEffects* fx, int cluster, uint16_t id)
+{
+    if (!fx || cluster < 0 || cluster >= fx->clusters) return -1;
+    for (int i = 0; i < fx->count[cluster]; ++i) {
+        if (fx->effect[cluster][i] == id) return i;
+    }
+    return -1;
+}
+
 enum class HidppLive { Take = 0, Idle = 1, Active = 2, Dark = 3 };
 
 struct HidppKeyboard {
@@ -263,6 +280,7 @@ struct DeviceEntry {
     std::wstring hid_path_secondary; // G715 20B long
     uint16_t usb_vid = 0;
     uint16_t usb_pid = 0;
+    std::string status_error;
 };
 
 const char* dev_link_text(DevLink link);
@@ -295,9 +313,14 @@ private:
     bool dry_run_ = false;
     bool dry_seeded_ = false;
     mutable std::mutex mu_;
+    std::mutex io_mu_;
     std::vector<DeviceEntry> devices_;
     HyperxState hyperx_state_{};
+    bool hyperx_loaded_ = false;
     HidppKeyboard hidpp_state_{};
+    bool hidpp_loaded_ = false;
+    HidppEffects hidpp_effects_{};
+    bool hidpp_effects_loaded_ = false;
 
     std::atomic<HWND> notify_hwnd_{ nullptr };
     std::atomic<bool> want_list_{ false };

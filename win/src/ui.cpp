@@ -15,13 +15,17 @@ extern "C" {
 
 namespace lares {
 
-static constexpr float kSidebarWidth = 216.0f;
+static constexpr float kSidebarWidth = 234.0f;
 static constexpr float kNavPadX = 18.0f;
+static constexpr float kNavPadRight = 9.0f;
 static constexpr float kNavPadTop = 18.0f;
 static constexpr float kNavItemHeight = 45.0f;
 static constexpr float kNavItemGap = 4.0f;
 static constexpr float kContentMaxW = 620.0f;
 static constexpr float kContentLead = 9.0f;
+static constexpr float kCardPad = 27.0f;
+static constexpr float kCardRadius = 18.0f;
+static constexpr float kPageGap = 36.0f;
 static constexpr UINT_PTR kAnimTimerId = 1;
 
 static D2D1_COLOR_F to_d2d(const Rgba& c, float alpha_mul = 1.0f)
@@ -265,6 +269,7 @@ void MainWindow::select_section(const std::string& id, bool animate)
         if (sections_[i].visible && id == sections_[i].id) {
             current_sec_ = i;
             scroll_y_ = 0.0f;
+            scroll_target_y_ = 0.0f;
             int vis = visible_index_of(i);
             nav_pill_target_y_ = kNavPadTop + vis * (kNavItemHeight + kNavItemGap);
             if (!animate || !nav_pill_init_) {
@@ -301,6 +306,7 @@ void MainWindow::stop_anim_timer_if_idle()
 {
     bool pill_done = std::fabs(nav_pill_y_ - nav_pill_target_y_) < 0.25f && std::fabs(nav_pill_vel_) < 0.5f;
     bool mode_done = std::fabs(mode_t_ - mode_target_) < 0.002f;
+    bool scroll_done = std::fabs(scroll_y_ - scroll_target_y_) < 0.5f;
     bool shake_done = true;
     for (const auto& kv : pad_memory_) {
         if (kv.second.shake_start_ms != 0) {
@@ -308,10 +314,11 @@ void MainWindow::stop_anim_timer_if_idle()
             break;
         }
     }
-    if (pill_done && mode_done && shake_done && timer_running_ && hwnd_) {
+    if (pill_done && mode_done && scroll_done && shake_done && timer_running_ && hwnd_) {
         nav_pill_y_ = nav_pill_target_y_;
         nav_pill_vel_ = 0.0f;
         mode_t_ = mode_target_;
+        scroll_y_ = scroll_target_y_;
         KillTimer(hwnd_, kAnimTimerId);
         timer_running_ = false;
     }
@@ -331,6 +338,13 @@ void MainWindow::on_timer()
     float acc = disp * stiffness - nav_pill_vel_ * damping;
     nav_pill_vel_ += acc * dt;
     nav_pill_y_ += nav_pill_vel_ * dt;
+
+    // Smooth wheel scroll easing
+    if (std::fabs(scroll_target_y_ - scroll_y_) >= 0.5f) {
+        scroll_y_ += (scroll_target_y_ - scroll_y_) * std::min(1.0f, dt * 18.0f);
+    } else {
+        scroll_y_ = scroll_target_y_;
+    }
 
     // 520 ms mode color transition.
     if (std::fabs(mode_t_ - mode_target_) >= 0.002f) {
@@ -425,25 +439,23 @@ void MainWindow::draw_sidebar(ID2D1RenderTarget* rt, const Palette& pal, float c
 {
     (void)client_h;
     float pill_x = kNavPadX;
-    float pill_w = kSidebarWidth - kNavPadX * 2.0f;
+    float pill_w = kSidebarWidth - kNavPadX - kNavPadRight;
 
-    // Hover pill
+    // Hover pill (matches data/style.css nav button.nav-item:hover, radius 9px)
     if (hover_sec_ >= 0 && hover_sec_ != current_sec_ && sections_[hover_sec_].visible) {
         int hv = visible_index_of(hover_sec_);
         float hy = kNavPadTop + hv * (kNavItemHeight + kNavItemGap);
         brush_->SetColor(to_d2d(pal.hover));
         rt->FillRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(pill_x, hy, pill_x + pill_w, hy + kNavItemHeight), 12.0f, 12.0f),
+            D2D1::RoundedRect(D2D1::RectF(pill_x, hy, pill_x + pill_w, hy + kNavItemHeight), 9.0f, 9.0f),
             brush_);
     }
 
-    // Active spring highlight pill
+    // Active spring highlight pill (borderless var(--card), radius 9px)
     brush_->SetColor(to_d2d(pal.card));
     D2D1_ROUNDED_RECT active_pill = D2D1::RoundedRect(
-        D2D1::RectF(pill_x, nav_pill_y_, pill_x + pill_w, nav_pill_y_ + kNavItemHeight), 12.0f, 12.0f);
+        D2D1::RectF(pill_x, nav_pill_y_, pill_x + pill_w, nav_pill_y_ + kNavItemHeight), 9.0f, 9.0f);
     rt->FillRoundedRectangle(active_pill, brush_);
-    brush_->SetColor(to_d2d(pal.line));
-    rt->DrawRoundedRectangle(active_pill, brush_, 1.0f);
 
     int vis = 0;
     for (int i = 0; i < static_cast<int>(sections_.size()); ++i) {
@@ -455,9 +467,9 @@ void MainWindow::draw_sidebar(ID2D1RenderTarget* rt, const Palette& pal, float c
         Rgba icon_faint = icon_solid;
         icon_faint.a *= 0.35f;
 
-        draw_pixel_art(rt, sections_[i].icon, pill_x + 14.0f, iy + 13.0f, 2.0f, icon_solid, icon_faint);
+        draw_pixel_art(rt, sections_[i].icon, pill_x + 18.0f, iy + 14.0f, 2.0f, icon_solid, icon_faint);
 
-        D2D1_RECT_F tr = D2D1::RectF(pill_x + 44.0f, iy + 11.0f, pill_x + pill_w - 10.0f, iy + kNavItemHeight - 4.0f);
+        D2D1_RECT_F tr = D2D1::RectF(pill_x + 48.0f, iy + 12.0f, pill_x + pill_w - 12.0f, iy + kNavItemHeight - 4.0f);
         draw_text(rt, sections_[i].label, fonts_.body(), tr, selected ? pal.text : pal.muted);
         ++vis;
     }
@@ -468,33 +480,39 @@ void MainWindow::draw_toggle_row(ID2D1RenderTarget* rt, const Palette& pal,
                                  const wchar_t* title, const wchar_t* sub, const wchar_t* saving,
                                  bool* field, bool enabled)
 {
-    float alpha = enabled ? 1.0f : 0.45f;
-    float sw_w = 50.0f;
-    float sw_h = 28.0f;
-    float text_w = w - sw_w - 20.0f;
+    // Matches data/style.css window.lares switch: 54x27, radius 9px; knob 21x21, radius 6px, margin 3px
+    float alpha = enabled ? 1.0f : 0.50f;
+    float sw_w = 54.0f;
+    float sw_h = 27.0f;
+    float text_w = w - sw_w - 18.0f;
 
     float h_title = measure_text_height(title, fonts_.body(), text_w);
     float h_sub = sub ? measure_text_height(sub, fonts_.caption(), text_w) : 0.0f;
-    float h_sav = saving ? measure_text_height(saving, fonts_.caption(), text_w) : 0.0f;
+    float h_sav = saving ? 27.0f : 0.0f;
 
-    float total_h = h_title + (h_sub > 0 ? 4.0f + h_sub : 0.0f) + (h_sav > 0 ? 4.0f + h_sav : 0.0f);
-    total_h = std::max(total_h, sw_h);
+    float total_h = h_title + (h_sub > 0 ? 6.0f + h_sub : 0.0f) + (h_sav > 0 ? 9.0f + h_sav : 0.0f);
+    total_h = std::max(total_h, 36.0f);
 
     Rgba c_title = pal.text; c_title.a *= alpha;
     Rgba c_muted = pal.muted; c_muted.a *= alpha;
 
-    float cy = y;
+    float cy = (sub || saving) ? y : (y + (total_h - h_title) * 0.5f);
     draw_text(rt, title, fonts_.body(), D2D1::RectF(x, cy, x + text_w, cy + h_title + 4.0f), c_title);
     cy += h_title;
     if (sub && h_sub > 0) {
-        cy += 4.0f;
+        cy += 6.0f;
         draw_text(rt, sub, fonts_.caption(), D2D1::RectF(x, cy, x + text_w, cy + h_sub + 4.0f), c_muted);
         cy += h_sub;
     }
     if (saving && h_sav > 0) {
-        cy += 4.0f;
-        Rgba c_sav = pal.muted; c_sav.a *= (0.75f * alpha);
-        draw_text(rt, saving, fonts_.caption(), D2D1::RectF(x, cy, x + text_w, cy + h_sav + 4.0f), c_sav);
+        cy += 9.0f;
+        // .saving tag: background var(--note), color var(--accent), border-radius 9px, height 27px
+        float tag_w = std::min(text_w, static_cast<float>(wcslen(saving)) * 9.2f + 22.0f);
+        D2D1_RECT_F tag_rc = D2D1::RectF(x, cy, x + tag_w, cy + 27.0f);
+        brush_->SetColor(to_d2d(pal.note, alpha));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(tag_rc, 9.0f, 9.0f), brush_);
+        Rgba c_sav = pal.accent; c_sav.a *= alpha;
+        draw_text(rt, saving, fonts_.caption(), D2D1::RectF(tag_rc.left + 9.0f, tag_rc.top + 5.0f, tag_rc.right - 6.0f, tag_rc.bottom), c_sav);
     }
 
     float sw_x = x + w - sw_w;
@@ -503,13 +521,12 @@ void MainWindow::draw_toggle_row(ID2D1RenderTarget* rt, const Palette& pal,
 
     bool on = field && *field;
     brush_->SetColor(to_d2d(on ? pal.accent : pal.track, alpha));
-    rt->FillRoundedRectangle(D2D1::RoundedRect(sw_rect, sw_h * 0.5f, sw_h * 0.5f), brush_);
+    rt->FillRoundedRectangle(D2D1::RoundedRect(sw_rect, 9.0f, 9.0f), brush_);
 
-    float knob_r = 10.0f;
-    float knob_cx = on ? (sw_rect.right - 14.0f) : (sw_rect.left + 14.0f);
-    float knob_cy = sw_rect.top + sw_h * 0.5f;
-    brush_->SetColor(to_d2d(on ? pal.on_accent : pal.muted, alpha));
-    rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knob_cx, knob_cy), knob_r, knob_r), brush_);
+    float knob_x = on ? (sw_rect.right - 24.0f) : (sw_rect.left + 3.0f);
+    D2D1_RECT_F knob_rc = D2D1::RectF(knob_x, sw_rect.top + 3.0f, knob_x + 21.0f, sw_rect.top + 24.0f);
+    brush_->SetColor(to_d2d(pal.card, alpha));
+    rt->FillRoundedRectangle(D2D1::RoundedRect(knob_rc, 6.0f, 6.0f), brush_);
 
     toggle_hits_.push_back({ sw_rect, field, enabled });
     y += total_h + 18.0f;
@@ -517,82 +534,85 @@ void MainWindow::draw_toggle_row(ID2D1RenderTarget* rt, const Palette& pal,
 
 void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
-    draw_text(rt, L"Settings", fonts_.title(), D2D1::RectF(x, y, x + w, y + 48.0f), pal.text);
-    y += 54.0f;
+    float start_y = y;
 
-    // Group 1: Background
-    draw_text(rt, L"Background", fonts_.caption(), D2D1::RectF(x + 4.0f, y, x + w, y + 24.0f), pal.muted);
-    y += 26.0f;
+    // Group 1: Background (matches src/settings_view.c: muted heading indented 27px + .card.padded)
+    draw_text(rt, L"Background", fonts_.body(), D2D1::RectF(x + kCardPad, y, x + w, y + 26.0f), pal.muted);
+    y += 30.0f;
 
     float card1_top = y;
-    float inner_x = x + 18.0f;
-    float inner_w = w - 36.0f;
-    float probe_y = card1_top + 18.0f;
+    float inner_x = x + kCardPad;
+    float inner_w = w - kCardPad * 2.0f;
+    float text_w = inner_w - 72.0f;
 
-    // Pre-calculate card1 height cleanly
-    float h_t = measure_text_height(L"Run in the background", fonts_.body(), inner_w - 70.0f);
-    float h_s = measure_text_height(L"Keeps controller features and keyboard lighting on with Lares closed.", fonts_.caption(), inner_w - 70.0f);
-    float h_sav = measure_text_height(L"Off saves ~2 MB RAM", fonts_.caption(), inner_w - 70.0f);
-    float card1_h = 36.0f + h_t + 4.0f + h_s + 4.0f + h_sav;
+    float h_t = measure_text_height(L"Run in the background", fonts_.body(), text_w);
+    float h_s = measure_text_height(L"Keeps controller features and keyboard lighting on with Lares closed.", fonts_.caption(), text_w);
+    float card1_h = kCardPad * 2.0f + std::max(36.0f, h_t + 6.0f + h_s + 9.0f + 27.0f);
 
-    D2D1_ROUNDED_RECT card1 = D2D1::RoundedRect(D2D1::RectF(x, card1_top, x + w, card1_top + card1_h), 14.0f, 14.0f);
     brush_->SetColor(to_d2d(pal.card));
-    rt->FillRoundedRectangle(card1, brush_);
-    brush_->SetColor(to_d2d(pal.line));
-    rt->DrawRoundedRectangle(card1, brush_, 1.0f);
+    rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, card1_top, x + w, card1_top + card1_h), kCardRadius, kCardRadius), brush_);
 
+    float probe_y = card1_top + kCardPad;
     draw_toggle_row(rt, pal, inner_x, probe_y, inner_w,
                     L"Run in the background",
                     L"Keeps controller features and keyboard lighting on with Lares closed.",
                     L"Off saves ~2 MB RAM",
                     &pad_prefs_.background, true);
 
-    y = card1_top + card1_h + 27.0f;
+    y = card1_top + card1_h + kPageGap;
 
-    // Group 2: System tray (Windows equivalent of GNOME Top bar)
-    draw_text(rt, L"System tray", fonts_.caption(), D2D1::RectF(x + 4.0f, y, x + w, y + 24.0f), pal.muted);
-    y += 26.0f;
+    // Group 2: System tray (grouped inside ONE .card.padded with 2px dividers, matching src/ui.c)
+    draw_text(rt, L"System tray", fonts_.body(), D2D1::RectF(x + kCardPad, y, x + w, y + 26.0f), pal.muted);
+    y += 30.0f;
 
     float card2_top = y;
     bool tray_enabled = pad_prefs_.background;
-    float r1_h = std::max(28.0f, measure_text_height(L"Show the icon", fonts_.body(), inner_w - 70.0f) + 4.0f +
-                                 measure_text_height(L"With battery and quick actions.", fonts_.caption(), inner_w - 70.0f));
-    float r2_h = std::max(28.0f, measure_text_height(L"Battery level beside the icon", fonts_.body(), inner_w - 70.0f) + 4.0f +
-                                 measure_text_height(L"Shows the lowest if several are connected.", fonts_.caption(), inner_w - 70.0f));
-    float r3_h = std::max(28.0f, measure_text_height(L"Hide the icon without a controller", fonts_.body(), inner_w - 70.0f));
-    float card2_h = 18.0f + 34.0f + r1_h + 18.0f + r2_h + 18.0f + r3_h + 18.0f;
+    float r1_h = std::max(36.0f, measure_text_height(L"Show the icon", fonts_.body(), text_w) + 6.0f +
+                                 measure_text_height(L"With battery and quick actions.", fonts_.caption(), text_w));
+    float r2_h = std::max(36.0f, measure_text_height(L"Battery level beside the icon", fonts_.body(), text_w) + 6.0f +
+                                 measure_text_height(L"Shows the lowest if several are connected.", fonts_.caption(), text_w));
+    float r3_h = std::max(36.0f, measure_text_height(L"Hide the icon without a controller", fonts_.body(), text_w));
+    float card2_h = kCardPad + 36.0f + r1_h + 36.0f + r2_h + 36.0f + r3_h + kCardPad;
 
-    D2D1_ROUNDED_RECT card2 = D2D1::RoundedRect(D2D1::RectF(x, card2_top, x + w, card2_top + card2_h), 14.0f, 14.0f);
     brush_->SetColor(to_d2d(pal.card));
-    rt->FillRoundedRectangle(card2, brush_);
-    brush_->SetColor(to_d2d(pal.line));
-    rt->DrawRoundedRectangle(card2, brush_, 1.0f);
+    rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, card2_top, x + w, card2_top + card2_h), kCardRadius, kCardRadius), brush_);
 
-    float cy = card2_top + 18.0f;
-    Rgba sub_col = pal.muted;
-    if (!tray_enabled) sub_col.a *= 0.45f;
+    float cy = card2_top + kCardPad;
+    Rgba sub_col = pal.accent;
+    if (!tray_enabled) sub_col.a *= 0.50f;
     Rgba sub_faint = sub_col; sub_faint.a *= 0.35f;
     draw_pixel_art(rt, ART_GAMEPAD, inner_x, cy + 2.0f, 2.0f, sub_col, sub_faint);
-    draw_text(rt, L"Xbox controller", fonts_.body(), D2D1::RectF(inner_x + 30.0f, cy - 2.0f, inner_x + inner_w, cy + 26.0f), sub_col);
-    cy += 34.0f;
+    Rgba sub_txt = pal.text;
+    if (!tray_enabled) sub_txt.a *= 0.50f;
+    draw_text(rt, L"Xbox controller", fonts_.body(), D2D1::RectF(inner_x + 32.0f, cy - 2.0f, inner_x + inner_w, cy + 26.0f), sub_txt);
+    cy += 36.0f;
+
+    auto draw_setting_sep = [&]() {
+        brush_->SetColor(to_d2d(pal.line));
+        rt->FillRectangle(D2D1::RectF(inner_x, cy, inner_x + inner_w, cy + 2.0f), brush_);
+        cy += 18.0f;
+    };
 
     draw_toggle_row(rt, pal, inner_x, cy, inner_w,
                     L"Show the icon",
                     L"With battery and quick actions.",
                     nullptr,
                     &pad_prefs_.topbar, tray_enabled);
+    draw_setting_sep();
     draw_toggle_row(rt, pal, inner_x, cy, inner_w,
                     L"Battery level beside the icon",
                     L"Shows the lowest if several are connected.",
                     nullptr,
                     &pad_prefs_.topbar_level, tray_enabled);
+    draw_setting_sep();
     draw_toggle_row(rt, pal, inner_x, cy, inner_w,
                     L"Hide the icon without a controller",
                     nullptr,
                     nullptr,
                     &pad_prefs_.topbar_hide, tray_enabled);
 
-    content_height_ = card2_top + card2_h + 36.0f;
+    y = card2_top + card2_h;
+    content_height_ = (y - start_y) + 54.0f;
 }
 
 static std::wstring utf8_to_wide(const std::string& s)
@@ -609,11 +629,10 @@ static void draw_info_card(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
                            MainWindow*, const Palette& pal,
                            float x, float y, float w, float h)
 {
-    D2D1_ROUNDED_RECT card = D2D1::RoundedRect(D2D1::RectF(x, y, x + w, y + h), 14.0f, 14.0f);
+    // Matches data/style.css .card: flat var(--card) surface, border-radius 18px, NO border stroke
+    D2D1_ROUNDED_RECT card = D2D1::RoundedRect(D2D1::RectF(x, y, x + w, y + h), kCardRadius, kCardRadius);
     brush->SetColor(to_d2d(pal.card));
     rt->FillRoundedRectangle(card, brush);
-    brush->SetColor(to_d2d(pal.line));
-    rt->DrawRoundedRectangle(card, brush, 1.0f);
 }
 
 void MainWindow::draw_meter(ID2D1RenderTarget* rt, const Palette& pal,
@@ -658,6 +677,7 @@ void MainWindow::draw_graph(ID2D1RenderTarget* rt, const Palette& pal,
 
 void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
+    float start_y = y;
     const HwInfo& info = hw_.info();
     const HwSample& s = hw_sample_;
 
@@ -665,7 +685,7 @@ void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, f
     int cols = has_gpu ? 3 : 2;
     float gap = 18.0f;
     float tile_w = (w - gap * (cols - 1)) / static_cast<float>(cols);
-    float tile_h = 132.0f;
+    float tile_h = 152.0f;
 
     auto draw_tile = [&](float tx, float ty, float tw, const char* const* art, const wchar_t* heading,
                          const std::wstring& val, const std::wstring& sub,
@@ -673,18 +693,18 @@ void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, f
         draw_info_card(rt, brush_, this, pal, tx, ty, tw, tile_h);
         card_hits_.push_back({ D2D1::RectF(tx, ty, tx + tw, ty + tile_h), target_sec });
 
-        float ix = tx + 18.0f;
-        float iy = ty + 16.0f;
-        Rgba ic = pal.muted;
+        float ix = tx + kCardPad;
+        float iy = ty + kCardPad;
+        Rgba ic = pal.accent;
         Rgba ic_f = ic; ic_f.a *= 0.35f;
-        draw_pixel_art(rt, art, ix, iy + 2.0f, 2.0f, ic, ic_f);
-        draw_text(rt, heading, fonts_.caption(), D2D1::RectF(ix + 26.0f, iy, tx + tw - 14.0f, iy + 22.0f), pal.muted);
+        draw_pixel_art(rt, art, ix, iy + 1.0f, 2.0f, ic, ic_f);
+        draw_text(rt, heading, fonts_.caption(), D2D1::RectF(ix + 26.0f, iy, tx + tw - kCardPad, iy + 22.0f), pal.muted);
 
-        draw_text(rt, val.c_str(), fonts_.big(), D2D1::RectF(ix, iy + 26.0f, tx + tw - 14.0f, iy + 62.0f), pal.text);
-        draw_text(rt, sub.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 64.0f, tx + tw - 14.0f, iy + 86.0f), pal.muted);
+        draw_text(rt, val.c_str(), fonts_.big(), D2D1::RectF(ix, iy + 28.0f, tx + tw - kCardPad, iy + 62.0f), pal.text);
+        draw_text(rt, sub.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 64.0f, tx + tw - kCardPad, iy + 86.0f), pal.muted);
 
         if (meter_blocks > 0) {
-            draw_meter(rt, pal, ix, ty + tile_h - 20.0f, meter_blocks, 2.0f, fraction, hot);
+            draw_meter(rt, pal, ix, ty + tile_h - kCardPad - 6.0f, meter_blocks, 2.0f, fraction, hot);
         }
     };
 
@@ -813,25 +833,26 @@ void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, f
             else if (!sun_news.empty() || !ts_news.empty()) msub = !sun_news.empty() ? sun_news : ts_news;
             else if (remote_cfg_.mode == RemoteMode::Remote && remote_live_.sunshine == 1) msub = L"Waiting for Moonlight";
         }
-        float mode_h = 104.0f;
+        float mode_h = 122.0f;
         draw_info_card(rt, brush_, this, pal, x, y, w, mode_h);
         card_hits_.push_back({ D2D1::RectF(x, y, x + w, y + mode_h), "remote" });
-        float ix = x + 18.0f, iy = y + 16.0f;
-        Rgba ic = pal.muted, ic_f = ic; ic_f.a *= 0.35f;
-        draw_pixel_art(rt, ART_LAPTOP, ix, iy + 2.0f, 2.0f, ic, ic_f);
-        draw_text(rt, L"Mode", fonts_.caption(), D2D1::RectF(ix + 26.0f, iy, x + w - 14.0f, iy + 22.0f), pal.muted);
-        draw_text(rt, mval.c_str(), fonts_.big(), D2D1::RectF(ix, iy + 26.0f, x + w - 14.0f, iy + 62.0f), pal.text);
+        float ix = x + kCardPad, iy = y + kCardPad;
+        Rgba ic = pal.accent, ic_f = ic; ic_f.a *= 0.35f;
+        draw_pixel_art(rt, ART_LAPTOP, ix, iy + 1.0f, 2.0f, ic, ic_f);
+        draw_text(rt, L"Mode", fonts_.caption(), D2D1::RectF(ix + 26.0f, iy, x + w - kCardPad, iy + 22.0f), pal.muted);
+        draw_text(rt, mval.c_str(), fonts_.big(), D2D1::RectF(ix, iy + 26.0f, x + w - kCardPad, iy + 62.0f), pal.text);
         if (!msub.empty()) {
-            draw_text(rt, msub.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 64.0f, x + w - 14.0f, iy + 86.0f), pal.muted);
+            draw_text(rt, msub.c_str(), fonts_.caption(), D2D1::RectF(ix, iy + 62.0f, x + w - kCardPad, iy + 86.0f), pal.muted);
         }
         y += mode_h + gap;
     }
 
-    content_height_ = y + 18.0f;
+    content_height_ = (y - start_y) + 54.0f;
 }
 
 void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
+    float start_y = y;
     const HwInfo& info = hw_.info();
     const HwSample& s = hw_sample_;
     float gap = 18.0f;
@@ -961,11 +982,12 @@ void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, f
         y += card_h + gap;
     }
 
-    content_height_ = y + 18.0f;
+    content_height_ = (y - start_y) + 54.0f;
 }
 
 void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
+    float start_y = y;
     remote_hits_.clear();
     float gap = 18.0f;
 
@@ -1031,43 +1053,42 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
         draw_text(rt, L"Open modes", fonts_.caption(), D2D1::RectF(skip_btn.left + 26.0f, skip_btn.top + 7.0f, skip_btn.right, skip_btn.bottom), pal.on_accent);
         remote_hits_.push_back({ skip_btn, RemoteActionKind::FinishGuide });
 
-        content_height_ = y + addr_h + 36.0f;
+        content_height_ = (y + addr_h - start_y) + 54.0f;
         return;
     }
 
-    // 2. Home | Remote big segmented mode switch (matches modeswitch in data/style.css)
-    float sw_h = 56.0f;
+    // 2. Home | Remote big segmented mode switch (matches modeswitch in data/style.css:
+    //    var(--track) outer radius 18px, padding 9px; var(--accent) pill radius 9px; big text)
+    float sw_h = 76.0f;
     D2D1_RECT_F sw_track = D2D1::RectF(x, y, x + w, y + sw_h);
     brush_->SetColor(to_d2d(pal.track));
-    rt->FillRoundedRectangle(D2D1::RoundedRect(sw_track, 18.0f, 18.0f), brush_);
+    rt->FillRoundedRectangle(D2D1::RoundedRect(sw_track, kCardRadius, kCardRadius), brush_);
 
-    float half_w = (w - 8.0f) * 0.5f;
-    float pill_x = x + 4.0f + ease_out_cubic_css(mode_t_) * half_w;
+    float half_w = (w - 18.0f) * 0.5f;
+    float pill_x = x + 9.0f + ease_out_cubic_css(mode_t_) * half_w;
     D2D1_ROUNDED_RECT sw_pill = D2D1::RoundedRect(
-        D2D1::RectF(pill_x, y + 4.0f, pill_x + half_w, y + sw_h - 4.0f), 14.0f, 14.0f);
-    brush_->SetColor(to_d2d(pal.card));
+        D2D1::RectF(pill_x, y + 9.0f, pill_x + half_w, y + sw_h - 9.0f), 9.0f, 9.0f);
+    brush_->SetColor(to_d2d(pal.accent));
     rt->FillRoundedRectangle(sw_pill, brush_);
-    brush_->SetColor(to_d2d(pal.line));
-    rt->DrawRoundedRectangle(sw_pill, brush_, 1.0f);
 
     bool is_rem = (remote_cfg_.mode == RemoteMode::Remote);
     // Home side
     {
-        float hx = x + 4.0f + half_w * 0.5f - 46.0f;
-        Rgba hc = !is_rem ? pal.accent : pal.muted;
+        float hx = x + 9.0f + half_w * 0.5f - 48.0f;
+        Rgba hc = !is_rem ? pal.on_accent : pal.muted;
         Rgba hcf = hc; hcf.a *= 0.35f;
-        draw_pixel_art(rt, ART_HOME, hx, y + 19.0f, 2.0f, hc, hcf);
-        draw_text(rt, L"Home", fonts_.body(), D2D1::RectF(hx + 30.0f, y + 16.0f, x + 4.0f + half_w, y + 44.0f), !is_rem ? pal.text : pal.muted);
-        remote_hits_.push_back({ D2D1::RectF(x, y, x + half_w + 4.0f, y + sw_h), RemoteActionKind::SwitchModeHome });
+        draw_pixel_art(rt, ART_HOME, hx, y + 29.0f, 2.0f, hc, hcf);
+        draw_text(rt, L"Home", fonts_.big(), D2D1::RectF(hx + 30.0f, y + 23.0f, x + 9.0f + half_w, y + 58.0f), hc);
+        remote_hits_.push_back({ D2D1::RectF(x, y, x + half_w + 9.0f, y + sw_h), RemoteActionKind::SwitchModeHome });
     }
     // Remote side
     {
-        float rx = x + 4.0f + half_w + half_w * 0.5f - 56.0f;
-        Rgba rc = is_rem ? pal.accent : pal.muted;
+        float rx = x + 9.0f + half_w + half_w * 0.5f - 60.0f;
+        Rgba rc = is_rem ? pal.on_accent : pal.muted;
         Rgba rcf = rc; rcf.a *= 0.35f;
-        draw_pixel_art(rt, ART_LAPTOP, rx, y + 19.0f, 2.0f, rc, rcf);
-        draw_text(rt, L"Remote", fonts_.body(), D2D1::RectF(rx + 30.0f, y + 16.0f, x + w, y + 44.0f), is_rem ? pal.text : pal.muted);
-        remote_hits_.push_back({ D2D1::RectF(x + half_w + 4.0f, y, x + w, y + sw_h), RemoteActionKind::SwitchModeRemote });
+        draw_pixel_art(rt, ART_LAPTOP, rx, y + 29.0f, 2.0f, rc, rcf);
+        draw_text(rt, L"Remote", fonts_.big(), D2D1::RectF(rx + 30.0f, y + 23.0f, x + w, y + 58.0f), rc);
+        remote_hits_.push_back({ D2D1::RectF(x + half_w + 9.0f, y, x + w, y + sw_h), RemoteActionKind::SwitchModeRemote });
     }
     y += sw_h + gap;
 
@@ -1223,11 +1244,12 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
         y += row_h + 12.0f;
     }
 
-    content_height_ = y + 24.0f;
+    content_height_ = (y - start_y) + 54.0f;
 }
 
 void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, DevKind kind)
 {
+    float start_y = y;
     device_hits_.clear();
     static constexpr uint32_t kSwatchColours[9] = {
         0xff0000, 0xff5000, 0xffc800, 0x00ff00, 0x00ffff, 0x0000ff, 0x8000ff, 0xff00a0, 0xffffff
@@ -1237,20 +1259,21 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
     float gap = 18.0f;
     for (const auto& d : dev_list_) {
         if (d.kind != kind) continue;
-        float ix = x + 18.0f, iw = w - 36.0f;
+        float ix = x + kCardPad, iw = w - kCardPad * 2.0f;
+        float err_extra = d.status_error.empty() ? 0.0f : 38.0f;
 
         // Calculate card height according to device kind & settings
-        float card_h = 148.0f;
-        if (d.has_settings && kind == DevKind::Mouse) card_h = 564.0f;
-        else if (d.has_settings && kind == DevKind::Keyboard) card_h = 642.0f;
+        float card_h = 166.0f + err_extra;
+        if (d.has_settings && kind == DevKind::Mouse) card_h = 582.0f + err_extra;
+        else if (d.has_settings && kind == DevKind::Keyboard) card_h = 660.0f + err_extra;
 
         draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
-        float cy = y + 18.0f;
+        float cy = y + kCardPad;
 
         // Header: icon + name + battery or sleep state
         const char* const* d_art = (kind == DevKind::Audio) ? ART_HEADPHONES
             : (kind == DevKind::Keyboard) ? ART_KEYBOARD : ART_MOUSE;
-        Rgba ic = pal.muted, icf = ic; icf.a *= 0.35f;
+        Rgba ic = pal.accent, icf = ic; icf.a *= 0.35f;
         draw_pixel_art(rt, d_art, ix, cy + 2.0f, 2.0f, ic, icf);
         std::wstring dname = utf8_to_wide(d.name);
         draw_text(rt, dname.c_str(), fonts_.body(), D2D1::RectF(ix + 30.0f, cy, ix + iw - 112.0f, cy + 28.0f), pal.text);
@@ -1266,6 +1289,15 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             draw_meter(rt, pal, ix + iw - 70.0f, cy + 9.0f, 10, 2.0f, d.battery / 100.0, low);
         }
         cy += 38.0f;
+
+        if (!d.status_error.empty()) {
+            std::wstring ew = utf8_to_wide(d.status_error);
+            D2D1_RECT_F erc = D2D1::RectF(ix, cy, ix + iw, cy + 28.0f);
+            brush_->SetColor(to_d2d(pal.note));
+            rt->FillRoundedRectangle(D2D1::RoundedRect(erc, 9.0f, 9.0f), brush_);
+            draw_text(rt, ew.c_str(), fonts_.caption(), D2D1::RectF(erc.left + 12.0f, erc.top + 5.0f, erc.right - 8.0f, erc.bottom), pal.warn);
+            cy += 38.0f;
+        }
 
         // Detail rows: Made by & Connection
         if (!d.vendor_name.empty()) {
@@ -1466,7 +1498,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
         y += card_h + gap;
     }
 
-    content_height_ = y + 24.0f;
+    content_height_ = (y - start_y) + 54.0f;
 }
 
 static int count_bits32(uint32_t v)
@@ -1567,6 +1599,7 @@ void MainWindow::draw_pad_picture(ID2D1RenderTarget* rt, const Palette& pal,
 
 void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
+    float start_y = y;
     pad_hits_.clear();
     float gap = 18.0f;
 
@@ -1861,64 +1894,78 @@ void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal,
         y += off_h + gap;
     }
 
-    // 4. Alerts group
-    draw_text(rt, L"Alerts", fonts_.body(), D2D1::RectF(x, y, x + w, y + 30.0f), pal.text);
-    y += 34.0f;
-    draw_toggle_row(rt, pal, x, y, w,
-                    L"Low battery alerts",
-                    L"Notifies when low, and again at 10%.",
-                    nullptr, &pad_prefs_.alerts, pad_prefs_.background);
-
-    // Low battery level (- / 20% / +)
+    // 4. Alerts group (muted heading indented 27px + single .card.padded with 2px dividers)
+    draw_text(rt, L"Alerts", fonts_.body(), D2D1::RectF(x + kCardPad, y, x + w, y + 26.0f), pal.muted);
+    y += 30.0f;
     {
-        float lvl_h = 74.0f;
-        draw_info_card(rt, brush_, this, pal, x, y, w, lvl_h);
-        float ix = x + 18.0f, iw = w - 36.0f;
-        draw_text(rt, L"Low battery level", fonts_.body(), D2D1::RectF(ix, y + 14.0f, ix + iw - 160.0f, y + 38.0f), pal.text);
+        float ix = x + kCardPad, iw = w - kCardPad * 2.0f;
+        float alerts_h = kCardPad * 2.0f + 56.0f + 20.0f + 56.0f + 20.0f + 56.0f;
+        draw_info_card(rt, brush_, this, pal, x, y, w, alerts_h);
+        float cy = y + kCardPad;
+        draw_toggle_row(rt, pal, ix, cy, iw,
+                        L"Low battery alerts",
+                        L"Notifies when low, and again at 10%.",
+                        nullptr, &pad_prefs_.alerts, pad_prefs_.background);
+        brush_->SetColor(to_d2d(pal.line));
+        rt->FillRectangle(D2D1::RectF(ix, cy - 2.0f, ix + iw, cy), brush_);
+        cy += 16.0f;
+
+        draw_text(rt, L"Low battery level", fonts_.body(), D2D1::RectF(ix, cy, ix + iw - 160.0f, cy + 24.0f), pal.text);
         draw_text(rt, L"The battery turns orange at this level.", fonts_.caption(),
-                  D2D1::RectF(ix, y + 38.0f, ix + iw - 160.0f, y + 62.0f), pal.muted);
-        draw_chip_btn(ix + iw - 144.0f, y + 21.0f, 36.0f, L"-", false, "", PadActionKind::LowLevelDelta, -5);
+                  D2D1::RectF(ix, cy + 24.0f, ix + iw - 160.0f, cy + 48.0f), pal.muted);
+        draw_chip_btn(ix + iw - 144.0f, cy + 7.0f, 36.0f, L"-", false, "", PadActionKind::LowLevelDelta, -5);
         wchar_t l_txt[16];
         std::swprintf(l_txt, std::size(l_txt), L"%d%%", pad_prefs_.low_level);
-        draw_text(rt, l_txt, fonts_.body(), D2D1::RectF(ix + iw - 98.0f, y + 24.0f, ix + iw - 40.0f, y + 52.0f), pal.text);
-        draw_chip_btn(ix + iw - 36.0f, y + 21.0f, 36.0f, L"+", false, "", PadActionKind::LowLevelDelta, 5);
-        y += lvl_h + 10.0f;
+        draw_text(rt, l_txt, fonts_.body(), D2D1::RectF(ix + iw - 98.0f, cy + 10.0f, ix + iw - 40.0f, cy + 36.0f), pal.text);
+        draw_chip_btn(ix + iw - 36.0f, cy + 7.0f, 36.0f, L"+", false, "", PadActionKind::LowLevelDelta, 5);
+        cy += 60.0f;
+
+        brush_->SetColor(to_d2d(pal.line));
+        rt->FillRectangle(D2D1::RectF(ix, cy - 2.0f, ix + iw, cy), brush_);
+        cy += 16.0f;
+        draw_toggle_row(rt, pal, ix, cy, iw,
+                        L"Connection notices",
+                        L"Notifies when a controller connects or leaves.",
+                        nullptr, &pad_prefs_.notices, pad_prefs_.background);
+        y += alerts_h + kPageGap;
     }
 
-    draw_toggle_row(rt, pal, x, y, w,
-                    L"Connection notices",
-                    L"Notifies when a controller connects or leaves.",
-                    nullptr, &pad_prefs_.notices, pad_prefs_.background);
-    y += 14.0f;
-
     // 5. While you play group
-    draw_text(rt, L"While you play", fonts_.body(), D2D1::RectF(x, y, x + w, y + 30.0f), pal.text);
-    y += 34.0f;
-    draw_toggle_row(rt, pal, x, y, w,
-                    L"Keep the screen awake",
-                    L"No dimming or locking while you play.",
-                    nullptr, &pad_prefs_.keep_awake, pad_prefs_.background);
-    draw_toggle_row(rt, pal, x, y, w,
-                    L"Disconnect idle controllers",
-                    L"Saves controller battery. They stay paired.",
-                    nullptr, &pad_prefs_.idle_disconnect, pad_prefs_.background);
-
-    if (pad_prefs_.idle_disconnect) {
-        float cw = (w - 27.0f) / 4.0f;
-        int nearest = 0;
-        for (int i = 0; i < kPadIdleChoices; ++i) {
-            if (std::abs(kPadIdleMinutes[i] - pad_prefs_.idle_minutes) <
-                std::abs(kPadIdleMinutes[nearest] - pad_prefs_.idle_minutes)) {
-                nearest = i;
+    draw_text(rt, L"While you play", fonts_.body(), D2D1::RectF(x + kCardPad, y, x + w, y + 26.0f), pal.muted);
+    y += 30.0f;
+    {
+        float ix = x + kCardPad, iw = w - kCardPad * 2.0f;
+        float play_h = kCardPad * 2.0f + 56.0f + 20.0f + 56.0f + (pad_prefs_.idle_disconnect ? 46.0f : 0.0f);
+        draw_info_card(rt, brush_, this, pal, x, y, w, play_h);
+        float cy = y + kCardPad;
+        draw_toggle_row(rt, pal, ix, cy, iw,
+                        L"Keep the screen awake",
+                        L"No dimming or locking while you play.",
+                        nullptr, &pad_prefs_.keep_awake, pad_prefs_.background);
+        brush_->SetColor(to_d2d(pal.line));
+        rt->FillRectangle(D2D1::RectF(ix, cy - 2.0f, ix + iw, cy), brush_);
+        cy += 16.0f;
+        draw_toggle_row(rt, pal, ix, cy, iw,
+                        L"Disconnect idle controllers",
+                        L"Saves controller battery. They stay paired.",
+                        nullptr, &pad_prefs_.idle_disconnect, pad_prefs_.background);
+        if (pad_prefs_.idle_disconnect) {
+            float cw = (iw - 27.0f) / 4.0f;
+            int nearest = 0;
+            for (int i = 0; i < kPadIdleChoices; ++i) {
+                if (std::abs(kPadIdleMinutes[i] - pad_prefs_.idle_minutes) <
+                    std::abs(kPadIdleMinutes[nearest] - pad_prefs_.idle_minutes)) {
+                    nearest = i;
+                }
+            }
+            for (int i = 0; i < kPadIdleChoices; ++i) {
+                wchar_t mlbl[16];
+                std::swprintf(mlbl, std::size(mlbl), L"%d min", kPadIdleMinutes[i]);
+                draw_chip_btn(ix + i * (cw + 9.0f), cy, cw, mlbl, i == nearest,
+                              "", PadActionKind::IdleMinutesChip, kPadIdleMinutes[i]);
             }
         }
-        for (int i = 0; i < kPadIdleChoices; ++i) {
-            wchar_t mlbl[16];
-            std::swprintf(mlbl, std::size(mlbl), L"%d min", kPadIdleMinutes[i]);
-            draw_chip_btn(x + i * (cw + 9.0f), y, cw, mlbl, i == nearest,
-                          "", PadActionKind::IdleMinutesChip, kPadIdleMinutes[i]);
-        }
-        y += 46.0f;
+        y += play_h + kPageGap;
     }
 
     // 6. Saved Nicknames group
@@ -1943,7 +1990,7 @@ void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal,
         }
     }
 
-    content_height_ = y + 24.0f;
+    content_height_ = (y - start_y) + 54.0f;
 }
 
 void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float client_w, float client_h)
@@ -2284,7 +2331,8 @@ void MainWindow::on_mouse_wheel(int delta)
     GetClientRect(hwnd_, &rc);
     float lh = static_cast<float>(rc.bottom - rc.top) / dpi_scale_;
     float max_scroll = std::max(0.0f, content_height_ - lh);
-    scroll_y_ = std::clamp(scroll_y_ - static_cast<float>(delta) * 0.4f, 0.0f, max_scroll);
+    scroll_target_y_ = std::clamp(scroll_target_y_ - (static_cast<float>(delta) / 120.0f) * 72.0f, 0.0f, max_scroll);
+    start_anim_timer();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
