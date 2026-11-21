@@ -16,6 +16,7 @@ add_library(lares_win_core STATIC
     src/cli.cpp
     src/config.cpp
     src/devices.cpp
+    src/helper.cpp
     src/hw.cpp
     src/pad.cpp
     src/remote.cpp
@@ -31,6 +32,7 @@ target_link_libraries(lares_win_core PUBLIC
     advapi32
     shell32
     user32
+    gdi32
     setupapi
     hid
     bthprops
@@ -59,6 +61,21 @@ target_link_libraries(lares PRIVATE
     user32
     gdi32
     advapi32
+)
+
+# Background helper & system-tray controller service (no Direct2D window overhead)
+add_executable(lares-pad WIN32
+    src/helper_main.cpp
+    res/lares.rc
+    res/lares.manifest
+)
+target_include_directories(lares-pad PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/res
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+target_link_libraries(lares-pad PRIVATE
+    lares_win_core
 )
 
 # Unit tests on plain data (CLI, theme interpolation, INI config, shared art)
