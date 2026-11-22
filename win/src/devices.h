@@ -283,6 +283,7 @@ struct DeviceEntry {
     int battery = -1; // 0..100 or -1 when unknown
     bool charging = false;
     bool has_settings = false;
+    bool settings_loaded = false;
     MouseSettings mouse;
     KeyboardSettings keyboard;
     std::wstring hid_path_primary;   // HyperX 64B or G715 7B short

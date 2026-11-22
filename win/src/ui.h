@@ -160,7 +160,10 @@ private:
     void draw_pixel_art(ID2D1RenderTarget* rt, const char* const* art, float x, float y, float scale,
                         const Rgba& solid, const Rgba& faint);
     void draw_text(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTextFormat* fmt,
-                   const D2D1_RECT_F& rect, const Rgba& color);
+                   const D2D1_RECT_F& rect, const Rgba& color,
+                   DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
+    bool point_over_interactive(float lx, float ly) const;
+    void clamp_scroll();
     float measure_text_height(const wchar_t* text, IDWriteTextFormat* fmt, float max_w);
     void draw_toggle_row(ID2D1RenderTarget* rt, const Palette& pal,
                          float x, float& y, float w,
@@ -240,6 +243,7 @@ private:
     std::string editing_nickname_;
 
     bool timer_running_ = false;
+    bool tracking_mouse_ = false;
     ULONGLONG last_tick_ms_ = 0;
 };
 

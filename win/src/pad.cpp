@@ -504,6 +504,7 @@ static uint32_t standard_xbox_checklist()
 PadManager::PadManager(bool dry_run)
     : dry_run_(dry_run)
 {
+    rumble_cancel_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (dry_run_) {
         PadInfo p;
         p.path = "xinput-0";
@@ -533,13 +534,26 @@ PadManager::PadManager(bool dry_run)
     }
 }
 
+void PadManager::stop_rumble_thread()
+{
+    if (rumble_cancel_event_) SetEvent(rumble_cancel_event_);
+    if (rumble_thread_.joinable()) rumble_thread_.join();
+    if (rumble_cancel_event_) ResetEvent(rumble_cancel_event_);
+}
+
 PadManager::~PadManager()
 {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         stop_ = true;
+        notify_hwnd_ = nullptr;
     }
+    stop_rumble_thread();
     if (worker_.joinable()) worker_.join();
+    if (rumble_cancel_event_) {
+        CloseHandle(rumble_cancel_event_);
+        rumble_cancel_event_ = nullptr;
+    }
 }
 
 void PadManager::set_notify_hwnd(HWND hwnd)
@@ -637,16 +651,19 @@ bool PadManager::set_nickname(PadPrefs& prefs, const std::string& pad_path, cons
 
 void PadManager::rumble_async(const std::string& pad_path, int strong_pct, int weak_pct, int length_ms)
 {
+    stop_rumble_thread();
+
     int slot = -1;
     HWND hwnd = nullptr;
     {
         std::lock_guard<std::mutex> lk(mtx_);
         for (auto& p : pads_) {
+            p.finding = false;
+            p.playing_rumble = false;
             if (p.path == pad_path) {
                 slot = p.xinput_slot;
                 p.playing_rumble = true;
                 hwnd = notify_hwnd_;
-                break;
             }
         }
     }
@@ -654,14 +671,17 @@ void PadManager::rumble_async(const std::string& pad_path, int strong_pct, int w
     if (hwnd) PostMessageW(hwnd, kMsgPadsUpdated, 0, 0);
 
     bool is_dry = dry_run_;
-    std::thread([this, pad_path, slot, strong_pct, weak_pct, length_ms, is_dry]() {
+    HANDLE cancel_ev = rumble_cancel_event_;
+    rumble_thread_ = std::thread([this, pad_path, slot, strong_pct, weak_pct, length_ms, is_dry, cancel_ev]() {
         if (!is_dry && g_xinput.set_state) {
             XInputVibrationRaw vib = {};
             vib.wLeftMotorSpeed = static_cast<WORD>(std::clamp(strong_pct, 0, 100) * 65535 / 100);
             vib.wRightMotorSpeed = static_cast<WORD>(std::clamp(weak_pct, 0, 100) * 65535 / 100);
             g_xinput.set_state(static_cast<DWORD>(slot), &vib);
         }
-        Sleep(static_cast<DWORD>(std::clamp(length_ms, 50, 3000)));
+        DWORD dur = static_cast<DWORD>(std::clamp(length_ms, 50, 3000));
+        if (cancel_ev) WaitForSingleObject(cancel_ev, dur);
+        else Sleep(dur);
         if (!is_dry && g_xinput.set_state) {
             XInputVibrationRaw stop_vib = { 0, 0 };
             g_xinput.set_state(static_cast<DWORD>(slot), &stop_vib);
@@ -672,13 +692,13 @@ void PadManager::rumble_async(const std::string& pad_path, int strong_pct, int w
             for (auto& p : pads_) {
                 if (p.path == pad_path) {
                     p.playing_rumble = false;
-                    notify = notify_hwnd_;
+                    if (!stop_) notify = notify_hwnd_;
                     break;
                 }
             }
         }
         if (notify) PostMessageW(notify, kMsgPadsUpdated, 0, 0);
-    }).detach();
+    });
 }
 
 void PadManager::toggle_find_controller(const std::string& pad_path)
@@ -691,42 +711,47 @@ void PadManager::toggle_find_controller(const std::string& pad_path)
         for (auto& p : pads_) {
             if (p.path == pad_path) {
                 slot = p.xinput_slot;
-                p.finding = !p.finding;
-                start_finding = p.finding;
+                start_finding = !p.finding;
+                p.finding = start_finding;
                 hwnd = notify_hwnd_;
                 break;
             }
         }
     }
     if (slot < 0) return;
+
+    stop_rumble_thread();
+    if (!start_finding) {
+        if (hwnd) PostMessageW(hwnd, kMsgPadsUpdated, 0, 0);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        for (auto& p : pads_) {
+            p.playing_rumble = false;
+            p.finding = (p.path == pad_path);
+        }
+    }
     if (hwnd) PostMessageW(hwnd, kMsgPadsUpdated, 0, 0);
-    if (!start_finding) return;
 
     bool is_dry = dry_run_;
-    std::thread([this, pad_path, slot, is_dry]() {
+    HANDLE cancel_ev = rumble_cancel_event_;
+    rumble_thread_ = std::thread([this, pad_path, slot, is_dry, cancel_ev]() {
         // Ten short, strong buzzes over six seconds
         for (int pulse = 0; pulse < 10; ++pulse) {
-            bool still_finding = false;
-            {
-                std::lock_guard<std::mutex> lk(mtx_);
-                for (const auto& p : pads_) {
-                    if (p.path == pad_path) {
-                        still_finding = p.finding;
-                        break;
-                    }
-                }
-            }
-            if (!still_finding) break;
+            if (cancel_ev && WaitForSingleObject(cancel_ev, 0) == WAIT_OBJECT_0) break;
             if (!is_dry && g_xinput.set_state) {
                 XInputVibrationRaw vib = { 65535, 65535 };
                 g_xinput.set_state(static_cast<DWORD>(slot), &vib);
             }
-            Sleep(250);
+            bool cancelled = cancel_ev ? (WaitForSingleObject(cancel_ev, 250) == WAIT_OBJECT_0) : (Sleep(250), false);
             if (!is_dry && g_xinput.set_state) {
                 XInputVibrationRaw stop_vib = { 0, 0 };
                 g_xinput.set_state(static_cast<DWORD>(slot), &stop_vib);
             }
-            Sleep(350);
+            if (cancelled) break;
+            if (cancel_ev ? (WaitForSingleObject(cancel_ev, 350) == WAIT_OBJECT_0) : (Sleep(350), false)) break;
         }
         HWND notify = nullptr;
         {
@@ -734,13 +759,13 @@ void PadManager::toggle_find_controller(const std::string& pad_path)
             for (auto& p : pads_) {
                 if (p.path == pad_path) {
                     p.finding = false;
-                    notify = notify_hwnd_;
+                    if (!stop_) notify = notify_hwnd_;
                     break;
                 }
             }
         }
         if (notify) PostMessageW(notify, kMsgPadsUpdated, 0, 0);
-    }).detach();
+    });
 }
 
 void PadManager::poll_pads(bool read_live)

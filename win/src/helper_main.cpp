@@ -244,8 +244,8 @@ private:
                 exe = dir.substr(0, slash + 1) + L"lares.exe";
             }
         }
-        SetEnvironmentVariableW(L"LARES_SECTION", utf8_to_wide(section).c_str());
-        ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        std::wstring args = L"--section " + utf8_to_wide(section);
+        ShellExecuteW(nullptr, L"open", exe.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
     }
 
     void show_tray_menu()

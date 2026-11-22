@@ -31,7 +31,7 @@ static std::string get_env_utf8(const wchar_t* name)
 
 static void write_cli_output(const char* text)
 {
-    if (!text) return;
+    if (!text || !*text) return;
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     bool attached = false;
     if (h == nullptr || h == INVALID_HANDLE_VALUE || GetFileType(h) == FILE_TYPE_UNKNOWN) {
@@ -41,8 +41,19 @@ static void write_cli_output(const char* text)
         }
     }
     if (h && h != INVALID_HANDLE_VALUE) {
-        DWORD written = 0;
-        WriteFile(h, text, static_cast<DWORD>(std::strlen(text)), &written, nullptr);
+        DWORD mode = 0;
+        if (GetFileType(h) == FILE_TYPE_CHAR && GetConsoleMode(h, &mode)) {
+            int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+            if (n > 1) {
+                std::wstring wide(static_cast<size_t>(n - 1), L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, text, -1, wide.data(), n);
+                DWORD written = 0;
+                WriteConsoleW(h, wide.c_str(), static_cast<DWORD>(wide.size()), &written, nullptr);
+            }
+        } else {
+            DWORD written = 0;
+            WriteFile(h, text, static_cast<DWORD>(std::strlen(text)), &written, nullptr);
+        }
     }
     if (attached) FreeConsole();
 }
@@ -86,8 +97,10 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
         return 2;
     }
     if (opts.action != lares::CliAction::Window) {
+        HRESULT hr_cli = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         std::string out_text;
         int rc = lares::run_remote_cli(opts.action, opts.dry_run, opts.dry_stream, out_text);
+        if (SUCCEEDED(hr_cli)) CoUninitialize();
         write_cli_output(out_text.c_str());
         return rc;
     }
