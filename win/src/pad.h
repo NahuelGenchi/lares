@@ -219,6 +219,7 @@ public:
 private:
     void worker_loop();
     void poll_pads(bool read_live);
+    void stop_rumble_thread();
 
     bool dry_run_ = false;
     mutable std::mutex mtx_;
@@ -231,6 +232,8 @@ private:
     std::vector<PadInfo> pads_;
     PadPrefs cached_prefs_;
     std::thread worker_;
+    std::thread rumble_thread_;
+    HANDLE rumble_cancel_event_ = nullptr;
 };
 
 } // namespace lares

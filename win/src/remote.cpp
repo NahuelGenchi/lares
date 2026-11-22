@@ -301,19 +301,39 @@ int run_process_hidden(const std::wstring& cmdline, std::string& out_stdout, DWO
     }
 
     char buf[1024];
-    DWORD n = 0;
-    while (ReadFile(rd, buf, sizeof(buf), &n, nullptr) && n > 0) {
-        out_stdout.append(buf, n);
+    ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    bool timed_out = false;
+    while (true) {
+        DWORD avail = 0;
+        while (PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+            DWORD to_read = std::min<DWORD>(avail, static_cast<DWORD>(sizeof(buf)));
+            DWORD n = 0;
+            if (!ReadFile(rd, buf, to_read, &n, nullptr) || n == 0) break;
+            out_stdout.append(buf, n);
+        }
+        DWORD wait_rc = WaitForSingleObject(pi.hProcess, 40);
+        if (wait_rc == WAIT_OBJECT_0) {
+            // Drain any final buffered output after process exit
+            while (PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+                DWORD to_read = std::min<DWORD>(avail, static_cast<DWORD>(sizeof(buf)));
+                DWORD n = 0;
+                if (!ReadFile(rd, buf, to_read, &n, nullptr) || n == 0) break;
+                out_stdout.append(buf, n);
+            }
+            break;
+        }
+        if (GetTickCount64() >= deadline) {
+            timed_out = true;
+            TerminateProcess(pi.hProcess, 124);
+            WaitForSingleObject(pi.hProcess, 500);
+            break;
+        }
     }
     CloseHandle(rd);
 
-    DWORD wait_rc = WaitForSingleObject(pi.hProcess, timeout_ms);
-    DWORD exit_code = static_cast<DWORD>(-1);
-    if (wait_rc == WAIT_OBJECT_0) {
+    DWORD exit_code = 124;
+    if (!timed_out) {
         GetExitCodeProcess(pi.hProcess, &exit_code);
-    } else {
-        TerminateProcess(pi.hProcess, 124);
-        exit_code = 124;
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
@@ -551,10 +571,18 @@ void RemoteController::save_config_to_disk(const RemoteConfig& cfg)
     if (slash != std::wstring::npos) {
         CreateDirectoryW(ini_path_.substr(0, slash).c_str(), nullptr);
     }
-    std::ofstream out(ini_path_, std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) return;
-    std::string text = serialize_lares_ini(cfg);
-    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    std::wstring tmp = ini_path_ + L".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return;
+        std::string text = serialize_lares_ini(cfg);
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        out.flush();
+        if (!out.good()) return;
+    }
+    if (!MoveFileExW(tmp.c_str(), ini_path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tmp.c_str());
+    }
 }
 
 RemoteConfig RemoteController::config() const
@@ -802,6 +830,9 @@ void RemoteController::apply_mode_async(RemoteMode mode)
         cfg_snap = cfg_;
     }
     save_config_to_disk(cfg_snap);
+    if (HWND hwnd_now = notify_hwnd_.load(); hwnd_now && !stop_.load()) {
+        PostMessageW(hwnd_now, kMsgRemoteLive, 0, 0);
+    }
 
     apply_thread_ = std::thread([this, mode, cfg_snap]() {
         const RemoteItem* order = remote_apply_order(mode);
@@ -837,6 +868,9 @@ void RemoteController::apply_single_async(RemoteItem item, const std::string& va
         cfg_snap = cfg_;
     }
     save_config_to_disk(cfg_snap);
+    if (HWND hwnd_now = notify_hwnd_.load(); hwnd_now && !stop_.load()) {
+        PostMessageW(hwnd_now, kMsgRemoteLive, 0, 0);
+    }
 
     apply_thread_ = std::thread([this, item, value]() {
         RemoteStepResult r = apply_item_sync(item, value);
@@ -858,9 +892,10 @@ bool RemoteController::allow_sunshine_service()
     const wchar_t* ps_cmd =
         L"-NoProfile -ExecutionPolicy Bypass -Command \""
         L"$sd = (sc.exe sdshow SunshineService | Where-Object { $_ -match '^D:' }) -join ''; "
-        L"if ($sd -and $sd -notmatch 'RPWP;;;IU') { "
+        L"if (-not $sd) { exit 1 }; "
+        L"if ($sd -notmatch 'RPWP;;;IU') { "
         L"  if ($sd -match 'S:') { $sd = $sd -replace 'S:', '(A;;RPWP;;;IU)S:' } else { $sd += '(A;;RPWP;;;IU)' }; "
-        L"  sc.exe sdset SunshineService $sd | Out-Null "
+        L"  sc.exe sdset SunshineService $sd | Out-Null; exit $LASTEXITCODE "
         L"}\"";
 
     SHELLEXECUTEINFOW sei = {};

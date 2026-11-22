@@ -498,6 +498,23 @@ static void test_hidpp_allowed_matrix()
     CHECK(lares::key_light_from_name("") == lares::KeyLight::Own);
 }
 
+static void test_config_escaping_and_pad_shutdown()
+{
+    // Verify backslash + tab escaping in nickname values round-trips cleanly
+    lares::PadPrefs p;
+    p.nicknames["k1"] = "Player\\One\tXbox Wireless Controller";
+    std::string text = lares::serialize_pad_ini(p);
+    lares::PadPrefs p2 = lares::parse_pad_ini(text);
+    CHECK(p2.nicknames["k1"] == "Player\\One\tXbox Wireless Controller");
+
+    // Verify destroying PadManager while rumble/find is active does not UAF or hang
+    {
+        lares::PadManager pm(true);
+        pm.rumble_async("xinput-0", 80, 40, 2000);
+        pm.toggle_find_controller("xinput-0");
+    }
+}
+
 int main()
 {
     test_cli();
@@ -510,6 +527,7 @@ int main()
     test_pad_map_and_controller();
     test_helper();
     test_hidpp_allowed_matrix();
+    test_config_escaping_and_pad_shutdown();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;

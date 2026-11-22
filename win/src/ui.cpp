@@ -215,7 +215,11 @@ bool MainWindow::create()
 
     apply_titlebar_theme();
     if (!opts_.section.empty()) {
-        select_section(opts_.section, false);
+        std::string wanted = opts_.section;
+        select_section(wanted, false);
+        if (sections_[current_sec_].id == wanted) {
+            opts_.section.clear();
+        }
     } else {
         select_section("overview", false);
     }
@@ -271,6 +275,13 @@ void MainWindow::select_section(const std::string& id, bool animate)
             current_sec_ = i;
             scroll_y_ = 0.0f;
             scroll_target_y_ = 0.0f;
+            editing_pad_path_.clear();
+            editing_nickname_.clear();
+            toggle_hits_.clear();
+            card_hits_.clear();
+            remote_hits_.clear();
+            device_hits_.clear();
+            pad_hits_.clear();
             int vis = visible_index_of(i);
             nav_pill_target_y_ = kNavPadTop + vis * (kNavItemHeight + kNavItemGap);
             if (!animate || !nav_pill_init_) {
@@ -398,7 +409,7 @@ void MainWindow::draw_pixel_art(ID2D1RenderTarget* rt, const char* const* art,
 }
 
 void MainWindow::draw_text(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTextFormat* fmt,
-                           const D2D1_RECT_F& rect, const Rgba& color)
+                           const D2D1_RECT_F& rect, const Rgba& color, DWRITE_TEXT_ALIGNMENT align)
 {
     if (!text || !fmt || !brush_) return;
     IDWriteTextLayout* layout = nullptr;
@@ -406,6 +417,7 @@ void MainWindow::draw_text(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTe
     float max_w = std::max(1.0f, rect.right - rect.left);
     float max_h = std::max(1.0f, rect.bottom - rect.top);
     if (SUCCEEDED(fonts_.factory()->CreateTextLayout(text, len, fmt, max_w, max_h, &layout)) && layout) {
+        layout->SetTextAlignment(align);
         if (fonts_.no_ligatures()) {
             DWRITE_TEXT_RANGE range = { 0, len };
             layout->SetTypography(fonts_.no_ligatures(), range);
@@ -414,6 +426,39 @@ void MainWindow::draw_text(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTe
         rt->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), layout, brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         layout->Release();
     }
+}
+
+void MainWindow::clamp_scroll()
+{
+    if (!hwnd_) return;
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    float lh = static_cast<float>(rc.bottom - rc.top) / dpi_scale_;
+    float max_scroll = std::max(0.0f, content_height_ - lh);
+    scroll_y_ = std::clamp(scroll_y_, 0.0f, max_scroll);
+    scroll_target_y_ = std::clamp(scroll_target_y_, 0.0f, max_scroll);
+}
+
+bool MainWindow::point_over_interactive(float lx, float ly) const
+{
+    if (lx < kSidebarWidth) {
+        if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
+            int vis = 0;
+            for (int i = 0; i < static_cast<int>(sections_.size()); ++i) {
+                if (!sections_[i].visible) continue;
+                float iy = kNavPadTop + vis * (kNavItemHeight + kNavItemGap);
+                if (ly >= iy && ly <= iy + kNavItemHeight) return true;
+                ++vis;
+            }
+        }
+        return false;
+    }
+    for (const auto& h : toggle_hits_) { if (h.enabled && point_in_rect(lx, ly, h.rect)) return true; }
+    for (const auto& h : card_hits_)   { if (point_in_rect(lx, ly, h.rect)) return true; }
+    for (const auto& h : remote_hits_) { if (point_in_rect(lx, ly, h.rect)) return true; }
+    for (const auto& h : device_hits_) { if (point_in_rect(lx, ly, h.rect)) return true; }
+    for (const auto& h : pad_hits_)    { if (point_in_rect(lx, ly, h.rect)) return true; }
+    return false;
 }
 
 float MainWindow::measure_text_height(const wchar_t* text, IDWriteTextFormat* fmt, float max_w)
@@ -870,8 +915,9 @@ void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, f
 
         wchar_t threads_buf[32];
         std::swprintf(threads_buf, std::size(threads_buf), L"%d threads", info.threads);
-        float tw = 115.0f;
-        draw_text(rt, threads_buf, fonts_.caption(), D2D1::RectF(ix + iw - tw, iy + 3.0f, ix + iw, iy + 26.0f), pal.muted);
+        float tw = 120.0f;
+        draw_text(rt, threads_buf, fonts_.caption(), D2D1::RectF(ix + iw - tw, iy + 3.0f, ix + iw, iy + 26.0f),
+                  pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
 
         wchar_t val_buf[32];
         if (s.cpu < 0.0) std::swprintf(val_buf, std::size(val_buf), L"...");
@@ -881,7 +927,8 @@ void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, f
         if (!std::isnan(s.cpu_temp)) {
             wchar_t t_buf[32];
             std::swprintf(t_buf, std::size(t_buf), L"%d °C", static_cast<int>(std::lround(s.cpu_temp)));
-            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 110.0f, iy + 34.0f, ix + iw, iy + 70.0f), pal.muted);
+            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 120.0f, iy + 34.0f, ix + iw, iy + 70.0f),
+                      pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
 
         draw_graph(rt, pal, ix, iy + 74.0f, iw, 54.0f, 3.0f, cpu_graph_);
@@ -917,7 +964,8 @@ void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, f
         if (!std::isnan(s.gpu_temp)) {
             wchar_t t_buf[32];
             std::swprintf(t_buf, std::size(t_buf), L"%d °C", static_cast<int>(std::lround(s.gpu_temp)));
-            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 110.0f, iy + 34.0f, ix + iw, iy + 70.0f), pal.muted);
+            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 120.0f, iy + 34.0f, ix + iw, iy + 70.0f),
+                      pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
 
         draw_graph(rt, pal, ix, iy + 74.0f, iw, 54.0f, 3.0f, gpu_graph_);
@@ -960,7 +1008,8 @@ void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, f
 
         if (!info.disk_kind.empty()) {
             std::wstring dkind = utf8_to_wide(info.disk_kind);
-            draw_text(rt, dkind.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 60.0f, iy + 3.0f, ix + iw, iy + 26.0f), pal.muted);
+            draw_text(rt, dkind.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 80.0f, iy + 3.0f, ix + iw, iy + 26.0f),
+                      pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
 
         uint64_t dfree = s.disk_total > s.disk_used ? (s.disk_total - s.disk_used) : 0;
@@ -970,7 +1019,8 @@ void MainWindow::draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, f
         if (!std::isnan(s.disk_temp)) {
             wchar_t t_buf[32];
             std::swprintf(t_buf, std::size(t_buf), L"%d °C", static_cast<int>(std::lround(s.disk_temp)));
-            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 110.0f, iy + 34.0f, ix + iw, iy + 70.0f), pal.muted);
+            draw_text(rt, t_buf, fonts_.big(), D2D1::RectF(ix + iw - 120.0f, iy + 34.0f, ix + iw, iy + 70.0f),
+                      pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
 
         double dfrac = s.disk_total ? static_cast<double>(s.disk_used) / static_cast<double>(s.disk_total) : -1.0;
@@ -1114,8 +1164,8 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
             const wchar_t* mstatus = (remote_live_.sunshine < 0) ? L"Unknown"
                 : !sun_on ? L"Off"
                 : remote_live_.paired ? L"Ready" : L"No device paired";
-            draw_text(rt, mstatus, fonts_.body(), D2D1::RectF(ix + iw - 190.0f, ry, ix + iw, ry + 26.0f),
-                      (sun_on && remote_live_.paired) ? pal.text : pal.muted);
+            draw_text(rt, mstatus, fonts_.body(), D2D1::RectF(ix + iw - 240.0f, ry, ix + iw, ry + 26.0f),
+                      (sun_on && remote_live_.paired) ? pal.text : pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
         }
 
         // Row 2: IP address
@@ -1124,8 +1174,8 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
         rt->FillRectangle(D2D1::RectF(ix, ry - 6.0f, ix + iw, ry - 5.0f), brush_);
         draw_text(rt, L"IP address", fonts_.body(), D2D1::RectF(ix, ry, ix + 180.0f, ry + 26.0f), pal.text);
         std::wstring ip_w = remote_live_.tailscale_ip.empty() ? L"Unknown" : utf8_to_wide(remote_live_.tailscale_ip);
-        draw_text(rt, ip_w.c_str(), fonts_.body(), D2D1::RectF(ix + iw - 220.0f, ry, ix + iw, ry + 26.0f),
-                  remote_live_.tailscale_ip.empty() ? pal.muted : pal.text);
+        draw_text(rt, ip_w.c_str(), fonts_.body(), D2D1::RectF(ix + iw - 260.0f, ry, ix + iw, ry + 26.0f),
+                  remote_live_.tailscale_ip.empty() ? pal.muted : pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
 
         // Row 3: Host name
         ry += 36.0f;
@@ -1133,20 +1183,35 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
         rt->FillRectangle(D2D1::RectF(ix, ry - 6.0f, ix + iw, ry - 5.0f), brush_);
         draw_text(rt, L"Host name", fonts_.body(), D2D1::RectF(ix, ry, ix + 180.0f, ry + 26.0f), pal.text);
         std::wstring host_w = remote_live_.tailscale_host.empty() ? L"Unknown" : utf8_to_wide(remote_live_.tailscale_host);
-        draw_text(rt, host_w.c_str(), fonts_.body(), D2D1::RectF(ix + iw - 220.0f, ry, ix + iw, ry + 26.0f),
-                  remote_live_.tailscale_host.empty() ? pal.muted : pal.text);
+        draw_text(rt, host_w.c_str(), fonts_.body(), D2D1::RectF(ix + iw - 260.0f, ry, ix + iw, ry + 26.0f),
+                  remote_live_.tailscale_host.empty() ? pal.muted : pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
 
         y += conn_h + gap;
     }
 
-    // 4. Note banner (Permission Allow or Drift Set-it-again)
+    // 4. Error / Permission / Drift note banner
     bool any_drift = false;
     for (int i = 0; i < kRemoteItemCount; ++i) {
         auto item = static_cast<RemoteItem>(i);
-        if (!remote_matches(remote_live_, item, remote_cfg_.value(remote_cfg_.mode, item))) {
+        bool known = (item == RemoteItem::Screen) ? remote_live_.screen_known
+            : (item == RemoteItem::Sunshine) ? (remote_live_.sunshine >= 0)
+                                             : (remote_live_.tailscale >= 0);
+        if (known && !remote_matches(remote_live_, item, remote_cfg_.value(remote_cfg_.mode, item))) {
             any_drift = true;
             break;
         }
+    }
+
+    if (!remote_err_msg_.empty() && !sunshine_needs_perm_) {
+        std::wstring ew = utf8_to_wide(remote_err_msg_);
+        float eh = std::max(44.0f, measure_text_height(ew.c_str(), fonts_.caption(), w - 64.0f) + 22.0f);
+        D2D1_ROUNDED_RECT err_rc = D2D1::RoundedRect(D2D1::RectF(x, y, x + w, y + eh), 14.0f, 14.0f);
+        brush_->SetColor(to_d2d(pal.note));
+        rt->FillRoundedRectangle(err_rc, brush_);
+        Rgba ec = pal.bad, ecf = ec; ecf.a *= 0.35f;
+        draw_pixel_art(rt, ART_BANG, x + 18.0f, y + (eh - 18.0f) * 0.5f, 2.0f, ec, ecf);
+        draw_text(rt, ew.c_str(), fonts_.caption(), D2D1::RectF(x + 46.0f, y + 11.0f, x + w - 18.0f, y + eh - 8.0f), pal.bad);
+        y += eh + gap;
     }
 
     if (sunshine_needs_perm_ || (!remote_.is_applying() && any_drift)) {
@@ -1163,14 +1228,15 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
         const wchar_t* n_txt = sunshine_needs_perm_
             ? L"SunshineService needs permission once so Lares can switch it."
             : L"Changed outside Lares.";
-        draw_text(rt, n_txt, fonts_.caption(), D2D1::RectF(ix + 28.0f, y + 22.0f, x + w - 148.0f, y + 48.0f), pal.text);
+        float text_top = sunshine_needs_perm_ ? (y + 12.0f) : (y + 22.0f);
+        draw_text(rt, n_txt, fonts_.caption(), D2D1::RectF(ix + 28.0f, text_top, x + w - 148.0f, y + note_h - 8.0f), pal.text);
 
         D2D1_RECT_F btn = D2D1::RectF(x + w - 138.0f, y + 15.0f, x + w - 16.0f, y + 49.0f);
         brush_->SetColor(to_d2d(pal.accent));
         rt->FillRoundedRectangle(D2D1::RoundedRect(btn, 10.0f, 10.0f), brush_);
         const wchar_t* b_lbl = sunshine_needs_perm_ ? L"Allow" : L"Set it again";
-        float b_off = sunshine_needs_perm_ ? 36.0f : 14.0f;
-        draw_text(rt, b_lbl, fonts_.caption(), D2D1::RectF(btn.left + b_off, btn.top + 8.0f, btn.right, btn.bottom), pal.on_accent);
+        draw_text(rt, b_lbl, fonts_.caption(), D2D1::RectF(btn.left, btn.top + 8.0f, btn.right, btn.bottom),
+                  pal.on_accent, DWRITE_TEXT_ALIGNMENT_CENTER);
         remote_hits_.push_back({
             btn,
             sunshine_needs_perm_ ? RemoteActionKind::AllowSunshine : RemoteActionKind::ReapplyMode
@@ -1185,18 +1251,35 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
         std::string want_val = remote_cfg_.value(remote_cfg_.mode, item);
         std::wstring name_w = utf8_to_wide(remote_item_name(item));
         std::wstring desc_w = utf8_to_wide(remote_describe(item, want_val));
-        bool matches = remote_matches(remote_live_, item, want_val);
+        bool known = (item == RemoteItem::Screen) ? remote_live_.screen_known
+            : (item == RemoteItem::Sunshine) ? (remote_live_.sunshine >= 0)
+                                             : (remote_live_.tailscale >= 0);
+        bool matches = !known || remote_matches(remote_live_, item, want_val);
         std::wstring live_w = !matches ? utf8_to_wide(remote_describe_live(remote_live_, item)) : L"";
         bool expanded = (expanded_remote_row_ == i);
 
-        // Build chip choices when expanded
+        // Build chip choices when expanded (filtered like src/remote_view.c: >=1280, >=59Hz, 16:9 or 16:10 + monitor's own)
         struct ChipChoice { std::string val; std::wstring label; };
         std::vector<ChipChoice> choices;
         if (expanded) {
             if (item == RemoteItem::Screen) {
+                std::string own = remote_own_size(remote_live_);
+                bool own_added = own.empty();
                 for (const auto& m : remote_live_.modes) {
-                    if (choices.size() >= 8) break;
-                    choices.push_back({ m.spec(), utf8_to_wide(m.label()) });
+                    bool is_16_10 = (m.w * 10 == m.h * 16);
+                    bool is_16_9 = (m.w * 9 == m.h * 16);
+                    std::string sp = m.spec();
+                    bool is_own = (sp == own);
+                    if (!is_own && (m.w < 1280 || m.rate < 59 || (!is_16_10 && !is_16_9))) continue;
+                    if (is_own) own_added = true;
+                    choices.push_back({ sp, utf8_to_wide(m.label()) });
+                    if (choices.size() >= 12) break;
+                }
+                if (!own_added) {
+                    int ow = 0, oh = 0; double orate = 60.0;
+                    if (parse_screen_spec(own, ow, oh, orate)) {
+                        choices.push_back({ own, utf8_to_wide(describe_screen_mode(ow, oh, orate)) });
+                    }
                 }
             } else {
                 choices.push_back({ "on", L"On" });
@@ -1222,7 +1305,8 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
             draw_text(rt, live_w.c_str(), fonts_.caption(), D2D1::RectF(ix + 30.0f, y + 44.0f, ix + 340.0f, y + 68.0f), pal.warn);
         }
 
-        draw_text(rt, desc_w.c_str(), fonts_.body(), D2D1::RectF(ix + iw - 280.0f, y + 17.0f, ix + iw - 26.0f, y + 44.0f), pal.muted);
+        draw_text(rt, desc_w.c_str(), fonts_.body(), D2D1::RectF(ix + iw - 290.0f, y + 17.0f, ix + iw - 28.0f, y + 44.0f),
+                  pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
         draw_pixel_art(rt, ART_CHEVRON, ix + iw - 18.0f, y + 23.0f, 2.0f, ic, icf);
 
         if (expanded && !choices.empty()) {
@@ -1264,9 +1348,12 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
         float err_extra = d.status_error.empty() ? 0.0f : 38.0f;
 
         // Calculate card height according to device kind & settings
-        float card_h = 166.0f + err_extra;
-        if (d.has_settings && kind == DevKind::Mouse) card_h = 582.0f + err_extra;
-        else if (d.has_settings && kind == DevKind::Keyboard) card_h = 660.0f + err_extra;
+        bool show_settings = d.has_settings && d.settings_loaded;
+        bool show_waiting = d.has_settings && !d.settings_loaded;
+        float app_note_extra = (kind == DevKind::Keyboard && show_settings && d.keyboard.app_controls) ? 32.0f : 0.0f;
+        float card_h = 166.0f + err_extra + (show_waiting ? 46.0f : 0.0f);
+        if (show_settings && kind == DevKind::Mouse) card_h = 582.0f + err_extra;
+        else if (show_settings && kind == DevKind::Keyboard) card_h = 660.0f + err_extra + app_note_extra;
 
         draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
         float cy = y + kCardPad;
@@ -1280,14 +1367,15 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
         draw_text(rt, dname.c_str(), fonts_.body(), D2D1::RectF(ix + 30.0f, cy, ix + iw - 112.0f, cy + 28.0f), pal.text);
 
         if (d.asleep) {
-            draw_text(rt, L"Asleep", fonts_.caption(), D2D1::RectF(ix + iw - 90.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.muted);
+            draw_text(rt, L"Asleep", fonts_.caption(), D2D1::RectF(ix + iw - 90.0f, cy + 3.0f, ix + iw, cy + 26.0f),
+                      pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
         } else if (d.battery >= 0) {
             wchar_t btxt[16];
             std::swprintf(btxt, std::size(btxt), L"%d%%", d.battery);
             bool low = (d.battery <= 20);
-            draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 114.0f, cy + 3.0f, ix + iw - 74.0f, cy + 26.0f),
-                      low ? pal.bad : pal.text);
-            draw_meter(rt, pal, ix + iw - 70.0f, cy + 9.0f, 10, 2.0f, d.battery / 100.0, low);
+            draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 124.0f, cy + 3.0f, ix + iw - 82.0f, cy + 26.0f),
+                      low ? pal.bad : pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            draw_meter(rt, pal, ix + iw - 74.0f, cy + 9.0f, 10, 2.0f, d.battery / 100.0, low);
         }
         cy += 38.0f;
 
@@ -1304,12 +1392,14 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
         if (!d.vendor_name.empty()) {
             draw_text(rt, L"Made by", fonts_.caption(), D2D1::RectF(ix, cy, ix + 160.0f, cy + 24.0f), pal.muted);
             std::wstring vname = utf8_to_wide(d.vendor_name);
-            draw_text(rt, vname.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 200.0f, cy, ix + iw, cy + 24.0f), pal.text);
+            draw_text(rt, vname.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 220.0f, cy, ix + iw, cy + 24.0f),
+                      pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
             cy += 28.0f;
         }
         draw_text(rt, L"Connection", fonts_.caption(), D2D1::RectF(ix, cy, ix + 160.0f, cy + 24.0f), pal.muted);
         std::wstring ltxt = utf8_to_wide(dev_link_text(d.link));
-        draw_text(rt, ltxt.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 200.0f, cy, ix + iw, cy + 24.0f), pal.text);
+        draw_text(rt, ltxt.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 220.0f, cy, ix + iw, cy + 24.0f),
+                  pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
         cy += 32.0f;
 
         auto draw_divider = [&]() {
@@ -1353,8 +1443,18 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             cy += 38.0f;
         };
 
+        if (show_waiting) {
+            draw_divider();
+            const wchar_t* wait_msg = d.asleep
+                ? (kind == DevKind::Keyboard
+                    ? L"It's asleep. Press a key to wake it and show its settings."
+                    : L"It's asleep. Move it to wake it and show its settings.")
+                : L"Reading its settings...";
+            draw_text(rt, wait_msg, fonts_.caption(), D2D1::RectF(ix, cy, ix + iw, cy + 32.0f), pal.muted);
+        }
+
         // Mouse settings (HyperX Pulsefire Haste 2 Wireless)
-        if (d.has_settings && kind == DevKind::Mouse) {
+        if (show_settings && kind == DevKind::Mouse) {
             const MouseSettings& m = d.mouse;
             draw_divider();
 
@@ -1416,7 +1516,8 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             draw_text(rt, L"Brightness", fonts_.body(), D2D1::RectF(ix, cy, ix + 180.0f, cy + 26.0f), pal.text);
             wchar_t b_pct[16];
             std::swprintf(b_pct, std::size(b_pct), L"%d%%", m.brightness);
-            draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 54.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.text);
+            draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 60.0f, cy + 3.0f, ix + iw, cy + 26.0f),
+                      pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
             float mx = ix + iw - 196.0f;
             draw_meter(rt, pal, mx, cy + 7.0f, 10, 3.0f, m.brightness / 100.0, false);
             device_hits_.push_back({ D2D1::RectF(mx - 16.0f, cy, mx, cy + 26.0f), d.id, DeviceActionKind::MouseBrightness, 0 });
@@ -1427,7 +1528,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
         }
 
         // Keyboard settings (Logitech G715 HID++ 2.0)
-        if (d.has_settings && kind == DevKind::Keyboard) {
+        if (show_settings && kind == DevKind::Keyboard) {
             const KeyboardSettings& k = d.keyboard;
             draw_divider();
 
@@ -1435,7 +1536,8 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             draw_text(rt, L"Brightness", fonts_.body(), D2D1::RectF(ix, cy, ix + 180.0f, cy + 26.0f), pal.text);
             wchar_t b_pct[16];
             std::swprintf(b_pct, std::size(b_pct), L"%d%%", k.brightness);
-            draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 54.0f, cy + 3.0f, ix + iw, cy + 26.0f), pal.text);
+            draw_text(rt, b_pct, fonts_.caption(), D2D1::RectF(ix + iw - 60.0f, cy + 3.0f, ix + iw, cy + 26.0f),
+                      pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
             float mx = ix + iw - 122.0f;
             int n_levels = (k.levels > 1) ? k.levels : 5;
             static constexpr int kDefaultLevels[5] = { 0, 12, 25, 50, 100 };
@@ -1476,6 +1578,11 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             uint32_t cur_rgb = (static_cast<uint32_t>(k.rgb[0]) << 16) |
                                (static_cast<uint32_t>(k.rgb[1]) << 8) | k.rgb[2];
             draw_swatches(cur_rgb, DeviceActionKind::KeyColour);
+            if (k.app_controls) {
+                draw_text(rt, L"Another app holds its lighting now, so what shows may differ.",
+                          fonts_.caption(), D2D1::RectF(ix, cy, ix + iw, cy + 28.0f), pal.muted);
+                cy += 32.0f;
+            }
             draw_divider();
 
             // 3. Startup & Shutdown effect switches (54x27px switch matching Linux)
@@ -2021,6 +2128,9 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
 {
     toggle_hits_.clear();
     card_hits_.clear();
+    remote_hits_.clear();
+    device_hits_.clear();
+    pad_hits_.clear();
     float col_x = kSidebarWidth + kContentLead + 18.0f;
     float avail_w = std::max(260.0f, client_w - col_x - 36.0f);
     float col_w = std::min(kContentMaxW, avail_w);
@@ -2073,6 +2183,13 @@ void MainWindow::on_paint()
 
 void MainWindow::on_mouse_move(float lx, float ly)
 {
+    if (!tracking_mouse_ && hwnd_) {
+        TRACKMOUSEEVENT tme = {};
+        tme.cbSize = sizeof(tme);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hwnd_;
+        tracking_mouse_ = (TrackMouseEvent(&tme) != FALSE);
+    }
     int new_hover = -1;
     if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
         int vis = 0;
@@ -2130,11 +2247,15 @@ void MainWindow::on_mouse_down(float lx, float ly)
         switch (rh.kind) {
         case RemoteActionKind::SwitchModeHome:
             if (remote_cfg_.mode != RemoteMode::Home || !remote_cfg_.mode_known) {
+                remote_err_msg_.clear();
+                sunshine_needs_perm_ = false;
                 remote_.apply_mode_async(RemoteMode::Home);
             }
             return;
         case RemoteActionKind::SwitchModeRemote:
             if (remote_cfg_.mode != RemoteMode::Remote || !remote_cfg_.mode_known) {
+                remote_err_msg_.clear();
+                sunshine_needs_perm_ = false;
                 remote_.apply_mode_async(RemoteMode::Remote);
             }
             return;
@@ -2145,16 +2266,20 @@ void MainWindow::on_mouse_down(float lx, float ly)
             return;
         }
         case RemoteActionKind::PickChip:
+            remote_err_msg_.clear();
             sunshine_needs_perm_ = false;
             remote_.apply_single_async(rh.item, rh.value);
             return;
         case RemoteActionKind::AllowSunshine:
+            remote_err_msg_.clear();
             if (remote_.allow_sunshine_service()) {
                 sunshine_needs_perm_ = false;
                 remote_.apply_mode_async(remote_cfg_.mode);
             }
             return;
         case RemoteActionKind::ReapplyMode:
+            remote_err_msg_.clear();
+            sunshine_needs_perm_ = false;
             remote_.apply_mode_async(remote_cfg_.mode);
             return;
         case RemoteActionKind::FinishGuide:
@@ -2318,6 +2443,7 @@ void MainWindow::on_mouse_down(float lx, float ly)
             } else {
                 if (pads_.set_nickname(pad_prefs_, ph.pad_path, editing_nickname_)) {
                     save_pad_prefs(pad_path_, pad_prefs_);
+                    pad_service_sync(pad_prefs_, opts_.dry_run);
                     pad_list_ = pads_.list();
                 }
                 editing_pad_path_.clear();
@@ -2328,16 +2454,19 @@ void MainWindow::on_mouse_down(float lx, float ly)
         case PadActionKind::LowLevelDelta:
             pad_prefs_.low_level = std::clamp(pad_prefs_.low_level + ph.value, 5, 50);
             save_pad_prefs(pad_path_, pad_prefs_);
+            pad_service_sync(pad_prefs_, opts_.dry_run);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         case PadActionKind::IdleMinutesChip:
             pad_prefs_.idle_minutes = ph.value;
             save_pad_prefs(pad_path_, pad_prefs_);
+            pad_service_sync(pad_prefs_, opts_.dry_run);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         case PadActionKind::ForgetNickname:
             pad_prefs_.nicknames.erase(ph.pad_path);
             save_pad_prefs(pad_path_, pad_prefs_);
+            pad_service_sync(pad_prefs_, opts_.dry_run);
             pads_.apply_nicknames(pad_prefs_);
             pad_list_ = pads_.list();
             InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2375,6 +2504,7 @@ void MainWindow::on_key_down(WPARAM vk)
         if (vk == VK_RETURN) {
             if (pads_.set_nickname(pad_prefs_, editing_pad_path_, editing_nickname_)) {
                 save_pad_prefs(pad_path_, pad_prefs_);
+                pad_service_sync(pad_prefs_, opts_.dry_run);
                 pad_list_ = pads_.list();
             }
             editing_pad_path_.clear();
@@ -2393,6 +2523,11 @@ void MainWindow::on_key_down(WPARAM vk)
             }
             return;
         }
+        return;
+    }
+
+    if (vk == VK_PRIOR || vk == VK_NEXT) {
+        on_mouse_wheel(vk == VK_PRIOR ? 360 : -360);
         return;
     }
 
@@ -2452,6 +2587,24 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         on_mouse_move(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
                       static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
         return 0;
+    case WM_MOUSELEAVE:
+        tracking_mouse_ = false;
+        if (hover_sec_ != -1) {
+            hover_sec_ = -1;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            POINT pt = {};
+            if (GetCursorPos(&pt) && ScreenToClient(hwnd_, &pt)) {
+                float lx = static_cast<float>(pt.x) / dpi_scale_;
+                float ly = static_cast<float>(pt.y) / dpi_scale_;
+                SetCursor(LoadCursorW(nullptr, point_over_interactive(lx, ly) ? IDC_HAND : IDC_ARROW));
+                return TRUE;
+            }
+        }
+        return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_LBUTTONDOWN:
         on_mouse_down(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
                       static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
@@ -2504,7 +2657,9 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_SIZE:
+        clamp_scroll();
         update_sampling_state();
+        InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_SHOWWINDOW:
         update_sampling_state();
@@ -2552,8 +2707,15 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
             else if (std::strcmp(sec.id, "keyboard") == 0) sec.visible = devices_.any_of(DevKind::Keyboard);
             else if (std::strcmp(sec.id, "mouse") == 0) sec.visible = devices_.any_of(DevKind::Mouse);
         }
-        if (!opts_.section.empty() && opts_.section != sections_[current_sec_].id) {
-            select_section(opts_.section, false);
+        if (!opts_.section.empty()) {
+            std::string wanted = opts_.section;
+            select_section(wanted, false);
+            if (sections_[current_sec_].id == wanted) {
+                opts_.section.clear();
+            }
+        }
+        if (!sections_[current_sec_].visible) {
+            select_section("overview", true);
         }
         int vis = visible_index_of(current_sec_);
         nav_pill_target_y_ = kNavPadTop + vis * (kNavItemHeight + kNavItemGap);

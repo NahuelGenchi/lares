@@ -163,6 +163,43 @@ std::string wide_to_utf8_str(const wchar_t* ws)
     return out;
 }
 
+std::wstring system_drive_root()
+{
+    wchar_t win_dir[MAX_PATH] = {};
+    UINT n = GetSystemWindowsDirectoryW(win_dir, MAX_PATH);
+    if (n >= 2 && win_dir[1] == L':') {
+        std::wstring root;
+        root.push_back(win_dir[0]);
+        root += L":\\";
+        return root;
+    }
+    return L"C:\\";
+}
+
+std::wstring system_physical_drive_path()
+{
+    std::wstring root = system_drive_root();
+    std::wstring vol = L"\\\\.\\";
+    vol.push_back(root[0]);
+    vol.push_back(L':');
+    HANDLE hv = CreateFileW(vol.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            nullptr, OPEN_EXISTING, 0, nullptr);
+    if (hv != INVALID_HANDLE_VALUE) {
+        VOLUME_DISK_EXTENTS vde = {};
+        DWORD bytes = 0;
+        if (DeviceIoControl(hv, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0,
+                            &vde, sizeof(vde), &bytes, nullptr) &&
+            vde.NumberOfDiskExtents > 0) {
+            CloseHandle(hv);
+            wchar_t path[64];
+            std::swprintf(path, std::size(path), L"\\\\.\\PhysicalDrive%lu", vde.Extents[0].DiskNumber);
+            return path;
+        }
+        CloseHandle(hv);
+    }
+    return L"\\\\.\\PhysicalDrive0";
+}
+
 } // namespace
 
 HardwareSampler::HardwareSampler(bool dry_run)
@@ -243,8 +280,9 @@ void HardwareSampler::init_static_info()
         }
     }
 
-    // Check if PhysicalDrive0 is NVMe using unprivileged metadata handle (dwDesiredAccess = 0).
-    HANDLE hd = CreateFileW(L"\\\\.\\PhysicalDrive0", 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    // Check if the system physical drive is NVMe using unprivileged metadata handle (dwDesiredAccess = 0).
+    std::wstring phys_drive = system_physical_drive_path();
+    HANDLE hd = CreateFileW(phys_drive.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
                             nullptr, OPEN_EXISTING, 0, nullptr);
     if (hd != INVALID_HANDLE_VALUE) {
         STORAGE_PROPERTY_QUERY q = {};
@@ -332,6 +370,7 @@ void HardwareSampler::sample_cpu(HwSample& out)
 {
     if (fresh_load_.exchange(false)) {
         last_cpu_total_ = 0;
+        out.cpu = -1.0;
     }
     FILETIME idle_ft = {}, kernel_ft = {}, user_ft = {};
     if (!GetSystemTimes(&idle_ft, &kernel_ft, &user_ft)) {
@@ -365,14 +404,16 @@ void HardwareSampler::sample_memory(HwSample& out)
 void HardwareSampler::sample_disk(HwSample& out, bool details)
 {
     ULARGE_INTEGER avail = {}, total = {}, free_bytes = {};
-    if (GetDiskFreeSpaceExW(L"C:\\", &avail, &total, &free_bytes)) {
+    std::wstring root = system_drive_root();
+    if (GetDiskFreeSpaceExW(root.c_str(), &avail, &total, &free_bytes)) {
         out.disk_total = total.QuadPart;
         out.disk_used = total.QuadPart > avail.QuadPart ? (total.QuadPart - avail.QuadPart) : 0;
     }
 
     if (!details) return;
 
-    HANDLE hd = CreateFileW(L"\\\\.\\PhysicalDrive0", 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    std::wstring phys_drive = system_physical_drive_path();
+    HANDLE hd = CreateFileW(phys_drive.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
                             nullptr, OPEN_EXISTING, 0, nullptr);
     if (hd != INVALID_HANDLE_VALUE) {
         STORAGE_PROPERTY_QUERY q = {};

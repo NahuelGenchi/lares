@@ -90,15 +90,14 @@ PadPrefs parse_pad_ini(const std::string& text)
             }
         } else if (group == "nicknames") {
             if (!key.empty() && !val.empty()) {
-                // Support both literal tab and GLib keyfile \t escape
+                // Support both literal tab and GLib keyfile \t / \\ escapes
                 std::string unescaped;
                 for (size_t i = 0; i < val.size(); ++i) {
-                    if (val[i] == '\\' && i + 1 < val.size() && val[i + 1] == 't') {
-                        unescaped.push_back('\t');
-                        ++i;
-                    } else {
-                        unescaped.push_back(val[i]);
+                    if (val[i] == '\\' && i + 1 < val.size()) {
+                        if (val[i + 1] == 't') { unescaped.push_back('\t'); ++i; continue; }
+                        if (val[i + 1] == '\\') { unescaped.push_back('\\'); ++i; continue; }
                     }
+                    unescaped.push_back(val[i]);
                 }
                 p.nicknames[key] = unescaped;
             }
@@ -144,7 +143,8 @@ std::string serialize_pad_ini(const PadPrefs& p)
         for (const auto& kv : p.nicknames) {
             std::string escaped;
             for (char c : kv.second) {
-                if (c == '\t') escaped += "\\t";
+                if (c == '\\') escaped += "\\\\";
+                else if (c == '\t') escaped += "\\t";
                 else escaped.push_back(c);
             }
             out << kv.first << "=" << escaped << "\n";
@@ -199,12 +199,27 @@ bool save_pad_prefs(const std::wstring& path, const PadPrefs& prefs)
         std::wstring dir = path.substr(0, slash);
         CreateDirectoryW(dir.c_str(), nullptr);
     }
-#endif
+    std::wstring tmp = path + L".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        std::string content = serialize_pad_ini(prefs);
+        out.write(content.data(), static_cast<std::streamsize>(content.size()));
+        out.flush();
+        if (!out.good()) return false;
+    }
+    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return true;
+    }
+    DeleteFileW(tmp.c_str());
+    return false;
+#else
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return false;
     std::string content = serialize_pad_ini(prefs);
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
     return out.good();
+#endif
 }
 
 } // namespace lares

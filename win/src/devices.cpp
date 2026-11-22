@@ -1447,6 +1447,7 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
             kbd.link = DevLink::Receiver;
             kbd.connected = true;
             kbd.has_settings = true;
+            kbd.settings_loaded = true;
             hidpp_decode(hidpp_model(0xc547, 0x40a2) ? &hidpp_state_ : &hidpp_state_,
                          hidpp_model(0xc547, 0x40a2), &kbd.keyboard);
             devices_.push_back(kbd);
@@ -1460,6 +1461,7 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
             mse.connected = true;
             mse.battery = 82;
             mse.has_settings = true;
+            mse.settings_loaded = true;
             hyperx_decode(hyperx_model(0x03f0, 0x0f98), &hyperx_state_, &mse.mouse);
             devices_.push_back(mse);
         }
@@ -1581,6 +1583,7 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
         }
         {
             std::lock_guard<std::mutex> lk(mu_);
+            kbd.settings_loaded = hidpp_loaded_;
             hidpp_decode(&hidpp_state_, hidpp_model(0xc547, 0x40a2), &kbd.keyboard);
             if (kbd.keyboard.has_lighting && key_light_live(live_key_light_)) {
                 kbd.keyboard.light = live_key_light_;
@@ -1617,6 +1620,7 @@ void DevicesManager::scan_devices(bool read_mouse_cfg, bool read_kbd_cfg)
             }
             hyperx_decode(hyperx_model(mse.usb_vid, mse.usb_pid), &st_copy, &mse.mouse);
             read_hyperx_device_win(mse, st_copy, loaded_copy, read_mouse_cfg);
+            mse.settings_loaded = loaded_copy;
             {
                 std::lock_guard<std::mutex> lk(mu_);
                 hyperx_state_ = st_copy;
@@ -1756,6 +1760,7 @@ void DevicesManager::apply_mouse_async(const std::string& id, const MouseSetting
                         for (auto& d : devices_) {
                             if (d.id == id) {
                                 hyperx_decode(model, &hyperx_state_, &d.mouse);
+                                d.settings_loaded = true;
                                 d.asleep = false;
                                 d.connected = true;
                                 d.status_error.clear();
@@ -1914,6 +1919,7 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
                                 std::memcpy(d.keyboard.rgb, live_key_rgb_, 3);
                                 d.keyboard.app_controls = false;
                             }
+                            d.settings_loaded = true;
                             d.asleep = false;
                             d.status_error.clear();
                             break;
