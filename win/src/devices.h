@@ -314,7 +314,8 @@ public:
 
     void set_live_key_light(KeyLight light, const uint8_t rgb[3]);
     void apply_mouse_async(const std::string& id, const MouseSettings& want);
-    void apply_keyboard_async(const std::string& id, const KeyboardSettings& want);
+    void apply_keyboard_async(const std::string& id, const KeyboardSettings& want, bool force_light = false);
+    void release_keyboard_live_async(const std::string& id);
 
 private:
     void worker_loop();

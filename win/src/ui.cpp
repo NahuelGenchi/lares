@@ -2250,7 +2250,8 @@ void MainWindow::on_mouse_down(float lx, float ly)
                     break;
                 }
                 // Live keyboard lighting effects also save to pad.ini for the helper.
-                if (dh.kind == DeviceActionKind::KeyLight || dh.kind == DeviceActionKind::KeyColour) {
+                bool is_light_pick = (dh.kind == DeviceActionKind::KeyLight || dh.kind == DeviceActionKind::KeyColour);
+                if (is_light_pick) {
                     static const char* const kLiveNames[4] = { "off", "solid", "breathing", "cycle" };
                     if (key_light_live(want.light)) {
                         pad_prefs_.key_light = kLiveNames[static_cast<int>(want.light)];
@@ -2258,11 +2259,10 @@ void MainWindow::on_mouse_down(float lx, float ly)
                     } else {
                         pad_prefs_.key_light = "own";
                     }
-                    devices_.set_live_key_light(key_light_from_name(pad_prefs_.key_light), pad_prefs_.key_rgb);
                     save_pad_prefs(pad_path_, pad_prefs_);
                     pad_service_sync(pad_prefs_, opts_.dry_run);
                 }
-                devices_.apply_keyboard_async(d.id, want);
+                devices_.apply_keyboard_async(d.id, want, is_light_pick);
             }
             return;
         }

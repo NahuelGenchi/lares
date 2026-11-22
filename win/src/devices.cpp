@@ -1785,7 +1785,7 @@ void DevicesManager::apply_mouse_async(const std::string& id, const MouseSetting
     });
 }
 
-void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardSettings& want)
+void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardSettings& want, bool force_light)
 {
     KeyboardSettings prev_settings{};
     std::wstring short_path, long_path;
@@ -1810,7 +1810,7 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
     if (dry_run_ || short_path.empty() || long_path.empty()) return;
 
     if (write_thread_.joinable()) write_thread_.join();
-    write_thread_ = std::thread([this, id, want, prev_settings, short_path, long_path]() {
+    write_thread_ = std::thread([this, id, want, prev_settings, force_light, short_path, long_path]() {
         std::lock_guard<std::mutex> io_lk(io_mu_);
         ScopedWinMutex xproc(L"Local\\LaresHidppLock");
         HidppLinkWin link;
@@ -1837,7 +1837,8 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
                 }
 
                 // 2. Live RGB vs Onboard Profile Lighting (0x8071 / 0x8100)
-                bool light_changed = (want.light != prev_settings.light ||
+                bool light_changed = force_light ||
+                                     (want.light != prev_settings.light ||
                                       std::memcmp(want.rgb, prev_settings.rgb, 3) != 0);
                 bool timers_changed = (want.dim_s != prev_settings.dim_s || want.off_s != prev_settings.off_s);
                 bool nv_changed = (want.startup != prev_settings.startup || want.shutdown != prev_settings.shutdown);
@@ -1939,6 +1940,41 @@ void DevicesManager::apply_keyboard_async(const std::string& id, const KeyboardS
         }
         HWND hwin = notify_hwnd_.load();
         if (hwin && !stop_.load()) PostMessageW(hwin, kMsgDevicesUpdated, 0, 0);
+    });
+}
+
+void DevicesManager::release_keyboard_live_async(const std::string& id)
+{
+    std::wstring short_path, long_path;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        live_key_light_ = KeyLight::Own;
+        for (const auto& d : devices_) {
+            if (d.id == id) {
+                short_path = d.hid_path_primary;
+                long_path = d.hid_path_secondary;
+                break;
+            }
+        }
+    }
+    if (dry_run_ || short_path.empty() || long_path.empty()) return;
+
+    if (write_thread_.joinable()) write_thread_.join();
+    write_thread_ = std::thread([this, short_path, long_path]() {
+        std::lock_guard<std::mutex> io_lk(io_mu_);
+        ScopedWinMutex xproc(L"Local\\LaresHidppLock");
+        HidppLinkWin link;
+        link.sw = hidpp_sw_;
+        std::string err;
+        bool asleep = false;
+        if (link.open(short_path, long_path)) {
+            if (!hidpp_effects_loaded_) {
+                hidpp_effects_loaded_ = hidpp_read_effects_win(link, hidpp_effects_, err, &asleep);
+            }
+            if (hidpp_effects_loaded_) {
+                hidpp_sw_set_win(link, hidpp_effects_, kSwFirmware, 0x00, err, &asleep);
+            }
+        }
     });
 }
 

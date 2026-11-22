@@ -189,7 +189,6 @@ private:
     {
         if (dry_run_) return;
         KeyLight want_light = key_light_from_name(prefs_.key_light);
-        devices_.set_live_key_light(want_light, prefs_.key_rgb);
 
         auto devs = devices_.list();
         const DeviceEntry* kbd = nullptr;
@@ -200,6 +199,7 @@ private:
             }
         }
         if (!kbd || kbd->asleep) {
+            devices_.set_live_key_light(want_light, prefs_.key_rgb);
             last_kbd_ready_ = false;
             return;
         }
@@ -215,12 +215,10 @@ private:
             std::memcpy(want.rgb, prefs_.key_rgb, 3);
             last_applied_light_ = prefs_.key_light;
             std::memcpy(last_applied_rgb_, prefs_.key_rgb, 3);
-            devices_.apply_keyboard_async(kbd->id, want);
+            devices_.apply_keyboard_async(kbd->id, want, true);
         } else if (!key_light_live(want_light) && !last_applied_light_.empty() && last_applied_light_ != "own") {
-            KeyboardSettings want = kbd->keyboard;
-            want.light = KeyLight::Own;
             last_applied_light_ = "own";
-            devices_.apply_keyboard_async(kbd->id, want);
+            devices_.release_keyboard_live_async(kbd->id);
         }
     }
 
