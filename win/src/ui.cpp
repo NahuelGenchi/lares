@@ -9,6 +9,7 @@ extern "C" {
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <dbt.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <windowsx.h>
@@ -27,6 +28,9 @@ static constexpr float kCardPad = 27.0f;
 static constexpr float kCardRadius = 18.0f;
 static constexpr float kPageGap = 36.0f;
 static constexpr UINT_PTR kAnimTimerId = 1;
+static constexpr UINT_PTR kDevicesSettleTimerId = 2;
+// GUID_DEVINTERFACE_HID
+static constexpr GUID kHidInterfaceGuid = { 0x4d1e55b2, 0xf16f, 0x11cf, { 0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
 
 static D2D1_COLOR_F to_d2d(const Rgba& c, float alpha_mul = 1.0f)
 {
@@ -208,8 +212,12 @@ bool MainWindow::create()
     remote_.set_notify_hwnd(hwnd_);
     devices_.set_notify_hwnd(hwnd_);
     pads_.set_notify_hwnd(hwnd_);
+    DEV_BROADCAST_DEVICEINTERFACE_W filter = {};
+    filter.dbcc_size = sizeof(filter);
+    filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+    filter.dbcc_classguid = kHidInterfaceGuid;
+    dev_notify_ = RegisterDeviceNotificationW(hwnd_, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
     remote_.request_refresh();
-    devices_.request_refresh();
     pads_.request_refresh();
     pad_service_sync(pad_prefs_, opts_.dry_run);
 
@@ -439,26 +447,43 @@ void MainWindow::clamp_scroll()
     scroll_target_y_ = std::clamp(scroll_target_y_, 0.0f, max_scroll);
 }
 
-bool MainWindow::point_over_interactive(float lx, float ly) const
+bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
 {
+    auto found = [&](const D2D1_RECT_F& r) {
+        if (out) *out = r;
+        return true;
+    };
     if (lx < kSidebarWidth) {
         if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
             int vis = 0;
             for (int i = 0; i < static_cast<int>(sections_.size()); ++i) {
                 if (!sections_[i].visible) continue;
                 float iy = kNavPadTop + vis * (kNavItemHeight + kNavItemGap);
-                if (ly >= iy && ly <= iy + kNavItemHeight) return true;
+                if (ly >= iy && ly <= iy + kNavItemHeight) {
+                    return found(D2D1::RectF(kNavPadX, iy, kSidebarWidth - kNavPadX, iy + kNavItemHeight));
+                }
                 ++vis;
             }
         }
         return false;
     }
-    for (const auto& h : toggle_hits_) { if (h.enabled && point_in_rect(lx, ly, h.rect)) return true; }
-    for (const auto& h : card_hits_)   { if (point_in_rect(lx, ly, h.rect)) return true; }
-    for (const auto& h : remote_hits_) { if (point_in_rect(lx, ly, h.rect)) return true; }
-    for (const auto& h : device_hits_) { if (point_in_rect(lx, ly, h.rect)) return true; }
-    for (const auto& h : pad_hits_)    { if (point_in_rect(lx, ly, h.rect)) return true; }
+    // In the order on_mouse_down tries them.
+    for (const auto& h : toggle_hits_) { if (h.enabled && point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& h : card_hits_)   { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& h : remote_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& h : device_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& h : pad_hits_)    { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     return false;
+}
+
+bool MainWindow::point_over_interactive(float lx, float ly) const
+{
+    return interactive_rect_at(lx, ly, nullptr);
+}
+
+bool MainWindow::hovered(const D2D1_RECT_F& rc) const
+{
+    return mouse_in_ && point_in_rect(mouse_x_, mouse_y_, rc);
 }
 
 float MainWindow::measure_text_height(const wchar_t* text, IDWriteTextFormat* fmt, float max_w)
@@ -819,9 +844,9 @@ void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, f
             if (p.battery.known) {
                 std::wstring btxt = utf8_to_wide(pad_battery_charge(p.battery));
                 bool low = (pad_battery_low_stage(p.battery, pad_prefs_.low_level) > 0 && !pad_battery_charging(p.battery));
-                draw_text(rt, btxt.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 114.0f, ry + 19.0f, ix + iw - 74.0f, ry + 44.0f),
-                          low ? pal.bad : pal.text);
-                draw_meter(rt, pal, ix + iw - 70.0f, ry + 26.0f, 10, 2.0f, pad_battery_fraction(p.battery), low);
+                draw_text(rt, btxt.c_str(), fonts_.caption(), D2D1::RectF(ix + iw - 140.0f, ry + 19.0f, ix + iw - 87.0f, ry + 44.0f),
+                          low ? pal.bad : pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+                draw_meter(rt, pal, ix + iw - 78.0f, ry + 26.0f, 10, 2.0f, pad_battery_fraction(p.battery), low);
             }
             ++row_idx;
         }
@@ -847,14 +872,15 @@ void MainWindow::draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, f
 
             if (!d.connected || d.asleep) {
                 draw_text(rt, d.asleep ? L"Asleep" : L"Not connected", fonts_.caption(),
-                          D2D1::RectF(ix + iw - 112.0f, ry + 19.0f, ix + iw, ry + 44.0f), pal.muted);
+                          D2D1::RectF(ix + iw - 140.0f, ry + 19.0f, ix + iw, ry + 44.0f), pal.muted,
+                          DWRITE_TEXT_ALIGNMENT_TRAILING);
             } else if (d.battery >= 0) {
                 wchar_t btxt[16];
                 std::swprintf(btxt, std::size(btxt), L"%d%%", d.battery);
                 bool low = (d.battery <= 20);
-                draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 114.0f, ry + 19.0f, ix + iw - 74.0f, ry + 44.0f),
-                          low ? pal.bad : pal.text);
-                draw_meter(rt, pal, ix + iw - 70.0f, ry + 26.0f, 10, 2.0f, d.battery / 100.0, low);
+                draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 140.0f, ry + 19.0f, ix + iw - 87.0f, ry + 44.0f),
+                          low ? pal.bad : pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+                draw_meter(rt, pal, ix + iw - 78.0f, ry + 26.0f, 10, 2.0f, d.battery / 100.0, low);
             }
         }
         y += card_h + gap;
@@ -1350,10 +1376,33 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
         // Calculate card height according to device kind & settings
         bool show_settings = d.has_settings && d.settings_loaded;
         bool show_waiting = d.has_settings && !d.settings_loaded;
-        float app_note_extra = (kind == DevKind::Keyboard && show_settings && d.keyboard.app_controls) ? 32.0f : 0.0f;
+        float app_note_extra = (kind == DevKind::Keyboard && show_settings && d.keyboard.app_controls &&
+                                !d.windows_lighting) ? 32.0f : 0.0f;
+
+        /* Windows Dynamic Lighting paints over the device's own effects
+         * while it's on for it: say so where the effects are picked, with a
+         * way to Settings, where it's turned off. */
+        const wchar_t* dl_text = (kind == DevKind::Keyboard)
+            ? L"Windows Dynamic Lighting is painting this keyboard's lights, so the effects below won't show "
+              L"until you turn it off for this keyboard."
+            : L"Windows Dynamic Lighting is painting this mouse's lights, so the effects below won't show "
+              L"until you turn it off for this mouse.";
+        float dl_text_h = measure_text_height(dl_text, fonts_.caption(), iw - 36.0f);
+        float dl_note_h = (show_settings && d.windows_lighting) ? (14.0f + dl_text_h + 10.0f + 30.0f + 14.0f) : 0.0f;
+        float dl_extra = dl_note_h > 0.0f ? dl_note_h + 12.0f : 0.0f;
+
+        const wchar_t* key_desc = pad_prefs_.background
+            ? L"Wave, Ripple and Built-in stay on the keyboard. The others play while Lares runs in the background."
+            : L"Wave, Ripple and Built-in stay on the keyboard. The others play while Lares runs in the "
+              L"background, which is off in Settings.";
+        float key_desc_h = measure_text_height(key_desc, fonts_.caption(), iw);
+        float key_head_h = 30.0f + key_desc_h + 10.0f;
+
         float card_h = 166.0f + err_extra + (show_waiting ? 46.0f : 0.0f);
-        if (show_settings && kind == DevKind::Mouse) card_h = 582.0f + err_extra;
-        else if (show_settings && kind == DevKind::Keyboard) card_h = 660.0f + err_extra + app_note_extra;
+        if (show_settings && kind == DevKind::Mouse) card_h = 582.0f + err_extra + dl_extra;
+        else if (show_settings && kind == DevKind::Keyboard) {
+            card_h = 660.0f - 70.0f + key_head_h + err_extra + app_note_extra + dl_extra;
+        }
 
         draw_info_card(rt, brush_, this, pal, x, y, w, card_h);
         float cy = y + kCardPad;
@@ -1373,9 +1422,9 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             wchar_t btxt[16];
             std::swprintf(btxt, std::size(btxt), L"%d%%", d.battery);
             bool low = (d.battery <= 20);
-            draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 124.0f, cy + 3.0f, ix + iw - 82.0f, cy + 26.0f),
+            draw_text(rt, btxt, fonts_.caption(), D2D1::RectF(ix + iw - 140.0f, cy + 3.0f, ix + iw - 87.0f, cy + 26.0f),
                       low ? pal.bad : pal.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
-            draw_meter(rt, pal, ix + iw - 74.0f, cy + 9.0f, 10, 2.0f, d.battery / 100.0, low);
+            draw_meter(rt, pal, ix + iw - 78.0f, cy + 9.0f, 10, 2.0f, d.battery / 100.0, low);
         }
         cy += 38.0f;
 
@@ -1411,12 +1460,33 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
         auto draw_chip = [&](float cx, float r_y, float cw, const wchar_t* lbl, bool active,
                              DeviceActionKind act, int val) {
             D2D1_RECT_F rc = D2D1::RectF(cx, r_y, cx + cw, r_y + 30.0f);
-            brush_->SetColor(to_d2d(active ? pal.accent : pal.chip));
-            rt->FillRoundedRectangle(D2D1::RoundedRect(rc, 8.0f, 8.0f), brush_);
+            brush_->SetColor(to_d2d(active ? pal.accent : hovered(rc) ? pal.hover : pal.chip));
+            rt->FillRoundedRectangle(D2D1::RoundedRect(rc, 9.0f, 9.0f), brush_);
             draw_text(rt, lbl, fonts_.caption(),
-                      D2D1::RectF(rc.left + 12.0f, rc.top + 5.0f, rc.right - 6.0f, rc.bottom),
-                      active ? pal.on_accent : pal.text);
+                      D2D1::RectF(rc.left + 6.0f, rc.top + 5.0f, rc.right - 6.0f, rc.bottom),
+                      active ? pal.on_accent : pal.text, DWRITE_TEXT_ALIGNMENT_CENTER);
             device_hits_.push_back({ rc, d.id, act, val });
+        };
+
+        auto draw_dl_note = [&]() {
+            if (dl_note_h <= 0.0f) return;
+            D2D1_RECT_F nrc = D2D1::RectF(ix, cy, ix + iw, cy + dl_note_h);
+            brush_->SetColor(to_d2d(pal.note));
+            rt->FillRoundedRectangle(D2D1::RoundedRect(nrc, 9.0f, 9.0f), brush_);
+            draw_text(rt, dl_text, fonts_.caption(),
+                      D2D1::RectF(nrc.left + 18.0f, nrc.top + 14.0f, nrc.right - 18.0f, nrc.top + 14.0f + dl_text_h + 4.0f),
+                      pal.text);
+            float by = nrc.top + 14.0f + dl_text_h + 10.0f;
+            const wchar_t* blbl = L"Open Dynamic Lighting";
+            D2D1_RECT_F brc = D2D1::RectF(nrc.left + 9.0f, by, nrc.left + 9.0f + 216.0f, by + 30.0f);
+            if (hovered(brc)) {
+                brush_->SetColor(to_d2d(pal.hover));
+                rt->FillRoundedRectangle(D2D1::RoundedRect(brc, 9.0f, 9.0f), brush_);
+            }
+            draw_text(rt, blbl, fonts_.caption(), D2D1::RectF(brc.left + 9.0f, brc.top + 5.0f, brc.right - 9.0f, brc.bottom),
+                      pal.accent);
+            device_hits_.push_back({ brc, d.id, DeviceActionKind::OpenDynamicLighting, 0 });
+            cy += dl_note_h + 12.0f;
         };
 
         auto draw_swatches = [&](uint32_t cur_rgb, DeviceActionKind act) {
@@ -1427,7 +1497,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
                 float sx = ix + c * (sw_size + sw_gap);
                 D2D1_RECT_F s_rc = D2D1::RectF(sx, cy, sx + sw_size, cy + sw_size);
                 bool active = (rgb == cur_rgb);
-                brush_->SetColor(to_d2d(active ? pal.accent : pal.line));
+                brush_->SetColor(to_d2d(active ? pal.accent : hovered(s_rc) ? pal.muted : pal.line));
                 rt->FillRoundedRectangle(D2D1::RoundedRect(s_rc, 6.0f, 6.0f), brush_);
                 D2D1_RECT_F inner = D2D1::RectF(sx + 3.0f, cy + 3.0f, sx + sw_size - 3.0f, cy + sw_size - 3.0f);
                 Rgba col = {
@@ -1500,6 +1570,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             // 4. Lighting + 9 colour swatches
             draw_text(rt, L"Lighting", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
             cy += 32.0f;
+            draw_dl_note();
             static const wchar_t* const kMouseFx[4] = { L"Off", L"Solid", L"Breathing", L"Colour cycle" };
             float fw = (iw - 24.0f) / 4.0f;
             for (int f = 0; f < 4; ++f) {
@@ -1562,9 +1633,10 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
 
             // 2. Lighting (7 effects in two rows + 9 colour swatches)
             draw_text(rt, L"Lighting", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
-            draw_text(rt, L"Wave, Ripple and Built-in stay on the keyboard; the others play live.",
-                      fonts_.caption(), D2D1::RectF(ix, cy + 26.0f, ix + iw, cy + 68.0f), pal.muted);
-            cy += 70.0f;
+            draw_text(rt, key_desc, fonts_.caption(), D2D1::RectF(ix, cy + 30.0f, ix + iw, cy + 30.0f + key_desc_h + 4.0f),
+                      pal.muted);
+            cy += key_head_h;
+            draw_dl_note();
             static const wchar_t* const kKeyFx[7] = {
                 L"Off", L"Solid", L"Breathing", L"Colour cycle", L"Wave", L"Ripple", L"Built-in"
             };
@@ -1578,7 +1650,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             uint32_t cur_rgb = (static_cast<uint32_t>(k.rgb[0]) << 16) |
                                (static_cast<uint32_t>(k.rgb[1]) << 8) | k.rgb[2];
             draw_swatches(cur_rgb, DeviceActionKind::KeyColour);
-            if (k.app_controls) {
+            if (k.app_controls && !d.windows_lighting) {
                 draw_text(rt, L"Another app holds its lighting now, so what shows may differ.",
                           fonts_.caption(), D2D1::RectF(ix, cy, ix + iw, cy + 28.0f), pal.muted);
                 cy += 32.0f;
@@ -1605,7 +1677,22 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
 
             // 4. Dim after & Lights off after (1, 2, 5, 10, 15 min)
             float tw = (iw - 32.0f) / 5.0f;
+            /* A time set elsewhere, such as G HUB's seconds, matches no chip:
+             * it's said beside the row's name instead of showing nothing. */
+            auto draw_timer_now = [&](int secs) {
+                for (int m : kTimerMinutes) {
+                    if (secs == m * 60) return;
+                }
+                if (secs <= 0) return;
+                wchar_t now_txt[32];
+                if (secs < 60) std::swprintf(now_txt, std::size(now_txt), L"Now %d s", secs);
+                else if (secs % 60 == 0) std::swprintf(now_txt, std::size(now_txt), L"Now %d min", secs / 60);
+                else std::swprintf(now_txt, std::size(now_txt), L"Now %d min %d s", secs / 60, secs % 60);
+                draw_text(rt, now_txt, fonts_.caption(), D2D1::RectF(ix + iw - 200.0f, cy + 3.0f, ix + iw, cy + 26.0f),
+                          pal.muted, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            };
             draw_text(rt, L"Dim after", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            draw_timer_now(k.dim_s);
             cy += 30.0f;
             for (int t = 0; t < 5; ++t) {
                 wchar_t tlbl[16];
@@ -1616,6 +1703,7 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             cy += 42.0f;
 
             draw_text(rt, L"Lights off after", fonts_.body(), D2D1::RectF(ix, cy, ix + 240.0f, cy + 26.0f), pal.text);
+            draw_timer_now(k.off_s);
             cy += 30.0f;
             for (int t = 0; t < 5; ++t) {
                 wchar_t tlbl[16];
@@ -1743,11 +1831,11 @@ void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal,
     auto draw_chip_btn = [&](float cx, float cy, float cw, const wchar_t* lbl, bool active,
                              const std::string& path, PadActionKind act, int val = 0) {
         D2D1_RECT_F rc = D2D1::RectF(cx, cy, cx + cw, cy + 32.0f);
-        brush_->SetColor(to_d2d(active ? pal.accent : pal.chip));
+        brush_->SetColor(to_d2d(active ? pal.accent : hovered(rc) ? pal.hover : pal.chip));
         rt->FillRoundedRectangle(D2D1::RoundedRect(rc, 9.0f, 9.0f), brush_);
         draw_text(rt, lbl, fonts_.caption(),
-                  D2D1::RectF(rc.left + 12.0f, rc.top + 6.0f, rc.right - 6.0f, rc.bottom),
-                  active ? pal.on_accent : pal.text);
+                  D2D1::RectF(rc.left + 6.0f, rc.top + 6.0f, rc.right - 6.0f, rc.bottom),
+                  active ? pal.on_accent : pal.text, DWRITE_TEXT_ALIGNMENT_CENTER);
         pad_hits_.push_back({ rc, path, act, val });
     };
 
@@ -1958,7 +2046,7 @@ void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal,
                 bool low = (pad_battery_low_stage(p.battery, pad_prefs_.low_level) > 0 && !pad_battery_charging(p.battery));
                 draw_meter(rt, pal, ix, cy + 26.0f, 10, 2.0f, pad_battery_fraction(p.battery), low);
                 std::wstring bt = utf8_to_wide(pad_battery_text(p.battery));
-                draw_text(rt, bt.c_str(), fonts_.body(), D2D1::RectF(ix + 78.0f, cy + 20.0f, ix + 220.0f, cy + 44.0f),
+                draw_text(rt, bt.c_str(), fonts_.body(), D2D1::RectF(ix + 87.0f, cy + 20.0f, ix + 220.0f, cy + 44.0f),
                           low ? pal.bad : pal.text);
             } else {
                 draw_text(rt, p.connection == PadConnection::Usb ? L"On USB power" : L"No reading yet",
@@ -2203,10 +2291,38 @@ void MainWindow::on_mouse_move(float lx, float ly)
             ++vis;
         }
     }
-    if (new_hover != hover_sec_) {
+    mouse_in_ = true;
+    mouse_x_ = lx;
+    mouse_y_ = ly;
+    D2D1_RECT_F rc = {};
+    bool on = lx >= kSidebarWidth && interactive_rect_at(lx, ly, &rc);
+    bool moved = on != hover_on_ || (on && std::memcmp(&rc, &hover_rect_, sizeof(rc)) != 0);
+    hover_on_ = on;
+    hover_rect_ = rc;
+    if (new_hover != hover_sec_ || moved) {
         hover_sec_ = new_hover;
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
+}
+
+void MainWindow::on_mouse_press(float lx, float ly)
+{
+    pressed_ = true;
+    press_x_ = lx;
+    press_y_ = ly;
+    SetCapture(hwnd_);
+    SetFocus(hwnd_);
+}
+
+/* A click acts once it's let go over the control it began on, so a press
+ * dragged away is no click. */
+void MainWindow::on_mouse_release(float lx, float ly)
+{
+    if (!pressed_) return;
+    pressed_ = false;
+    ReleaseCapture();
+    D2D1_RECT_F rc = {};
+    if (interactive_rect_at(press_x_, press_y_, &rc) && point_in_rect(lx, ly, rc)) on_mouse_down(press_x_, press_y_);
 }
 
 void MainWindow::on_mouse_down(float lx, float ly)
@@ -2298,6 +2414,10 @@ void MainWindow::on_mouse_down(float lx, float ly)
 
     for (const auto& dh : device_hits_) {
         if (!point_in_rect(lx, ly, dh.rect)) continue;
+        if (dh.kind == DeviceActionKind::OpenDynamicLighting) {
+            ShellExecuteW(hwnd_, L"open", L"ms-settings:personalization-lighting", nullptr, nullptr, SW_SHOWNORMAL);
+            return;
+        }
         for (auto& d : dev_list_) {
             if (d.id != dh.dev_id) continue;
             if (d.kind == DevKind::Mouse) {
@@ -2387,7 +2507,8 @@ void MainWindow::on_mouse_down(float lx, float ly)
                     save_pad_prefs(pad_path_, pad_prefs_);
                     pad_service_sync(pad_prefs_, opts_.dry_run);
                 }
-                devices_.apply_keyboard_async(d.id, want, is_light_pick);
+                if (is_light_pick) devices_.set_live_key_light(want.light, want.rgb);
+                devices_.apply_keyboard_async(d.id, want);
             }
             return;
         }
@@ -2581,7 +2702,12 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         on_paint();
         return 0;
     case WM_TIMER:
-        if (wp == kAnimTimerId) on_timer();
+        if (wp == kAnimTimerId) {
+            on_timer();
+        } else if (wp == kDevicesSettleTimerId) {
+            KillTimer(hwnd_, kDevicesSettleTimerId);
+            devices_.request_refresh();
+        }
         return 0;
     case WM_MOUSEMOVE:
         on_mouse_move(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
@@ -2589,8 +2715,10 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_MOUSELEAVE:
         tracking_mouse_ = false;
-        if (hover_sec_ != -1) {
+        mouse_in_ = false;
+        if (hover_sec_ != -1 || hover_on_) {
             hover_sec_ = -1;
+            hover_on_ = false;
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return 0;
@@ -2606,9 +2734,28 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         }
         return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_LBUTTONDOWN:
-        on_mouse_down(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
-                      static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
+    case WM_LBUTTONDBLCLK:
+        on_mouse_press(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
+                       static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
         return 0;
+    case WM_LBUTTONUP:
+        on_mouse_release(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
+                         static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
+        return 0;
+    case WM_CAPTURECHANGED:
+        pressed_ = false;
+        return 0;
+    case WM_DEVICECHANGE:
+        /* A device came or went: look again once the burst of changes one
+         * plug makes settles, rather than polling. */
+        if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE || wp == DBT_DEVNODES_CHANGED) {
+            SetTimer(hwnd_, kDevicesSettleTimerId, 500, nullptr);
+        }
+        return TRUE;
+    case WM_ACTIVATE:
+        /* Back from Settings, say: what Windows paints may have changed. */
+        if (LOWORD(wp) != WA_INACTIVE) InvalidateRect(hwnd_, nullptr, FALSE);
+        return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_MOUSEWHEEL:
         on_mouse_wheel(GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
@@ -2739,6 +2886,10 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_DESTROY:
+        if (dev_notify_) {
+            UnregisterDeviceNotification(dev_notify_);
+            dev_notify_ = nullptr;
+        }
         hw_.set_wanted(false, false);
         hw_.set_notify_hwnd(nullptr);
         remote_.set_wanted(false);

@@ -7,7 +7,9 @@ extern "C" {
 #include "config.h"
 #include "devices.h"
 #include "helper.h"
+#include "hid_win.h"
 #include "hw.h"
+#include "livelight.h"
 #include "pad.h"
 #include "remote.h"
 #include "theme.h"
@@ -515,8 +517,135 @@ static void test_config_escaping_and_pad_shutdown()
     }
 }
 
+/* What the helper tells the keyboard next, from what it says (issue #92):
+ * the sequence the G715 was seen to send while the helper held its lights. */
+static void test_livelight_steps()
+{
+    using lares::HidppLive;
+    lares::HidppEvent idle, active, up, down;
+    idle.kind = lares::HidppEventKind::Idle;
+    active.kind = lares::HidppEventKind::Active;
+    up.kind = lares::HidppEventKind::Link;
+    up.linked = true;
+    down.kind = lares::HidppEventKind::Link;
+    down.linked = false;
+
+    // A setting while nothing is held takes the lights; while dark, it shows dimmed.
+    auto c = lares::livelight_on_conf(HidppLive::Active, false);
+    CHECK(c.state == HidppLive::Take && c.again);
+    c = lares::livelight_on_conf(HidppLive::Dark, true);
+    CHECK(c.state == HidppLive::Idle && c.again && c.held);
+    c = lares::livelight_on_conf(HidppLive::Active, true);
+    CHECK(c.state == HidppLive::Active);
+
+    // Left alone: half strength; again while dark: stays dark, answered again.
+    auto s = lares::livelight_on_event(HidppLive::Active, true, idle);
+    CHECK(s.state == HidppLive::Idle && s.again && s.held);
+    s = lares::livelight_on_event(HidppLive::Dark, true, idle);
+    CHECK(s.state == HidppLive::Dark && s.again);
+
+    // A key after dark brings it back at full strength and stops the dark timer.
+    s = lares::livelight_on_event(HidppLive::Dark, true, active);
+    CHECK(s.state == HidppLive::Active && s.again && s.stop_dark);
+
+    // Events while nothing is held aren't answered.
+    s = lares::livelight_on_event(HidppLive::Take, false, idle);
+    CHECK(!s.again);
+    s = lares::livelight_on_event(HidppLive::Take, false, active);
+    CHECK(!s.again);
+
+    // Gone: nothing held; back: taken again.
+    s = lares::livelight_on_event(HidppLive::Idle, true, down);
+    CHECK(!s.held && !s.again && s.stop_dark);
+    s = lares::livelight_on_event(HidppLive::Idle, false, up);
+    CHECK(s.state == HidppLive::Take && s.again && !s.held);
+}
+
+static void test_key_change_plan()
+{
+    lares::HidppKeyboard k;
+    lares::hidpp_sample(&k);
+    lares::KeyboardSettings base;
+    lares::hidpp_decode(&k, lares::hidpp_model(0xc547, 0x40a2), &base);
+    lares::KeyChange c;
+
+    // A live effect goes nowhere near the keyboard: the helper plays it.
+    lares::KeyboardSettings want = base;
+    want.light = lares::KeyLight::Solid;
+    CHECK(lares::key_change_plan(base, want, k, c));
+    CHECK(lares::key_change_empty(c));
+
+    // A kept effect goes to the profile and takes the lights back from software.
+    want = base;
+    want.light = lares::KeyLight::Ripple;
+    want.rgb[0] = 0x00; want.rgb[1] = 0xff; want.rgb[2] = 0x00;
+    CHECK(lares::key_change_plan(base, want, k, c));
+    CHECK(c.light && c.release && c.lit.effect == lares::KeyLight::Ripple && c.lit.rgb[1] == 0xff);
+    CHECK(c.brightness < 0 && c.dim_s < 0 && c.startup < 0);
+
+    // From a live Solid, Built-in is a change even though the profile already says it.
+    lares::KeyboardSettings live = base;
+    live.light = lares::KeyLight::Solid;
+    want = live;
+    want.light = lares::KeyLight::Own;
+    CHECK(lares::key_change_plan(live, want, k, c));
+    CHECK(c.light && c.lit.effect == lares::KeyLight::Own);
+
+    // Brightness is the device's value; timers and effects only when changed.
+    want = base;
+    want.brightness = 100;
+    want.off_s = 600;
+    want.shutdown = !base.shutdown;
+    CHECK(lares::key_change_plan(base, want, k, c));
+    CHECK(c.brightness == k.brightness_max && c.off_s == 600 && c.dim_s < 0 && !c.light);
+    CHECK(c.shutdown == (want.shutdown ? 1 : 0) && c.startup < 0);
+
+    // Nothing it can't hold.
+    lares::HidppKeyboard bare;
+    CHECK(!lares::key_change_plan(base, want, bare, c));
+}
+
+static void test_hid_find()
+{
+    std::vector<lares::HidCollection> all;
+    auto add = [&](const wchar_t* path, uint16_t vid, uint16_t pid, uint16_t page, uint16_t usage, const wchar_t* parent) {
+        lares::HidCollection c;
+        c.path = path;
+        c.vid = vid;
+        c.pid = pid;
+        c.usage_page = page;
+        c.usage = usage;
+        c.parent = parent;
+        all.push_back(c);
+    };
+    add(L"\\\\?\\hid#vid_03f0&pid_0f98&mi_02#a", 0x03f0, 0x0f98, 0xff00, 1, L"USB\\VID_03F0&PID_0F98&MI_02\\x");
+    add(L"\\\\?\\hid#vid_03f0&pid_0f98&mi_03#b", 0x03f0, 0x0f98, 0x0059, 1, L"USB\\VID_03F0&PID_0F98&MI_03\\x");
+    add(L"\\\\?\\hid#vid_03f0&pid_0f98&mi_00#c", 0x03f0, 0x0f98, 0x0001, 2, L"USB\\VID_03F0&PID_0F98&MI_00\\x");
+    add(L"\\\\?\\hid#vid_046d&pid_c547&mi_02&col01#d", 0x046d, 0xc547, 0xff00, 1, L"USB\\VID_046D&PID_C547&MI_02\\x");
+    add(L"\\\\?\\hid#vid_046d&pid_c547&mi_02&col02#e", 0x046d, 0xc547, 0xff00, 2, L"USB\\VID_046D&PID_C547&MI_02\\x");
+    add(L"\\\\?\\hid#hid_device_system_vhf#f", 0x046d, 0x0000, 0x0059, 1,
+        L"USB\\VID_046D&PID_C547&LAMPARRAY\\1&ABCDEF&0&1_SLOT01");
+    add(L"\\\\?\\hid#hid_device_system_vhf#g", 0x046d, 0x0000, 0x0059, 1,
+        L"USB\\VID_046D&PID_C547&LAMPARRAY\\1&ABCDEF&0&1_SLOT00");
+    auto f = lares::hid_find(all);
+    CHECK(f.hyperx_receiver == L"\\\\?\\hid#vid_03f0&pid_0f98&mi_02#a");
+    CHECK(f.hyperx_lamps_receiver == L"\\\\?\\hid#vid_03f0&pid_0f98&mi_03#b");
+    CHECK(f.hyperx_cable.empty());
+    CHECK(f.hidpp_short == L"\\\\?\\hid#vid_046d&pid_c547&mi_02&col01#d");
+    CHECK(f.hidpp_long == L"\\\\?\\hid#vid_046d&pid_c547&mi_02&col02#e");
+    CHECK(f.keyboard_lamps == L"\\\\?\\hid#hid_device_system_vhf#g");   // the keyboard's slot, not another's
+
+    // The key Windows keeps a device's Dynamic Lighting under.
+    CHECK(lares::lighting_key_name(L"\\\\?\\hid#vid_03f0&pid_0f98&mi_03#1&abcdef&0&0000#{4d1e55b2}") ==
+          L"hid#vid_03f0&pid_0f98&mi_03#1&abcdef&0&0000#{4d1e55b2}");
+    CHECK(!lares::windows_lighting_on(L""));
+}
+
 int main()
 {
+    test_livelight_steps();
+    test_key_change_plan();
+    test_hid_find();
     test_cli();
     test_theme();
     test_config();

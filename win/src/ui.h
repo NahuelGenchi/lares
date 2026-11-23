@@ -88,6 +88,7 @@ private:
         KeyShutdown,
         KeyDim,
         KeyOff,
+        OpenDynamicLighting,
     };
 
     struct DeviceHit {
@@ -142,6 +143,8 @@ private:
     void on_paint();
     void on_timer();
     void on_mouse_move(float lx, float ly);
+    void on_mouse_press(float lx, float ly);
+    void on_mouse_release(float lx, float ly);
     void on_mouse_down(float lx, float ly);
     void on_mouse_wheel(int delta);
     void on_key_down(WPARAM vk);
@@ -163,6 +166,8 @@ private:
                    const D2D1_RECT_F& rect, const Rgba& color,
                    DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
     bool point_over_interactive(float lx, float ly) const;
+    bool interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const;
+    bool hovered(const D2D1_RECT_F& rc) const;
     void clamp_scroll();
     float measure_text_height(const wchar_t* text, IDWriteTextFormat* fmt, float max_w);
     void draw_toggle_row(ID2D1RenderTarget* rt, const Palette& pal,
@@ -245,6 +250,18 @@ private:
     bool timer_running_ = false;
     bool tracking_mouse_ = false;
     ULONGLONG last_tick_ms_ = 0;
+
+    // The pointer, for hover, and where a click began: it acts on release
+    // over the same control, as Windows buttons do.
+    bool mouse_in_ = false;
+    float mouse_x_ = 0.0f;
+    float mouse_y_ = 0.0f;
+    bool hover_on_ = false;
+    D2D1_RECT_F hover_rect_ = {};
+    bool pressed_ = false;
+    float press_x_ = 0.0f;
+    float press_y_ = 0.0f;
+    HDEVNOTIFY dev_notify_ = nullptr;
 };
 
 } // namespace lares

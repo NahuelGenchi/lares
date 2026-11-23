@@ -107,6 +107,60 @@ struct KeyboardSettings {
 inline constexpr size_t kHyperxReport = 64;
 inline constexpr int kHyperxBlocks = 4;
 
+/* The commands, functions and flags on the wire, shared by the codecs in
+ * devices.cpp and the Win32 exchanges in hid_win.cpp. */
+namespace wire {
+inline constexpr uint8_t kHxAck        = 0xff;
+inline constexpr uint8_t kHxEvent      = 0xfb;
+inline constexpr uint8_t kHxLink       = 0x52;
+inline constexpr uint8_t kHxBattery    = 0x50;
+inline constexpr uint8_t kHxDpi        = 0x32;
+inline constexpr uint8_t kHxSensor     = 0x36;
+inline constexpr uint8_t kHxBrightness = 0x40;
+inline constexpr uint8_t kHxLighting   = 0x42;
+inline constexpr uint8_t kHxFrame      = 0x44;
+inline constexpr uint8_t kHxSet        = 0x01;
+inline constexpr uint8_t kHxGet        = 0x02;
+inline constexpr uint8_t kHxLightSet   = 0x02;
+inline constexpr uint8_t kHxLightGet   = 0x03;
+inline constexpr int kHxDpiStep        = 50;
+inline constexpr uint8_t kHxDefSpeed   = 50;
+
+inline constexpr uint8_t kRootGetFeature   = 0;
+inline constexpr uint8_t kRootPing         = 1;
+inline constexpr uint8_t kBrightnessInfo   = 0;
+inline constexpr uint8_t kBrightnessGet    = 1;
+inline constexpr uint8_t kBrightnessSet    = 2;
+inline constexpr uint8_t kBrightnessLight  = 3;
+inline constexpr uint8_t kRgbInfo          = 0;
+inline constexpr uint8_t kRgbSetEffect     = 1;
+inline constexpr uint8_t kRgbNvConfig      = 3;
+inline constexpr uint8_t kRgbSwControl     = 5;
+inline constexpr uint8_t kProfilesInfo     = 0;
+inline constexpr uint8_t kProfilesMode     = 2;
+inline constexpr uint8_t kProfilesCurrent  = 4;
+inline constexpr uint8_t kProfilesRead     = 5;
+inline constexpr uint8_t kProfilesBegin    = 6;
+inline constexpr uint8_t kProfilesWrite    = 7;
+inline constexpr uint8_t kProfilesEnd      = 8;
+inline constexpr size_t  kKeysSlot         = 0xd0;
+inline constexpr size_t  kSavingSlot       = 0xe6;
+inline constexpr size_t  kTimersAt         = 0x1c;
+inline constexpr uint8_t kNvGet            = 0x00;
+inline constexpr uint8_t kNvSet            = 0x01;
+inline constexpr uint8_t kNvOn             = 0x01;
+inline constexpr uint8_t kNvOff            = 0x02;
+inline constexpr uint8_t kNeverSet         = 1;   // HID++ "unknown": a startup or shutdown effect never set
+
+/* Taking the lights and answering the keyboard's idle and active events, as
+ * G HUB does: the firmware's mode with the take's flags first, then software
+ * (issue #68); flags by HidppLive. */
+inline constexpr uint8_t kSwFirmware = 0;
+inline constexpr uint8_t kSwSoftware = 3;
+inline constexpr uint8_t kSwFlags[4] = { 6, 3, 5, 3 };
+inline constexpr uint8_t kVolatile   = 1;
+} // namespace wire
+
 struct HyperxModel {
     uint16_t vendor;
     uint16_t product;
@@ -246,6 +300,25 @@ struct HidppEvent {
     int brightness = 0;
 };
 
+/* What a keyboard change asks of the keyboard, from the settings shown
+ * before it (`base`) and after it (`want`), as src/devices.c plans it: only
+ * an effect the keyboard keeps goes to its profile; live ones are the
+ * helper's. -1 leaves a part as it is. */
+struct KeyChange {
+    int brightness = -1;   // the device's own value
+    bool light = false;
+    HidppLighting lit;
+    int dim_s = -1;
+    int off_s = -1;
+    int startup = -1;
+    int shutdown = -1;
+    bool release = false;  // a kept effect takes the lights back from software
+};
+// FALSE when the keyboard can't hold that change.
+bool key_change_plan(const KeyboardSettings& base, const KeyboardSettings& want, const HidppKeyboard& k,
+                     KeyChange& out);
+bool key_change_empty(const KeyChange& c);
+
 const HidppModel* hidpp_model(uint16_t receiver, uint16_t product);
 bool hidpp_allowed(uint16_t feature, uint8_t function, const uint8_t* params, size_t n);
 size_t hidpp_packet(uint8_t sw, uint8_t index, uint8_t feature_index, uint8_t function,
@@ -288,6 +361,8 @@ struct DeviceEntry {
     KeyboardSettings keyboard;
     std::wstring hid_path_primary;   // HyperX 64B or G715 7B short
     std::wstring hid_path_secondary; // G715 20B long
+    std::wstring lamp_path;          // the LampArray Windows Dynamic Lighting paints it through
+    bool windows_lighting = false;   // Dynamic Lighting paints it now, over its own effects
     uint16_t usb_vid = 0;
     uint16_t usb_pid = 0;
     std::string status_error;
@@ -298,9 +373,15 @@ const char* dev_link_text(DevLink link);
 #ifdef _WIN32
 inline constexpr UINT kMsgDevicesUpdated = WM_APP + 4;
 
+/* The window's devices: found when they come or go, read when their page
+ * opens, listened to while it shows, batteries asked every few minutes
+ * while one is on screen. Nothing else polls. Changes queue for a writer
+ * thread, so a click never waits for the last one; picks that come while
+ * one is written go together after it. Live keyboard lighting is
+ * lares-pad.exe's to play (livelight.cpp): the window only shows it. */
 class DevicesManager {
 public:
-    explicit DevicesManager(bool dry_run, uint8_t hidpp_sw = kHidppSwId);
+    explicit DevicesManager(bool dry_run);
     ~DevicesManager();
 
     DevicesManager(const DevicesManager&) = delete;
@@ -308,34 +389,62 @@ public:
 
     void set_notify_hwnd(HWND hwnd) { notify_hwnd_.store(hwnd); }
     void set_wanted(bool want_list, bool want_mouse_settings, bool want_keyboard_settings);
+    // Devices came or went.
     void request_refresh();
 
     std::vector<DeviceEntry> list() const;
     bool any_of(DevKind kind) const;
 
+    // The live lighting the helper plays, which the Keyboard page shows.
     void set_live_key_light(KeyLight light, const uint8_t rgb[3]);
     void apply_mouse_async(const std::string& id, const MouseSettings& want);
-    void apply_keyboard_async(const std::string& id, const KeyboardSettings& want, bool force_light = false);
-    void release_keyboard_live_async(const std::string& id);
+    void apply_keyboard_async(const std::string& id, const KeyboardSettings& want);
 
 private:
+    struct MouseJob {
+        bool due = false;
+        std::string id;
+        MouseSettings base;
+        MouseSettings want;
+    };
+    struct KeyJob {
+        bool due = false;
+        std::string id;
+        KeyboardSettings base;
+        KeyboardSettings want;
+    };
+
     void worker_loop();
-    void scan_devices(bool read_mouse_cfg, bool read_kbd_cfg);
+    void writer_loop();
+    void scan(bool read_mouse, bool read_kbd, bool batteries);
+    void read_mouse_now();
+    void read_keyboard_now();
+    void refresh_windows_lighting();
+    void write_mouse(const MouseJob& job);
+    void write_keyboard(const KeyJob& job);
+    void overlay_live(DeviceEntry& d) const;
+    void notify();
 
     bool dry_run_ = false;
-    uint8_t hidpp_sw_ = kHidppSwId;
-    bool dry_seeded_ = false;
     mutable std::mutex mu_;
-    std::mutex io_mu_;
     std::vector<DeviceEntry> devices_;
+    std::wstring hx_path_;
+    uint16_t hx_pid_ = 0;
+    std::wstring kb_short_;
+    std::wstring kb_long_;
     HyperxState hyperx_state_{};
     bool hyperx_loaded_ = false;
     HidppKeyboard hidpp_state_{};
     bool hidpp_loaded_ = false;
-    HidppEffects hidpp_effects_{};
-    bool hidpp_effects_loaded_ = false;
     KeyLight live_key_light_ = KeyLight::Own;
     uint8_t live_key_rgb_[3] = { 0xff, 0x00, 0x00 };
+
+    bool rescan_due_ = false;
+    bool mouse_read_due_ = false;
+    bool kbd_read_due_ = false;
+    MouseJob mouse_job_;
+    KeyJob key_job_;
+    std::string writing_id_;
 
     std::atomic<HWND> notify_hwnd_{ nullptr };
     std::atomic<bool> want_list_{ false };
@@ -343,8 +452,9 @@ private:
     std::atomic<bool> want_kbd_{ false };
     std::atomic<bool> stop_{ false };
     HANDLE wake_event_ = nullptr;
+    HANDLE write_event_ = nullptr;
     std::thread worker_;
-    std::thread write_thread_;
+    std::thread writer_;
 };
 #endif
 
