@@ -14,6 +14,7 @@
 #include "ble_wake.h"
 
 #include <d2d1.h>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -57,9 +58,19 @@ private:
         const char* target_section;
     };
 
-    struct SizeHit {
-        D2D1_RECT_F rect;
-        int percent; // 0: the dropdown's button
+    /* A dropdown at the right of a setting's row, as Settings > Accessibility
+     * > Size has: its button shows the value in use, and its list, drawn
+     * over the page, picks another. Pages make theirs at every paint, and
+     * `key` says which is which from one paint to the next. */
+    struct Dropdown {
+        std::string key;
+        std::vector<std::wstring> choices;
+        std::vector<int> values;         // what each choice sets
+        int checked = -1;                // the choice in use; -1 for a value set elsewhere, which `shown` names
+        std::wstring shown;
+        bool enabled = true;
+        std::function<void(int)> pick;   // takes the picked choice's value
+        D2D1_RECT_F button = {};         // where its button is, once drawn
     };
 
     enum class RemoteActionKind {
@@ -135,7 +146,6 @@ private:
         LengthMs,
         EditNickname,
         LowLevelDelta,
-        IdleMinutesChip,
         ForgetNickname,
         OpenSettings,
         OpenBluetoothSettings,
@@ -207,6 +217,9 @@ private:
     // A ui_setting's texts, centred in its row; returns the row's height (36 at least).
     float setting(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float text_w, const wchar_t* title,
                   const wchar_t* sub, const wchar_t* tag, float alpha, float control_h);
+    // A ui_setting with a dropdown at its right; returns the row's height.
+    float setting_dropdown(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, const wchar_t* title,
+                           const wchar_t* sub, Dropdown d);
     // The line between two settings of a card: returns where the next begins.
     float setting_line(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     // A card around what `body` lays out from its top: measured first, then drawn. Returns its height.
@@ -241,10 +254,15 @@ private:
     // The Size setting: the window is drawn at the display scale times it.
     void update_scale() { scale_ = dpi_scale_ * static_cast<float>(pad_prefs_.size) / 100.0f; }
     void apply_size(int percent);
-    // Its dropdown: the choice nearest the saved size, and the open list drawn over the page.
-    int size_index() const;
-    void draw_size_list(ID2D1RenderTarget* rt, const Palette& pal, const D2D1_RECT_F& button);
-    void close_size_list();
+
+    // The open dropdown, its list drawn over the page, and what closes or picks from it.
+    const Dropdown* open_dropdown() const;
+    void draw_dropdown_list(ID2D1RenderTarget* rt, const Palette& pal);
+    void close_dropdown();
+    void pick_dropdown(int index);
+
+    // What a mouse's or keyboard's control asks of it, from a click or a dropdown.
+    void device_action(const std::string& id, DeviceActionKind kind, int value);
 
     void start_anim_timer();
     void stop_anim_timer_if_idle();
@@ -288,9 +306,10 @@ private:
     std::wstring pad_path_;
     std::vector<ToggleHit> toggle_hits_;
     std::vector<NavCardHit> card_hits_;
-    std::vector<SizeHit> size_hits_;
-    bool size_open_ = false;   // the Size dropdown's list is showing
-    int size_focus_ = 0;       // and the choice the arrow keys are on
+    std::vector<Dropdown> drops_;          // the page's dropdowns, as last drawn
+    std::string drop_open_;                // the key of the one whose list shows; empty for none
+    int drop_focus_ = -1;                  // the choice the pointer or the arrow keys are on; -1 for none
+    std::vector<D2D1_RECT_F> drop_items_;  // and its choices, as last drawn
 
     HardwareSampler hw_;
     HwSample hw_sample_;

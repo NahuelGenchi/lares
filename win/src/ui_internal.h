@@ -51,6 +51,9 @@ inline std::wstring utf8_to_wide(const std::string& s)
     return out;
 }
 
+/* ART_CHEVRON turned over, for a list or a row that is open. */
+const char* const* chevron_up();
+
 /* A pixel icon's size at `pixel` per dot, from its art. */
 inline void art_size(const char* const* art, float pixel, float& w, float& h)
 {

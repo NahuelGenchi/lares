@@ -99,6 +99,25 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
             if (!d.vendor_name.empty()) detail(L"Made by", utf8_to_wide(d.vendor_name));
             detail(L"Connection", utf8_to_wide(dev_link_text(d.link)) + (d.asleep ? L", asleep" : L""));
 
+            /* A setting picked from a dropdown at its row's right; `shown`
+             * names a value set elsewhere that's none of the choices. */
+            auto pick_row = [&](const char* what, const wchar_t* title, const wchar_t* sub,
+                                std::vector<std::wstring> choices, std::vector<int> values, int now,
+                                DeviceActionKind act, std::wstring shown) {
+                next_setting();
+                Dropdown dd;
+                dd.key = std::string(what) + ":" + d.id;
+                dd.choices = std::move(choices);
+                dd.values = std::move(values);
+                for (size_t i = 0; i < dd.values.size(); ++i) {
+                    if (dd.values[i] == now) dd.checked = static_cast<int>(i);
+                }
+                dd.shown = std::move(shown);
+                std::string id = d.id;
+                dd.pick = [this, id, act](int value) { device_action(id, act, value); };
+                cy += setting_dropdown(rt, pal, ix, cy, iw, title, sub, std::move(dd));
+            };
+
             struct Chip {
                 std::wstring text;
                 bool on;
@@ -227,33 +246,25 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
                     chips(stages);
                 }
 
-                next_setting();
                 {
-                    cy += setting(rt, pal, ix, cy, iw, L"Polling rate",
-                                  L"How often it reports a move. Higher is smoother, and uses more battery.", nullptr,
-                                  1.0f, 0.0f) + kGap;
-                    std::vector<Chip> rates;
+                    std::vector<std::wstring> names;
+                    std::vector<int> rates;
                     for (int hz = 125; hz <= (m.rate_max > 0 ? m.rate_max : 1000); hz *= 2) {
-                        rates.push_back({ std::to_wstring(hz) + L" Hz", m.rate == hz, DeviceActionKind::MouseRate, hz });
+                        names.push_back(std::to_wstring(hz) + L" Hz");
+                        rates.push_back(hz);
                     }
-                    chips(rates);
+                    pick_row("rate", L"Polling rate", L"Higher is smoother, and uses more battery.", std::move(names),
+                             std::move(rates), m.rate, DeviceActionKind::MouseRate, std::to_wstring(m.rate) + L" Hz");
                 }
 
-                next_setting();
-                cy += setting(rt, pal, ix, cy, iw, L"Lift-off distance",
-                              L"How high it can be lifted before it stops following.", nullptr, 1.0f, 0.0f) + kGap;
-                chips({ { L"1 mm", m.lift_mm == 1, DeviceActionKind::MouseLift, 1 },
-                        { L"2 mm", m.lift_mm == 2, DeviceActionKind::MouseLift, 2 } });
+                pick_row("lift", L"Lift-off distance", nullptr, { L"1 mm", L"2 mm" }, { 1, 2 }, m.lift_mm,
+                         DeviceActionKind::MouseLift, std::to_wstring(m.lift_mm) + L" mm");
 
-                next_setting();
-                label(rt, L"Lighting", fonts_.body(), ix, cy, iw, pal.text);
-                cy += lh_ + kGap;
-                lighting_note();
-                chips({ { L"Off", m.light == LightEffect::Off, DeviceActionKind::MouseLight, 0 },
-                        { L"Solid", m.light == LightEffect::Solid, DeviceActionKind::MouseLight, 1 },
-                        { L"Breathing", m.light == LightEffect::Breathing, DeviceActionKind::MouseLight, 2 },
-                        { L"Colour cycle", m.light == LightEffect::Cycle, DeviceActionKind::MouseLight, 3 } });
+                // The effect, then what says Dynamic Lighting paints over it, then its colour.
+                pick_row("light", L"Lighting", nullptr, { L"Off", L"Solid", L"Breathing", L"Colour cycle" },
+                         { 0, 1, 2, 3 }, static_cast<int>(m.light), DeviceActionKind::MouseLight, L"Other");
                 cy += kGap;
+                lighting_note();
                 if (m.light == LightEffect::Other) {
                     para(rt, L"Now an effect another app saved to it.", ix, cy, iw, pal.muted);
                     cy += 36.0f;
@@ -288,23 +299,16 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
                 }
 
                 if (k.has_lighting) {
-                    next_setting();
                     const wchar_t* sub = pad_prefs_.background
                         ? L"Wave, Ripple and Built-in stay on the keyboard. The others play while Lares runs in the "
                           L"background."
                         : L"Wave, Ripple and Built-in stay on the keyboard. The others play while Lares runs in the "
                           L"background, which is off in Settings.";
-                    cy += setting(rt, pal, ix, cy, iw, L"Lighting", sub, nullptr, 1.0f, 0.0f) + kGap;
-                    lighting_note();
-                    static const wchar_t* const kEffects[7] = {
-                        L"Off", L"Solid", L"Breathing", L"Colour cycle", L"Wave", L"Ripple", L"Built-in"
-                    };
-                    std::vector<Chip> effects;
-                    for (int f = 0; f < 7; ++f) {
-                        effects.push_back({ kEffects[f], static_cast<int>(k.light) == f, DeviceActionKind::KeyLight, f });
-                    }
-                    chips(effects);
+                    pick_row("keylight", L"Lighting", sub,
+                             { L"Off", L"Solid", L"Breathing", L"Colour cycle", L"Wave", L"Ripple", L"Built-in" },
+                             { 0, 1, 2, 3, 4, 5, 6 }, static_cast<int>(k.light), DeviceActionKind::KeyLight, L"Other");
                     cy += kGap;
+                    lighting_note();
                     uint32_t rgb = (static_cast<uint32_t>(k.rgb[0]) << 16) | (static_cast<uint32_t>(k.rgb[1]) << 8) | k.rgb[2];
                     swatches(rgb, key_light_coloured(k.light), DeviceActionKind::KeyColour);
                     if (k.app_controls && !d.windows_lighting) {
@@ -324,39 +328,28 @@ void MainWindow::draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, fl
                     hit(rc, act, on ? 0 : 1);
                     cy += h;
                 };
-                if (k.has_startup) {
-                    key_switch(L"Startup effect", L"An animation as it turns on.", k.startup, DeviceActionKind::KeyStartup);
-                }
-                if (k.has_shutdown) {
-                    key_switch(L"Shutdown effect", L"An animation as it turns off.", k.shutdown,
-                               DeviceActionKind::KeyShutdown);
-                }
+                if (k.has_startup) key_switch(L"Startup effect", nullptr, k.startup, DeviceActionKind::KeyStartup);
+                if (k.has_shutdown) key_switch(L"Shutdown effect", nullptr, k.shutdown, DeviceActionKind::KeyShutdown);
 
                 /* A time set elsewhere, such as G HUB's seconds, matches no
-                 * chip: it's said at the row's end instead of nothing. */
-                auto timer = [&](const wchar_t* title, const wchar_t* sub, int secs, DeviceActionKind act) {
-                    next_setting();
-                    std::wstring now;
-                    bool listed = false;
-                    for (int m : kTimerMinutes) listed |= secs == m * 60;
-                    if (!listed && secs > 0) {
-                        now = secs < 60 ? L"Now " + std::to_wstring(secs) + L" s"
-                            : secs % 60 == 0 ? L"Now " + std::to_wstring(secs / 60) + L" min"
-                            : L"Now " + std::to_wstring(secs / 60) + L" min " + std::to_wstring(secs % 60) + L" s";
-                    }
-                    float nw = now.empty() ? 0.0f : text_width(now.c_str(), fonts_.body());
-                    float h = setting(rt, pal, ix, cy, iw - (nw > 0.0f ? nw + kGap : 0.0f), title, sub, nullptr, 1.0f, 0.0f);
-                    if (nw > 0.0f) label(rt, now.c_str(), fonts_.body(), ix + iw - nw, cy + (h - lh_) * 0.5f, nw, pal.accent);
-                    cy += h + kGap;
-                    std::vector<Chip> minutes;
+                 * choice: the button says it, with none checked. */
+                auto timer = [&](const char* what, const wchar_t* title, const wchar_t* sub, int secs,
+                                 DeviceActionKind act) {
+                    std::vector<std::wstring> names;
+                    std::vector<int> values;
                     for (int m : kTimerMinutes) {
-                        minutes.push_back({ std::to_wstring(m) + L" min", secs == m * 60, act, m * 60 });
+                        names.push_back(std::to_wstring(m) + L" min");
+                        values.push_back(m * 60);
                     }
-                    chips(minutes);
+                    std::wstring shown = secs < 1 ? L"…"
+                        : secs < 60 ? std::to_wstring(secs) + L" s"
+                        : secs % 60 == 0 ? std::to_wstring(secs / 60) + L" min"
+                        : std::to_wstring(secs / 60) + L" min " + std::to_wstring(secs % 60) + L" s";
+                    pick_row(what, title, sub, std::move(names), std::move(values), secs, act, shown);
                 };
                 if (k.has_timers) {
-                    timer(L"Dim after", L"How long without a key before its lights dim.", k.dim_s, DeviceActionKind::KeyDim);
-                    timer(L"Lights off after", L"And before they go off.", k.off_s, DeviceActionKind::KeyOff);
+                    timer("dim", L"Dim after", L"Counted from the last key press.", k.dim_s, DeviceActionKind::KeyDim);
+                    timer("off", L"Lights off after", nullptr, k.off_s, DeviceActionKind::KeyOff);
                 }
             }
 
@@ -734,7 +727,7 @@ void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal,
             cy += h;
         }
         cy = setting_line(rt, pal, ix, cy, iw);
-        return toggle(cy, L"Connection notices", L"Notifies when a controller connects or leaves.", &pad_prefs_.notices);
+        return toggle(cy, L"Connection notices", nullptr, &pad_prefs_.notices);
     });
     y += kPageGap;
 
@@ -744,24 +737,29 @@ void MainWindow::draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal,
         cy = setting_line(rt, pal, ix, cy, iw);
         cy = toggle(cy, L"Disconnect idle controllers", L"Saves controller battery. They stay paired.",
                     &pad_prefs_.idle_disconnect);
+        // How long, under the switch while it's on: the choice nearest the saved minutes.
         if (pad_prefs_.idle_disconnect) {
-            cy += kGap;
+            cy = setting_line(rt, pal, ix, cy, iw);
+            Dropdown d;
+            d.key = "idle";
             int nearest = 0;
             for (int i = 0; i < kPadIdleChoices; ++i) {
+                d.choices.push_back(std::to_wstring(kPadIdleMinutes[i]) + L" min");
+                d.values.push_back(kPadIdleMinutes[i]);
                 if (std::abs(kPadIdleMinutes[i] - pad_prefs_.idle_minutes) <
                     std::abs(kPadIdleMinutes[nearest] - pad_prefs_.idle_minutes)) {
                     nearest = i;
                 }
             }
-            float cx = ix;
-            for (int i = 0; i < kPadIdleChoices; ++i) {
-                std::wstring text = std::to_wstring(kPadIdleMinutes[i]) + L" min";
-                D2D1_RECT_F rc = D2D1::RectF(cx, cy, cx + chip_width(text.c_str()), cy + btn_h);
-                chip(rt, pal, rc, text.c_str(), i == nearest);
-                if (on) hit(rc, "", PadActionKind::IdleMinutesChip, kPadIdleMinutes[i]);
-                cx = rc.right + kHalf;
-            }
-            cy += btn_h;
+            d.checked = nearest;
+            d.enabled = on;
+            d.pick = [this](int minutes) {
+                pad_prefs_.idle_minutes = minutes;
+                save_pad_prefs(pad_path_, pad_prefs_);
+                pad_service_sync(pad_prefs_, opts_.dry_run);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            };
+            cy += setting_dropdown(rt, pal, ix, cy, iw, L"Disconnect after", nullptr, std::move(d));
         }
         return cy;
     });
