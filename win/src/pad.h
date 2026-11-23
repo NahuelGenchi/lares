@@ -234,6 +234,7 @@ private:
     std::thread worker_;
     std::thread rumble_thread_;
     HANDLE rumble_cancel_event_ = nullptr;
+    HANDLE wake_ = nullptr;
 };
 
 } // namespace lares

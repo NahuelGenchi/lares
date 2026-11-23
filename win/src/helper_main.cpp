@@ -4,13 +4,16 @@
 #include "devices.h"
 #include "helper.h"
 #include "hw.h"
+#include "livelight.h"
 #include "pad.h"
 #include "theme.h"
 #include "ui.h"
 
 #include <cstdio>
 #include <cstring>
+#include <dbt.h>
 #include <map>
+#include <memory>
 #include <shellapi.h>
 #include <string>
 #include <vector>
@@ -29,6 +32,8 @@ static std::wstring utf8_to_wide(const std::string& s)
 }
 
 static constexpr UINT_PTR kHelperTimerId = 1;
+// GUID_DEVINTERFACE_HID
+static constexpr GUID kHidInterfaceGuid = { 0x4d1e55b2, 0xf16f, 0x11cf, { 0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
 static constexpr UINT kTrayIconId = 1;
 
 static constexpr UINT kMenuCmdRumble     = 1001;
@@ -40,7 +45,7 @@ static constexpr UINT kMenuCmdQuit       = 1005;
 class HelperApp {
 public:
     HelperApp(HINSTANCE hinst, bool dry_run)
-        : hinst_(hinst), dry_run_(dry_run), pads_(dry_run), devices_(dry_run, kHidppSwHelper)
+        : hinst_(hinst), dry_run_(dry_run), pads_(dry_run), live_(std::make_unique<LiveLight>(dry_run))
     {
         pad_path_ = pad_ini_path(dry_run_);
         load_pad_prefs(pad_path_, prefs_);
@@ -60,6 +65,8 @@ public:
 
     ~HelperApp()
     {
+        live_.reset();
+        if (dev_notify_) UnregisterDeviceNotification(dev_notify_);
         remove_tray_icon();
         if (keeping_awake_) {
             SetThreadExecutionState(ES_CONTINUOUS);
@@ -96,8 +103,12 @@ public:
         icon_ = create_gamepad_tray_icon(system_prefers_dark());
         pads_.set_notify_hwnd(hwnd_);
         pads_.set_wanted(true, prefs_.keep_awake || prefs_.idle_disconnect);
-        devices_.set_notify_hwnd(hwnd_);
-        devices_.set_wanted(prefs_.key_light != "own", false, prefs_.key_light != "own");
+        /* A receiver coming back is a device change; nothing is polled. */
+        DEV_BROADCAST_DEVICEINTERFACE_W filter = {};
+        filter.dbcc_size = sizeof(filter);
+        filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+        filter.dbcc_classguid = kHidInterfaceGuid;
+        dev_notify_ = RegisterDeviceNotificationW(hwnd_, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
 
         sync_tray_icon();
         sync_keyboard_live_light();
@@ -187,39 +198,7 @@ private:
 
     void sync_keyboard_live_light()
     {
-        if (dry_run_) return;
-        KeyLight want_light = key_light_from_name(prefs_.key_light);
-
-        auto devs = devices_.list();
-        const DeviceEntry* kbd = nullptr;
-        for (const auto& d : devs) {
-            if (d.kind == DevKind::Keyboard) {
-                kbd = &d;
-                break;
-            }
-        }
-        if (!kbd || kbd->asleep) {
-            devices_.set_live_key_light(want_light, prefs_.key_rgb);
-            last_kbd_ready_ = false;
-            return;
-        }
-
-        bool light_changed = (prefs_.key_light != last_applied_light_) ||
-                             (key_light_live(want_light) && std::memcmp(prefs_.key_rgb, last_applied_rgb_, 3) != 0);
-        bool woke_up = !last_kbd_ready_;
-        last_kbd_ready_ = true;
-
-        if (key_light_live(want_light) && (light_changed || woke_up)) {
-            KeyboardSettings want = kbd->keyboard;
-            want.light = want_light;
-            std::memcpy(want.rgb, prefs_.key_rgb, 3);
-            last_applied_light_ = prefs_.key_light;
-            std::memcpy(last_applied_rgb_, prefs_.key_rgb, 3);
-            devices_.apply_keyboard_async(kbd->id, want, true);
-        } else if (!key_light_live(want_light) && !last_applied_light_.empty() && last_applied_light_ != "own") {
-            last_applied_light_ = "own";
-            devices_.release_keyboard_live_async(kbd->id);
-        }
+        if (live_) live_->set_wanted(key_light_from_name(prefs_.key_light), prefs_.key_rgb);
     }
 
     void open_lares_section(const char* section)
@@ -395,7 +374,6 @@ private:
         }
         pads_.apply_nicknames(prefs_);
         pads_.set_wanted(true, prefs_.keep_awake || prefs_.idle_disconnect);
-        devices_.set_wanted(prefs_.key_light != "own", false, prefs_.key_light != "own");
         pad_list_ = pads_.list();
         sync_tray_icon();
         sync_keyboard_live_light();
@@ -437,8 +415,15 @@ private:
         case kMsgPadsUpdated:
             on_pads_updated();
             return 0;
-        case kMsgDevicesUpdated:
-            sync_keyboard_live_light();
+        case WM_DEVICECHANGE:
+            if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE || wp == DBT_DEVNODES_CHANGED) {
+                if (live_) live_->devices_changed();
+            }
+            return TRUE;
+        case WM_ENDSESSION:
+            /* The session is ending: the keyboard plays its own profile, and
+             * its shutdown effect, from now on. */
+            if (wp) live_.reset();
             return 0;
         case kMsgHelperTrayCallback:
             if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) {
@@ -449,8 +434,7 @@ private:
             KillTimer(hwnd_, kHelperTimerId);
             pads_.set_wanted(false, false);
             pads_.set_notify_hwnd(nullptr);
-            devices_.set_wanted(false, false, false);
-            devices_.set_notify_hwnd(nullptr);
+            live_.reset();
             remove_tray_icon();
             PostQuitMessage(0);
             return 0;
@@ -468,7 +452,8 @@ private:
     std::wstring pad_path_;
     PadPrefs prefs_;
     PadManager pads_;
-    DevicesManager devices_;
+    std::unique_ptr<LiveLight> live_;
+    HDEVNOTIFY dev_notify_ = nullptr;
     std::vector<PadInfo> pad_list_;
 
     bool scanned_once_ = false;
@@ -478,9 +463,6 @@ private:
     ULONGLONG last_activity_ms_ = 0;
     bool keeping_awake_ = false;
     ULONGLONG last_ini_mtime_ = 0;
-    bool last_kbd_ready_ = false;
-    std::string last_applied_light_;
-    uint8_t last_applied_rgb_[3] = {};
 };
 
 } // namespace lares

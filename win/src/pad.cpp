@@ -505,6 +505,7 @@ PadManager::PadManager(bool dry_run)
     : dry_run_(dry_run)
 {
     rumble_cancel_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    wake_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (dry_run_) {
         PadInfo p;
         p.path = "xinput-0";
@@ -548,11 +549,16 @@ PadManager::~PadManager()
         stop_ = true;
         notify_hwnd_ = nullptr;
     }
+    if (wake_) SetEvent(wake_);
     stop_rumble_thread();
     if (worker_.joinable()) worker_.join();
     if (rumble_cancel_event_) {
         CloseHandle(rumble_cancel_event_);
         rumble_cancel_event_ = nullptr;
+    }
+    if (wake_) {
+        CloseHandle(wake_);
+        wake_ = nullptr;
     }
 }
 
@@ -567,9 +573,13 @@ void PadManager::set_notify_hwnd(HWND hwnd)
 
 void PadManager::set_wanted(bool list_wanted, bool live_input_wanted)
 {
-    std::lock_guard<std::mutex> lk(mtx_);
-    list_wanted_ = list_wanted;
-    live_wanted_ = live_input_wanted;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (list_wanted_ == list_wanted && live_wanted_ == live_input_wanted) return;
+        list_wanted_ = list_wanted;
+        live_wanted_ = live_input_wanted;
+    }
+    if (wake_) SetEvent(wake_);
 }
 
 void PadManager::request_refresh()
@@ -580,6 +590,7 @@ void PadManager::request_refresh()
         force_refresh_ = true;
         if (dry_run_) hwnd = notify_hwnd_;
     }
+    if (wake_) SetEvent(wake_);
     if (dry_run_ && hwnd) {
         PostMessageW(hwnd, kMsgPadsUpdated, 0, 0);
     }
@@ -878,9 +889,11 @@ void PadManager::poll_pads(bool read_live)
     }
 }
 
+/* XInput can only be asked, so it's asked: every frame while a controller's
+ * live input shows, every 1.5 s while a list of them shows or the helper
+ * watches them, and not at all otherwise. */
 void PadManager::worker_loop()
 {
-    int tick = 0;
     while (true) {
         bool stop = false;
         bool want_list = false;
@@ -896,12 +909,11 @@ void PadManager::worker_loop()
         }
         if (stop) break;
 
-        if (forced || want_live || (want_list && (tick % 30 == 0))) {
+        if (forced || want_live || want_list) {
             poll_pads(want_live);
         }
 
-        Sleep(want_live ? 16 : 50);
-        ++tick;
+        WaitForSingleObject(wake_, want_live ? 16 : want_list ? 1500 : INFINITE);
     }
 }
 

@@ -17,6 +17,8 @@ add_library(lares_win_core STATIC
     src/config.cpp
     src/devices.cpp
     src/helper.cpp
+    src/hid_win.cpp
+    src/livelight.cpp
     src/hw.cpp
     src/pad.cpp
     src/remote.cpp
@@ -36,6 +38,7 @@ target_link_libraries(lares_win_core PUBLIC
     setupapi
     hid
     bthprops
+    cfgmgr32
 )
 
 # Main native Win32 + Direct2D software-rendered application
