@@ -12,6 +12,7 @@ extern "C" {
 #include <cstring>
 #include <dbt.h>
 #include <dwmapi.h>
+#include <uxtheme.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -207,6 +208,13 @@ bool MainWindow::create()
         CW_USEDEFAULT, CW_USEDEFAULT, win_w, win_h,
         nullptr, nullptr, hinst_, this);
     if (!hwnd_) return false;
+
+    // A plain title bar, as on Linux: no icon and no text in it. The window
+    // keeps both, so the taskbar and Alt+Tab still name it.
+    WTA_OPTIONS plain = {};
+    plain.dwFlags = WTNCA_NODRAWCAPTION | WTNCA_NODRAWICON;
+    plain.dwMask = plain.dwFlags;
+    SetWindowThemeAttribute(hwnd_, WTA_NONCLIENT, &plain, sizeof(plain));
 
     dpi = GetDpiForWindow(hwnd_);
     dpi_scale_ = static_cast<float>(dpi) / 96.0f;
