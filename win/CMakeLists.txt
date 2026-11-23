@@ -47,6 +47,16 @@ target_link_libraries(lares_win_core PUBLIC
     cfgmgr32
 )
 
+# The Bluetooth LE wake-up is the one file that uses C++/WinRT. It is built as
+# C++20 on its own: under C++17 its headers fall back to <experimental/coroutine>,
+# which newer MSVC toolsets refuse.
+add_library(lares_ble OBJECT src/ble_wake.cpp)
+set_target_properties(lares_ble PROPERTIES CXX_STANDARD 20)
+target_include_directories(lares_ble PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${LARES_SHARED_INC}
+)
+
 # Main native Win32 + Direct2D software-rendered application
 add_executable(lares WIN32
     src/main.cpp
@@ -56,7 +66,7 @@ add_executable(lares WIN32
     src/ui_remote.cpp
     src/ui_devices.cpp
     src/ui_share.cpp
-    src/ble_wake.cpp
+    $<TARGET_OBJECTS:lares_ble>
     res/lares.rc
     res/lares.manifest
 )
