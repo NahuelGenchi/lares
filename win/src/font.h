@@ -21,7 +21,7 @@ public:
     IDWriteTextFormat* body() const { return fmt_body_; }     // 18 px
     IDWriteTextFormat* big() const { return fmt_big_; }       // 27 px
     IDWriteTextFormat* title() const { return fmt_title_; }   // 36 px
-    IDWriteTextFormat* caption() const { return fmt_small_; } // 14 px
+    IDWriteTextFormat* caption() const { return fmt_small_; } // 18 px too: muted text differs by colour only
     IDWriteTypography* no_ligatures() const { return typography_; }
     bool using_monocraft() const { return using_monocraft_; }
 

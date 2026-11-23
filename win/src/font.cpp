@@ -100,10 +100,13 @@ bool FontManager::init(HINSTANCE hinst)
         return false;
     };
 
-    if (!make_fmt(15.0f, &fmt_body_)) return false;
-    if (!make_fmt(22.5f, &fmt_big_)) return false;
-    if (!make_fmt(30.0f, &fmt_title_)) return false;
-    if (!make_fmt(13.5f, &fmt_small_)) return false;
+    /* Monocraft draws one pixel per ninth of its size: 18, 27 and 36 px, as
+     * data/style.css sets them, keep every pixel of it whole. Muted text is the
+     * same size as the rest; only its colour differs. */
+    if (!make_fmt(18.0f, &fmt_body_)) return false;
+    if (!make_fmt(27.0f, &fmt_big_)) return false;
+    if (!make_fmt(36.0f, &fmt_title_)) return false;
+    if (!make_fmt(18.0f, &fmt_small_)) return false;
 
     if (SUCCEEDED(factory_->CreateTypography(&typography_)) && typography_) {
         DWRITE_FONT_FEATURE f_liga = { DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES, 0 };

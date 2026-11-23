@@ -162,18 +162,45 @@ private:
                           const PadState& state, uint32_t seen, bool placeholder, int shake_px);
     void draw_pixel_art(ID2D1RenderTarget* rt, const char* const* art, float x, float y, float scale,
                         const Rgba& solid, const Rgba& faint);
-    void draw_text(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTextFormat* fmt,
-                   const D2D1_RECT_F& rect, const Rgba& color,
-                   DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
     bool point_over_interactive(float lx, float ly) const;
     bool interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const;
     bool hovered(const D2D1_RECT_F& rc) const;
+    float nav_item_h() const { return lh_ + 18.0f; }   // nav button.nav-item { padding: 9px 18px }
+    float text_width(const wchar_t* text, IDWriteTextFormat* fmt);
+    void label(ID2D1RenderTarget* rt, const wchar_t* text, IDWriteTextFormat* fmt, float x, float y, float w,
+               const Rgba& color, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
+    float para_height(const wchar_t* text, float w);
+    void para(ID2D1RenderTarget* rt, const wchar_t* text, float x, float y, float w, const Rgba& color,
+              DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
+    void fill(ID2D1RenderTarget* rt, const D2D1_RECT_F& rc, const Rgba& color, float radius = 0.0f);
+    // A ui_setting's texts, centred in its row; returns the row's height (36 at least).
+    float setting(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float text_w, const wchar_t* title,
+                  const wchar_t* sub, const wchar_t* tag, float alpha, float control_h);
+    // The line between two settings of a card: returns where the next begins.
+    float setting_line(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
+    // A card around what `body` lays out from its top: measured first, then drawn. Returns its height.
+    template <class Body>
+    float boxed(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, float pad, Body body)
+    {
+        measuring_ = true;
+        float bottom = body(y + pad);
+        measuring_ = false;
+        float h = bottom - y + pad;
+        card(rt, pal, x, y, w, h);
+        body(y + pad);
+        return h;
+    }
+    void icon(ID2D1RenderTarget* rt, const char* const* art, float pixel, float x, float y, float box_w, float box_h,
+              const Rgba& color);
+    void card(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, float h);
+    // A chip or button as wide as its text asks: returns its width.
+    float chip_width(const wchar_t* text);
+    void chip(ID2D1RenderTarget* rt, const Palette& pal, const D2D1_RECT_F& rc, const wchar_t* text, bool active,
+              bool quiet_note = false);
+    void meter_row(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float row_h, int blocks, float pixel,
+                   double fraction, bool hot);
+    void draw_switch(ID2D1RenderTarget* rt, const Palette& pal, const D2D1_RECT_F& rc, bool on, float alpha);
     void clamp_scroll();
-    float measure_text_height(const wchar_t* text, IDWriteTextFormat* fmt, float max_w);
-    void draw_toggle_row(ID2D1RenderTarget* rt, const Palette& pal,
-                         float x, float& y, float w,
-                         const wchar_t* title, const wchar_t* sub, const wchar_t* saving,
-                         bool* field, bool enabled);
     void draw_meter(ID2D1RenderTarget* rt, const Palette& pal,
                     float x, float y, int blocks, float pixel, double fraction, bool hot);
     void draw_graph(ID2D1RenderTarget* rt, const Palette& pal,
@@ -253,6 +280,11 @@ private:
 
     // The pointer, for hover, and where a click began: it acts on release
     // over the same control, as Windows buttons do.
+    float lh_ = 24.0f;    // a line of 18 px text
+    float base_ = 18.0f;  // and its baseline
+    float lhb_ = 36.0f;   // a line of 27 px text
+    float lht_ = 48.0f;   // a line of 36 px text
+    bool measuring_ = false;   // a pass that only sizes things: nothing is drawn or made clickable
     bool mouse_in_ = false;
     float mouse_x_ = 0.0f;
     float mouse_y_ = 0.0f;
