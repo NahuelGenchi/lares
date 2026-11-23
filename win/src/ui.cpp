@@ -217,6 +217,10 @@ bool MainWindow::create()
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     filter.dbcc_classguid = kHidInterfaceGuid;
     dev_notify_ = RegisterDeviceNotificationW(hwnd_, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    /* The first look for devices may have ended before there was a window
+     * to tell: take what it found, so their sections show whichever
+     * section Lares opens on. */
+    PostMessageW(hwnd_, kMsgDevicesUpdated, 0, 0);
     remote_.request_refresh();
     pads_.request_refresh();
     pad_service_sync(pad_prefs_, opts_.dry_run);

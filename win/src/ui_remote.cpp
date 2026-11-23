@@ -232,10 +232,12 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
               live ? L"live" : remote_live_.sunshine < 0 ? L"Unknown" : !sun_on ? L"Off"
                   : remote_live_.paired ? L"Ready" : L"No device paired",
               !(sun_on && remote_live_.paired) },
+            /* Still this PC's address with Tailscale off, so it stays, but
+             * muted: nothing reaches it until Tailscale is on. */
             { L"IP address", remote_live_.tailscale_ip.empty() ? L"Unknown" : utf8_to_wide(remote_live_.tailscale_ip),
-              remote_live_.tailscale_ip.empty() },
+              remote_live_.tailscale_ip.empty() || remote_live_.tailscale != 1 },
             { L"Host name", remote_live_.tailscale_host.empty() ? L"Unknown" : utf8_to_wide(remote_live_.tailscale_host),
-              remote_live_.tailscale_host.empty() },
+              remote_live_.tailscale_host.empty() || remote_live_.tailscale != 1 },
         };
         float field_h = 12.0f + 6.0f + lh_ + 6.0f + 12.0f;
         float h = kHalf * 2.0f + field_h * 3.0f + 4.0f;
@@ -316,12 +318,22 @@ void MainWindow::draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, flo
                     Group gown{ L"This monitor's own size", {} };
                     std::string own = remote_own_size(remote_live_);
                     bool own_listed = own.empty();
+                    /* As src/remote_view.c writes them: the size alone at
+                     * 60 Hz, the rate after it otherwise. 59 Hz is 60 by
+                     * another name where the size has both. */
                     for (const auto& m : remote_live_.modes) {
                         if (m.w < 1280 || m.rate < 59) continue;
                         Group* g = (m.w * 10 == m.h * 16) ? &g1610 : (m.w * 9 == m.h * 16) ? &g169 : nullptr;
                         if (!g || g->choices.size() >= 8) continue;
                         if (m.spec() == own) own_listed = true;
-                        g->choices.push_back({ m.spec(), utf8_to_wide(m.label()) });
+                        if (m.rate == 59 && m.spec() != want && m.spec() != own) {
+                            bool has_60 = false;
+                            for (const auto& o : remote_live_.modes) has_60 |= o.w == m.w && o.h == m.h && o.rate == 60;
+                            if (has_60) continue;
+                        }
+                        std::wstring text = std::to_wstring(m.w) + L"×" + std::to_wstring(m.h);
+                        if (m.rate != 60) text += L" · " + std::to_wstring(m.rate) + L" Hz";
+                        g->choices.push_back({ m.spec(), text });
                     }
                     if (!own_listed) {
                         int ow = 0, oh = 0;
