@@ -9,7 +9,9 @@
 #include "hw.h"
 #include "pad.h"
 #include "remote.h"
+#include "share_win.h"
 #include "theme.h"
+#include "ble_wake.h"
 
 #include <d2d1.h>
 #include <map>
@@ -70,6 +72,25 @@ private:
         D2D1_RECT_F rect;
         RemoteActionKind kind;
         RemoteItem item = RemoteItem::Screen;
+        std::string value;
+    };
+
+    enum class ShareActionKind {
+        Setup,
+        ToggleReceive,
+        ChooseOrStop,
+        Accept,
+        Decline,
+        Dismiss,
+        OpenLink,
+        ShowFolder,
+        SendTo,
+        CancelSend,
+    };
+
+    struct ShareHit {
+        D2D1_RECT_F rect;
+        ShareActionKind kind;
         std::string value;
     };
 
@@ -156,6 +177,11 @@ private:
     void draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
+    void draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
+    std::vector<std::wstring> pick_files_to_send();
+    bool share_click(float lx, float ly);
+    void on_share_updated();
+    void sync_share_tick();
     void draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, DevKind kind);
     void draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_pad_picture(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w,
@@ -261,6 +287,12 @@ private:
     bool sunshine_needs_perm_ = false;
     std::string remote_err_msg_;
     std::vector<RemoteHit> remote_hits_;
+
+    ShareManager share_;
+    ShareView share_view_;
+    BleWake ble_;
+    std::vector<ShareHit> share_hits_;
+    bool share_tick_ = false;
 
     DevicesManager devices_;
     std::vector<DeviceEntry> dev_list_;

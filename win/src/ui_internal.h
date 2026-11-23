@@ -29,6 +29,8 @@ inline constexpr float kRowPad = 18.0f;          // .row-head
 inline constexpr float kGap = 18.0f;             // the usual gap inside a card
 inline constexpr float kHalf = 9.0f;             // and the small one
 
+inline constexpr UINT_PTR kShareTickTimerId = 3;   // the Share page's countdown, a second at a time
+
 inline D2D1_COLOR_F to_d2d(const Rgba& c, float alpha_mul = 1.0f)
 {
     return D2D1::ColorF(c.r, c.g, c.b, c.a * alpha_mul);

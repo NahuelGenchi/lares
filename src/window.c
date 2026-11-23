@@ -1,6 +1,7 @@
 /* The window: a sidebar of sections and the section on screen. */
 #include "lares.h"
 #include "pad_service.h"
+#include "share.h"
 
 #define CSS_RESOURCE "/com/nahuelgenchi/Lares/style.css"
 #define CONTENT_WIDTH 620
@@ -15,6 +16,7 @@ static Section SECTIONS[] = {
     { "headphones", "Headphones", ART_HEADPHONES, DEV_AUDIO,      device_build,   device_shown,   NULL, NULL, FALSE },
     { "keyboard",   "Keyboard",   ART_KEYBOARD,   DEV_KEYBOARD,   device_build,   device_shown,   NULL, NULL, FALSE },
     { "mouse",      "Mouse",      ART_MOUSE,      DEV_MOUSE,      device_build,   device_shown,   NULL, NULL, FALSE },
+    { "share",      "Share",      ART_SHARE,      0,              share_build,    share_shown,    NULL, NULL, FALSE },
     { "remote",     "Remote",     ART_LAPTOP,     0,              remote_build,   remote_shown,   NULL, NULL, FALSE },
     { "settings",   "Settings",   ART_SLIDERS,    0,              settings_build, NULL,           NULL, NULL, FALSE },
 };
@@ -30,6 +32,8 @@ static gboolean available(Lares *app, Section *s)
 {
     if (s->build == pad_view_build) return devices_any(app->devices, DEV_CONTROLLER) || pads_list(app->pads)->len;
     if (s->build == device_build) return devices_any(app->devices, s->kind);
+    /* AirDrop needs a Wi-Fi card; a look at sysfs, nothing more. */
+    if (s->build == share_build) return share_has_card();
     return TRUE;
 }
 

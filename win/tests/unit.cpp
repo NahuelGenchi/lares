@@ -12,6 +12,7 @@ extern "C" {
 #include "livelight.h"
 #include "pad.h"
 #include "remote.h"
+#include "share_win.h"
 #include "theme.h"
 
 #include <cmath>
@@ -641,8 +642,113 @@ static void test_hid_find()
     CHECK(!lares::windows_lighting_on(L""));
 }
 
+/* AirDrop's Windows end: what lares-share says, the paths between Windows
+ * and WSL, and the Bluetooth wake-up's bytes. */
+static void test_share()
+{
+    using namespace lares;
+
+    ShareSession s;
+    CHECK(!share_parse_block({ "name pc" }, s));   // no state line: not a block
+
+    std::vector<std::string> idle = {
+        "state setup=ready link=off receiving=0 left=0 sending=0 wake=0 quiet=0",
+        "name my-pc",
+        "card Wi-Fi card for testing",
+    };
+    CHECK(share_parse_block(idle, s));
+    CHECK(s.ready && s.link == ShareLink::Off && !s.receiving && !s.sending && !s.wake && !s.quiet);
+    CHECK(s.name == "my-pc" && s.card == "Wi-Fi card for testing");
+    CHECK(s.idle() && !s.has_incoming && s.devices.empty());
+
+    std::vector<std::string> busy = {
+        "state setup=ready link=up receiving=1 left=540 sending=1 wake=1 quiet=1",
+        "name my pc",
+        "error the card left",
+        "incoming id=3 state=receiving done=1024 total=4096 links=0",
+        "incoming-sender Ana's iPhone",
+        "incoming-name IMG 1.HEIC",
+        "incoming-name IMG 2.HEIC",
+        "incoming-message none",
+        "device state=sending sent=5 total=10\tkey one\tAna's iPad\tiPad13,1\t",
+        "device state=failed sent=0 total=0\tk2\tMac\t\tThey said no. Really.",
+        "device state=found sent=0 total=0",   // no key: dropped
+        "something new",                        // a line a later lares-share adds
+    };
+    CHECK(share_parse_block(busy, s));
+    CHECK(s.link == ShareLink::Up && s.receiving && s.left == 540 && s.sending && s.wake && s.quiet);
+    CHECK(s.name == "my pc" && s.error == "the card left" && !s.idle());
+    CHECK(s.has_incoming && s.incoming.id == 3 && s.incoming.state == ShareIncomingState::Receiving);
+    CHECK(s.incoming.done == 1024 && s.incoming.total == 4096 && !s.incoming.links);
+    CHECK(s.incoming.sender == "Ana's iPhone" && s.incoming.names.size() == 2 && s.incoming.names[1] == "IMG 2.HEIC");
+    CHECK(s.devices.size() == 2);
+    CHECK(s.devices[0].state == ShareDeviceState::Sending && s.devices[0].sent == 5 && s.devices[0].total == 10);
+    CHECK(s.devices[0].key == "key one" && s.devices[0].name == "Ana's iPad" && s.devices[0].model == "iPad13,1");
+    CHECK(s.devices[0].message.empty());
+    CHECK(s.devices[1].state == ShareDeviceState::Failed && s.devices[1].model.empty());
+    CHECK(s.devices[1].message == "They said no. Really.");
+
+    /* A name can't pass itself off as another line's fields. */
+    CHECK(share_parse_block({ "state setup=ready link=off receiving=0 left=0 sending=0 wake=0 quiet=0",
+                              "name pc link=up receiving=1" }, s));
+    CHECK(s.link == ShareLink::Off && !s.receiving && s.name == "pc link=up receiving=1");
+    CHECK(share_parse_block({ "state setup=needs-allow link=failed receiving=0 left=99999999999 sending=0 wake=0 quiet=0",
+                              "incoming id=1 state=done done=0 total=0 links=1",
+                              "incoming-name https://example.com/a",
+                              "incoming-saved https://example.com/a" }, s));
+    CHECK(!s.ready && s.link == ShareLink::Failed && s.left == 24 * 3600);
+    CHECK(s.incoming.state == ShareIncomingState::Done && s.incoming.links && s.incoming.saved.size() == 1);
+    CHECK(!s.idle());   // a card that's still shown keeps the session
+
+    CHECK(wsl_path_from_windows(L"C:\\Users\\me\\My file.txt") == "/mnt/c/Users/me/My file.txt");
+    CHECK(wsl_path_from_windows(L"d:/x/y.bin") == "/mnt/d/x/y.bin");
+    CHECK(wsl_path_from_windows(L"E:\\ni\u00F1o\\\U0001F600.png") == "/mnt/e/ni\xC3\xB1o/\xF0\x9F\x98\x80.png");
+    CHECK(wsl_path_from_windows(L"\\\\server\\share\\a.txt").empty());
+    CHECK(wsl_path_from_windows(L"relative\\a.txt").empty());
+    CHECK(wsl_path_from_windows(L"C:").empty());
+    CHECK(windows_path_from_wsl("/mnt/c/Users/me/Downloads/IMG 1.HEIC") == L"C:\\Users\\me\\Downloads\\IMG 1.HEIC");
+    CHECK(windows_path_from_wsl("/mnt/e/ni\xC3\xB1o/\xF0\x9F\x98\x80.png") == L"E:\\ni\u00F1o\\\U0001F600.png");
+    CHECK(windows_path_from_wsl("/home/me/a.txt").empty());
+    CHECK(windows_path_from_wsl("/mnt/wsl/a.txt").empty());
+    CHECK(windows_path_from_wsl("/mnt/c").empty());
+
+    ShareIncoming in;
+    CHECK(share_offer_text(in) == "files");
+    in.names = { "a.jpg" };
+    CHECK(share_offer_text(in) == "a.jpg");
+    in.names = { "a.jpg", "b.jpg", "c.jpg" };
+    CHECK(share_offer_text(in) == "a.jpg and 2 more");
+    in.links = true;
+    CHECK(share_offer_text(in) == "links");
+    in.names = { "https://example.com" };
+    CHECK(share_offer_text(in) == "a link");
+
+    CHECK(share_format_size(0) == "0 bytes");
+    CHECK(share_format_size(999) == "999 bytes");
+    CHECK(share_format_size(1000) == "1.0 kB");
+    CHECK(share_format_size(5200000) == "5.2 MB");
+    CHECK(share_format_size(3400000000ull) == "3.4 GB");
+
+    CHECK(share_link_opens("https://example.com/a?b=c"));
+    CHECK(share_link_opens("HTTP://example.com"));
+    CHECK(!share_link_opens("https://"));
+    CHECK(!share_link_opens("file:///C:/Windows/system32/calc.exe"));
+    CHECK(!share_link_opens("C:\\Windows\\system32\\calc.exe"));
+    CHECK(!share_link_opens("javascript:alert(1)"));
+    CHECK(!share_link_opens("https://example.com/\" & calc"));
+    CHECK(!share_link_opens("https://example.com/a b"));
+
+    /* The same bytes src/airdrop/ble.c hands BlueZ, after the type and length. */
+    const uint8_t tag[3] = { 0xAA, 0xBB, 0xCC };
+    uint8_t wake[kAirdropWakeBytes];
+    airdrop_wake_data(tag, wake);
+    const uint8_t want[kAirdropWakeBytes] = { 0x05, 0x12, 0x40, 0xAA, 0xBB, 0xCC, 0, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    CHECK(std::memcmp(wake, want, sizeof(want)) == 0);
+}
+
 int main()
 {
+    test_share();
     test_livelight_steps();
     test_key_change_plan();
     test_hid_find();

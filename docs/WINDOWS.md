@@ -35,6 +35,7 @@ Lares on Windows follows the same rules as Linux (`AGENTS.md`):
 | **Remote: Screen switching** | confirmed | `EnumDisplaySettingsW` + `ChangeDisplaySettingsExW` (without `CDS_UPDATEREGISTRY`, so changes stay temporary) | **Confirmed** on `\\.\DISPLAY1` for 16:9 (`1920×1080`) and 16:10 (`1680×1050`) modes |
 | **Remote: Tailscale & Sunshine** | confirmed | `tailscale.exe status --json` / `up` / `down`; `OpenSCManagerW` / `QueryServiceStatusEx` on `SunshineService`; `sunshine.log` for active stream; `sunshine_state.json` checked only for non-empty `named_devices` and zeroed with `SecureZeroMemory` | Starting/stopping `SunshineService` needs Administrator once to grant `SERVICE_START \| SERVICE_STOP` to the user (one-time **Allow** button via UAC) |
 | **Remote CLI** | planned | `lares home`, `lares remote`, `lares status`, `lares restore`, `--section` | Same commands and exit semantics as Linux |
+| **Share: AirDrop** | confirmed up to the link (issue #98); not yet tried with an Apple device | The Linux AirDrop code inside WSL 2, on a USB Wi-Fi adapter lent by `usbipd-win`; `lares.exe` drives it over pipes and sends the Bluetooth wake-up itself (see *AirDrop through WSL*) | One adapter model so far (Realtek RTL8188EU, 2.4 GHz); needs WSL and a one-time Set up |
 | **Settings, Helper & Tray** | confirmed (issue #92) | `lares-pad.exe` background process (autostart via `HKCU\...\Run`), `Shell_NotifyIconW` tray icon + balloon alerts, and `win/src/livelight.cpp`, the port of `src/helper/livelight.c` | Listens to the receiver instead of polling, finds it again on `WM_DEVICECHANGE`, gives the lights back on quit and at `WM_ENDSESSION`. Measured 2.6 to 4.4 MB private across runs and no CPU while idle |
 
 ## Windows Dynamic Lighting
@@ -44,6 +45,35 @@ Windows 11 paints any HID LampArray itself while Dynamic Lighting is on for it, 
 - **Where it shows:** the HyperX receiver's LampArray (`MI_03`, `MI_04` on its cable), and the G715 through a virtual LampArray (`HID_DEVICE_SYSTEM_VHF`, under `USB\VID_046D&PID_C547&LAMPARRAY\…_SLOT00`) made by the **Logitech LampArray Service** (`logi_lamparray_service`, from Windows Update) while it runs. On the development PC that service is set to manual and stopped, so it paints nothing.
 - **What Lares reads:** `HKCU\Software\Microsoft\Lighting` `AmbientLightingEnabled` (0 turns it off everywhere) and, per device, `…\Lighting\Devices\<interface path without \\?\>` `AmbientLightingEnabled`. It watches that key with `RegNotifyChangeKeyValue`, so the note goes as soon as it's turned off. **Confirmed** for the global switch; the per-device value follows the same layout but wasn't switched on its own.
 - **What Lares does:** the Mouse and Keyboard pages say Windows is painting the lights and offer **Open Dynamic Lighting** (`ms-settings:personalization-lighting`). Lares doesn't change the setting itself, nor fight Windows by sending the LampArray autonomous-mode report.
+
+## AirDrop through WSL
+
+AirDrop's link, AWDL, is made of raw 802.11 frames sent and heard in monitor mode. Windows gives no program that: Native Wifi has no frame injection, and no stock driver has a monitor mode a program can send through. So on Windows the Share section runs the same code as on Linux, inside WSL 2, on a USB Wi-Fi adapter that Windows lends it (issue #98).
+
+| Piece | Where | What it does |
+| :--- | :--- | :--- |
+| `lares.exe` | Windows | The Share page, the file picker, Downloads, and the Bluetooth LE wake-up (`BluetoothLEAdvertisementPublisher`, the bytes of `src/airdrop/ble.c`) |
+| `usbipd-win` | Windows | Lends the USB Wi-Fi adapter to WSL while AirDrop is on |
+| `lares-share` | WSL | `src/share.c` without a window (`src/sharecli/main.c`): one command a line on its input, its whole state on its output whenever it changes |
+| `lares-awdl-wsl`, `bringup.sh`, `rtlwake` | WSL | Borrow the adapter, start it, run `lares-awdl` on it, and give it back |
+| `lares-awdl` | WSL | The AWDL link, as on Linux, in its plain-monitor mode |
+
+`lares.exe` starts `wsl.exe -d <distribution> -u root -e /opt/lares-wsl/bin/run.sh <Downloads>` when Receive is turned on or files are chosen, and talks to it over pipes. Files go between the two systems as paths: `C:\Users\me\a.jpg` is `/mnt/c/Users/me/a.jpg` in WSL, so nothing is copied twice and received files land in the Windows Downloads folder. When nothing uses AirDrop any more, `lares-share` keeps the link for a minute, as on Linux, then ends; the adapter is back with Windows a moment later, and WSL's virtual machine stops by itself when idle. Closing Lares ends the session at once, and Lares detaches the adapter itself if the session is slow to.
+
+**Set up**, one time, from the Share page: installs `usbipd-win` with `winget` and shares the adapter with it (`usbipd bind`), both behind one administrator prompt, then runs `win/wsl/setup.sh` in WSL as root. That installs a compiler, GLib, `iw`, the adapter's firmware and a few tools with `apt`, and builds `lares-awdl`, `lares-share` and `rtlwake` into `/opt/lares-wsl/bin`. The scripts and Linux sources ride beside `lares.exe` in a `wsl` folder with a `VERSION` made from their contents; Lares remembers the version it installed and offers Set up again when a newer Lares brings a newer one. WSL itself, with an Ubuntu or Debian distribution, has to be there first (`wsl --install`).
+
+**The adapter.** The Realtek RTL8188EU (`0bda:8179`) is the one adapter this is built for and measured on. Getting it to work under WSL's kernel took four findings, all in `win/wsl/`:
+
+- WSL's kernel can't read the distribution's compressed firmware, nor find it in the distribution's `/lib/firmware`, so `setup.sh` unpacks it and `bringup.sh` feeds it through the kernel's sysfs loader. The driver is kept from loading by itself, since nobody would bring it the firmware then.
+- The Windows driver leaves the chip's MCU IO wrapper in reset (register `0x1d`, bit 3), and `rtl8xxxu`'s firmware then never starts: `rtlwake` releases it over USB first.
+- The adapter hears only on its first start after Windows had it. So every session is: Windows has it, attach, bring up, `lares-awdl` starts it once, detach. Windows needs a few seconds with it in between, which a session that follows another waits for.
+- It has neither ad-hoc mode nor active monitor; its plain monitor ACKs unicast, which is what AWDL needs (`docs/AIRDROP.md`).
+
+**Checked** on the development PC: Set up from the real window; Receive on, with the link up and the countdown showing 5 to 10 s later; the adapter attached to WSL meanwhile and back with Windows after Receive off, after a send was stopped, and within a second of closing the window; three sessions in a row; AirDrop's Linux tests inside WSL. In the adapter's own measurements it heard 400 to 950 frames in 3 to 4 s on channel 6, and access points answered its probe requests without retries.
+
+**Not checked:** a transfer with an iPhone, iPad or Mac. Nothing here has met an Apple device yet. Also unchecked: the administrator half of Set up, on a PC without `usbipd-win`.
+
+**Limits.** One adapter model, on 2.4 GHz, where an iPhone gives AirDrop little air time. The Bluetooth wake-up needs a radio that can advertise: the development PC's dongle can't (Windows reports no peripheral role, and the publisher aborts), and then the page says to open AirDrop on the other device first. WSL's virtual machine uses memory of its own while AirDrop is on, outside Lares' budget; `lares.exe` grew by about 0.4 MB with a session on.
 
 ## Hardware probes on the Windows 11 development PC
 
@@ -73,17 +103,22 @@ The Linux build (`Makefile` and Ubuntu 26.04 `make check`) stays completely inta
 | `win/src/hid_win.cpp`, `win/src/devices.cpp` | Win32 `SetupAPI` + `hid.dll` exchanges for HyperX and Logitech G715 (`hid_win.cpp`), the shared codecs and the window's device manager (`devices.cpp`), Bluetooth discovery |
 | `win/src/pad/` | XInput + `Windows.Gaming.Input` live state, rumble, battery, nicknames, Bluetooth disconnect, keep-awake |
 | `win/src/helper_main.cpp`, `win/src/livelight.cpp` | `lares-pad.exe`: hidden window, `Shell_NotifyIconW` tray icon and menu, G715 live lighting, alerts, keep-awake |
+| `win/src/share_win.cpp`, `win/src/ui_share.cpp`, `win/src/ble_wake.cpp` | AirDrop's Windows end: what's set up, the WSL session and what it says, the paths between the two systems (`share_win.cpp`), the Share page (`ui_share.cpp`) and the Bluetooth LE wake-up (`ble_wake.cpp`) |
+| `win/wsl/`, `src/sharecli/main.c` | What runs in WSL: `setup.sh`, `run.sh`, `lares-awdl-wsl`, `bringup.sh` and `rtlwake.c`, and `lares-share`, `src/share.c` without a window. Copied beside `lares.exe` with the Linux sources they build |
 | `.github/workflows/checks.yml` | Keeps existing Ubuntu 26.04 `make check` job unchanged and adds a parallel `windows-latest` MSVC build + unit-test job once `win/` lands |
 
 ### Config and state locations on Windows
 
 - `%APPDATA%\lares\lares.ini` — Remote mode, saved screen/service choices and setup readiness (same INI layout as `~/.config/lares/lares.ini`; dry run uses `lares-dry.ini`).
 - `%APPDATA%\lares\pad.ini` — Controller alerts, notices, keep-awake, idle disconnect, tray icon preferences, G715 live lighting, background toggle and nicknames (same INI layout as `~/.config/lares/pad.ini`).
+- `%APPDATA%\lares\airdrop-kit.txt`: the version of AirDrop's programs Set up last installed in WSL, and the distribution. In WSL they live in `/opt/lares-wsl`.
+- For AirDrop: `LARES_WSL_DISTRO=<name>` picks the distribution (the default one otherwise); in a dry run `LARES_DRY_SHARE=<scene>` shows a scene (`setup`, `setup-failed`, `nowsl`, `noadapter`, `receiving`, `quiet`, `incoming`, `incoming-receiving`, `incoming-done`, `looking`, `sending`) and `LARES_DRY_FILES=<path>;<path>` stands in for the file picker.
 - Environment flags matching Linux: `LARES_DRY_RUN=1`, `LARES_DRY_STREAM=1`, `LARES_COLOR_SCHEME=dark|light`, `LARES_SECTION=<id>`.
 
 ### Permissions on Windows
 
 - **Hardware, HyperX mouse, Logitech G715, Xbox controller, Bluetooth, display modes, Tailscale user toggles:** zero Administrator privileges required (all HID & storage probes confirmed unprivileged).
+- **AirDrop:** installing `usbipd-win` and sharing the Wi-Fi adapter with it ask for Administrator once, in Set up. After that, lending the adapter to WSL and taking it back need none. Inside WSL, Lares' programs run as root, which a WSL user can always become.
 - **Sunshine service toggle (`SunshineService`):** starting and stopping a Windows service requires service DACL permission. The Remote section offers a one-time **Allow** button that launches a small elevated helper (`ShellExecuteW("runas")`) to grant `SERVICE_START | SERVICE_STOP` on `SunshineService` to the current user's SID — mirroring Linux's one-time `pkexec` Allow buttons. Uninstalling or revoking removes that ACE.
 
 ## Phased implementation plan (Milestone M5)

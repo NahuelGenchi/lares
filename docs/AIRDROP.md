@@ -62,6 +62,12 @@ owly reports the same pattern and its cost: a 2.4 GHz-only Realtek USB adapter r
 
 owly's driver table is the best list of cards known to work: dual-band Realtek `rtw88`/`rtw89` and MediaTek `mt76` cards work best; Intel cards work on channel 6 only, with Wi-Fi off during a session (reported).
 
+**The development PC's adapter failed** (2026-11-19). After a first session that sent and received with the iPhone, its USB link broke at the moment `lares-awdl` gave the card back (`usbctrl_vendorreq TimeOut`, then `rtl_usb: Urb has error status 0xFFFFFFB9`, EPROTO, for every request). From then on it neither received nor sent, even as a plain Wi-Fi card scanning for networks, and a replug into the same port didn't bring it back. It sat on a bus-powered USB 2.0 hub, and `rtl8192cu` is known for such timeouts when it powers the radio off and on. Which of the two caused it isn't known yet. A card that stops receiving shows in `~/.cache/lares/lares-awdl.log` as `rx action 0`, and in the kernel log; Share says *No Apple device heard yet* after 20 s of silence.
+
+USB adapters owly reports working both ways with an iPhone, which `lares-awdl` drives: the TP-Link Archer T3U Plus (RTL8812BU, `rtw88_8822bu`, ad-hoc cell on channel 44) and MediaTek MT7612U adapters (`mt76x2u`, active monitor, a 3 MB photo in about 5 s on channel 149). 5 GHz needs the PC's regulatory domain set to its country: under the world domain (`00`) a card may not transmit there and falls back to channel 6.
+
+**A card with neither ad-hoc mode nor active monitor can still work.** The Realtek RTL8188EU (`0bda:8179`, driver `rtl8xxxu`) offers only station and monitor mode. Its plain monitor was measured to ACK unicast all the same (issue #98): probe requests sent from it to nearby access points, once with the card's own address and once with one made up, were answered with first copies of the probe response and no retries, where a card that doesn't ACK gets the same response several times over. `lares-awdl` therefore has a third mode for this driver, a plain monitor on the AWDL channel and nothing else. It was measured on 2.4 GHz, channel 6, and has not been tried with an Apple device yet.
+
 AWDL takes the Wi-Fi card for itself while it runs, unless the card can inject while connected. On the development PC that costs nothing: it is on Ethernet, and the USB adapter is used for nothing else.
 
 ## Design for Lares
@@ -74,7 +80,9 @@ AWDL takes the Wi-Fi card for itself while it runs, unless the card can inject w
 
 ### Permission
 
-Like the HyperX rule today, an **Allow** button asks for the password once. It installs `lares-awdl` as `/usr/local/libexec/lares-awdl`, owned by root, with file capabilities `cap_net_admin,cap_net_raw+ep`, so Lares can start it without a password each time. `make uninstall` will say how to remove it. Lares tells NetworkManager to leave the card alone for the session (`Managed = false` over D-Bus) and gives it back afterwards.
+Like the HyperX rule, an **Allow** button asks for the password once. It installs the `lares-awdl` built with Lares as `/usr/local/libexec/lares-awdl`, owned by root and runnable only by the user's group (mode 0750), with file capabilities `cap_net_admin,cap_net_raw+ep`, so Lares can start it without a password each time. Lares compares the installed copy with its own and asks again after an update. `make uninstall` says how to remove it. `lares-awdl` keeps only those two capabilities, tells NetworkManager to leave the card alone for the session (`nmcli device set … managed no`), records the card's state in a journal under `$XDG_RUNTIME_DIR` first, and puts everything back on exit, or at its next start after a crash. With ufw active, it also opens TCP 8770 to 8779 (the receiver's ports) and UDP 5353 (mDNS) on `awdl0` only, since ufw's default policy would keep nearby devices from reaching the receiver. It ends by itself when Lares closes its standard input, so Lares ending in any way gives the card back. What it reports goes to `~/.cache/lares/lares-awdl.log`, on this PC only.
+
+The mDNS host name is `lares-` and the session's service ID, never the machine's own name, as owly does: strangers nearby don't learn it, and avahi, which answers for the machine's name, can't clash with it. avahi also starts answering on `awdl0` once it exists, announcing the machine's own services to AWDL peers; adding `deny-interfaces=awdl0` to `/etc/avahi/avahi-daemon.conf` stops that.
 
 ### In the window
 
@@ -86,11 +94,35 @@ A **Share** section, shown when a card that can run AWDL is present:
 
 ### Lightness
 
-Nothing runs while sharing is off. While it's on: `lares-awdl` sends about 9 PSF and 15 MIF frames a second and wakes for each AWDL frame it hears; Lares wakes only for mDNS and the transfer itself. Archives stream through: nothing is held whole in memory, and received files are written to a staging folder and moved into place only once complete (SEC-1).
+Nothing runs while sharing is off. Measured: `lares-awdl` idles at about 240 kB of its own memory and 0 CPU ticks in 12 s; a transfer adds about 2.7 MB to Lares itself, with a sender and a receiver in one process. TLS connections are made with no certificate database, since none is ever checked (TLS-2): otherwise GIO loads the system's, 6.5 MB, and proxy lookup is off for link-local peers, which saves 2.6 MB of the desktop's proxy libraries. While it's on: `lares-awdl` sends about 9 PSF and 15 MIF frames a second and wakes for each AWDL frame it hears; Lares wakes only for mDNS and the transfer itself. Archives stream through: nothing is held whole in memory, and received files are written to a staging folder and moved into place only once complete (SEC-1).
+
+### Finding devices quickly
+
+On a card fixed to one channel, an iPhone is there only in the slot it gives that channel, one in sixteen on channel 6, about 65 ms a second. Anything sent outside it is lost, so finding each other is about meeting in that slot:
+
+- `lares-awdl` holds multicast (mDNS queries, answers and announcements) for a slot a valid peer spends on its channel, and sends identical copies queued for it once. owly sends multicast in any slot on such a card, which an iPhone hears about one time in sixteen. Until a peer's schedule is known, multicast goes at once, as before.
+- While looking, Lares asks for `_airdrop._tcp` once a second instead of backing off to every 10 s, and tries `/Discover` at each AWDL peer's address once a second (DISC-5) with a short timeout, so a lost SYN is replaced by a fresh connection rather than waiting out the kernel's 1 s, then 3 s, backoff.
+- Picking files starts the link, the search and the Bluetooth advert at once, so the 2.7 s `lares-awdl` takes to set the card up, and the phone's wake-up, pass while the files are chosen.
+- The link stays up a minute after its last use, so a second send or receive doesn't wait for it again.
+
+`~/.cache/lares/share.log` records when each step happened, in seconds from the start (no names or addresses), on this PC only.
 
 ### Security
 
 Anyone in radio range can reach a receiver, so every input is hostile until checked (owly's SEC rules): strict HTTP framing, plist and archive limits, no `..`, absolute paths, links or devices in archives, no overwriting, and names shown escaped. The hashed contact identifiers in Bluetooth adverts and records can be brute-forced back to phone numbers and emails (PrivateDrop, USENIX Security 2021; still unfixed as of 2026, reported), so Lares never logs or stores them.
+
+## Status
+
+| Part | Code | Checked |
+| :--- | :--- | :--- |
+| Plists, CPIO, gzip and DVZip, HTTP | `src/airdrop/{bplist,cpio,dvzip,http,names}.c` | Unit tests with owly's and Apple-style vectors, under ASan and UBSan; a million mutated inputs |
+| mDNS and the Bluetooth LE wake-up | `src/airdrop/{mdns,ble}.c` | Unit tests; a live publish and browse between two interfaces in a network namespace; BlueZ calls against a stand-in BlueZ |
+| Receiver and sender over TLS | `src/airdrop/session.c` | Whole transfers between Lares' own sender and receiver on loopback: discover, files and folders, gzip and DVZip, a name clash, a decline |
+| AWDL link | `src/awdl/`, `lares-awdl` | Unit tests on frames from the iPhone 17 capture (addresses and names replaced), and on multicast held for the phone's slot; `awdl0`, capabilities, peers and the crash journal in a network namespace; idle at about 240 kB of its own memory, 0 CPU ticks in 12 s |
+| Lares with lares-awdl | `src/share.c` | Lares' Share model against `lares-awdl`'s test mode in a network namespace: the link comes up, the receiver binds to `awdl0`'s address, a photo goes through to Downloads, and the link and `awdl0` go away when receiving stops |
+| Share section | `src/share.c`, `src/share_view.c` | Dry run in a hidden GNOME Shell, light and dark, every state |
+| On Windows, through WSL | `src/sharecli/main.c`, `win/wsl/`, `win/src/share_win.cpp` | The link comes up from the Windows window and the adapter goes back to Windows afterwards; no Apple device yet (`docs/WINDOWS.md`) |
+| With an iPhone | | Checked by the owner with an iPhone 17 on the USB adapter: a file each way. Finding each other took several seconds before the changes under *Finding devices quickly* |
 
 ## Code we can reuse
 
@@ -102,10 +134,10 @@ Anyone in radio range can reach a receiver, so every input is hostile until chec
 
 Wi-Fi Aware (NAN) is not a way in. Apple's AirDrop still uses AWDL (reported), and the EU's Digital Markets Act decision of March 2025 opens iOS to third-party *apps* that share like AirDrop, not AirDrop itself to other devices. A Lares companion app for iOS would be a separate project.
 
-## Decisions before building
+## Decisions
 
-1. **Name of the section.** *Share* (planned), with AirDrop named in its text, keeps Apple's trademark out of the sidebar.
-2. **The Allow step.** Installing a binary with file capabilities under `/usr/local` is the first thing Lares puts outside the user's home besides udev rules.
+1. **Name of the section.** *Share*, with AirDrop named in its text, keeps Apple's trademark out of the sidebar.
+2. **The Allow step.** Installing a binary with file capabilities under `/usr/local` is the first thing Lares puts outside the user's home besides udev rules. It is root-owned, limited to the user's group, and holds two capabilities.
 3. **A dual-band adapter.** The current adapter is enough to build and test with, at about 35 kB/s from the iPhone. A dual-band card from owly's working list is needed for AirDrop to feel like it does on Apple devices.
 
 ## Sources
