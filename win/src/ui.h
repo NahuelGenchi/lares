@@ -59,7 +59,7 @@ private:
 
     struct SizeHit {
         D2D1_RECT_F rect;
-        int percent;
+        int percent; // 0: the dropdown's button
     };
 
     enum class RemoteActionKind {
@@ -241,6 +241,10 @@ private:
     // The Size setting: the window is drawn at the display scale times it.
     void update_scale() { scale_ = dpi_scale_ * static_cast<float>(pad_prefs_.size) / 100.0f; }
     void apply_size(int percent);
+    // Its dropdown: the choice nearest the saved size, and the open list drawn over the page.
+    int size_index() const;
+    void draw_size_list(ID2D1RenderTarget* rt, const Palette& pal, const D2D1_RECT_F& button);
+    void close_size_list();
 
     void start_anim_timer();
     void stop_anim_timer_if_idle();
@@ -285,6 +289,8 @@ private:
     std::vector<ToggleHit> toggle_hits_;
     std::vector<NavCardHit> card_hits_;
     std::vector<SizeHit> size_hits_;
+    bool size_open_ = false;   // the Size dropdown's list is showing
+    int size_focus_ = 0;       // and the choice the arrow keys are on
 
     HardwareSampler hw_;
     HwSample hw_sample_;

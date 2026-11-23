@@ -312,6 +312,7 @@ void MainWindow::select_section(const std::string& id, bool animate)
             toggle_hits_.clear();
             card_hits_.clear();
             size_hits_.clear();
+            size_open_ = false;
             remote_hits_.clear();
             device_hits_.clear();
             pad_hits_.clear();
@@ -497,12 +498,28 @@ void MainWindow::apply_size(int percent)
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::close_size_list()
+{
+    if (!size_open_) return;
+    size_open_ = false;
+    /* Its choices go now, not at the next paint. */
+    size_hits_.erase(std::remove_if(size_hits_.begin(), size_hits_.end(), [](const SizeHit& h) { return h.percent != 0; }),
+                     size_hits_.end());
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
 {
     auto found = [&](const D2D1_RECT_F& r) {
         if (out) *out = r;
         return true;
     };
+    /* With the Size list open only it and its button take the pointer: a
+     * press anywhere else closes it. */
+    if (size_open_) {
+        for (const auto& h : size_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+        return false;
+    }
     if (lx < kSidebarWidth) {
         if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
             int vis = 0;
@@ -960,7 +977,18 @@ void MainWindow::on_mouse_move(float lx, float ly)
         tracking_mouse_ = (TrackMouseEvent(&tme) != FALSE);
     }
     int new_hover = -1;
-    if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
+    if (size_open_) {
+        for (int i = 0; i < static_cast<int>(size_hits_.size()); ++i) {
+            const auto& h = size_hits_[i];
+            if (h.percent == 0 || !point_in_rect(lx, ly, h.rect)) continue;
+            for (int c = 0; c < kSizeChoices; ++c) {
+                if (kSizePercents[c] == h.percent && c != size_focus_) {
+                    size_focus_ = c;
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                }
+            }
+        }
+    } else if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
         int vis = 0;
         for (int i = 0; i < static_cast<int>(sections_.size()); ++i) {
             if (!sections_[i].visible) continue;
@@ -988,6 +1016,10 @@ void MainWindow::on_mouse_move(float lx, float ly)
 
 void MainWindow::on_mouse_press(float lx, float ly)
 {
+    if (size_open_ && !interactive_rect_at(lx, ly, nullptr)) {
+        close_size_list();
+        return;
+    }
     pressed_ = true;
     press_x_ = lx;
     press_y_ = ly;
@@ -1008,6 +1040,26 @@ void MainWindow::on_mouse_release(float lx, float ly)
 
 void MainWindow::on_mouse_down(float lx, float ly)
 {
+    /* The Size dropdown: its button opens or closes the list, a choice is
+     * taken and closes it. */
+    for (const auto& hit : size_hits_) {
+        if (!point_in_rect(lx, ly, hit.rect)) continue;
+        if (hit.percent == 0 && !size_open_) {
+            size_open_ = true;
+            size_focus_ = size_index();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else {
+            int percent = hit.percent;
+            close_size_list();
+            if (percent) apply_size(percent);
+        }
+        return;
+    }
+    if (size_open_) {
+        close_size_list();
+        return;
+    }
+
     if (lx < kSidebarWidth) {
         int vis = 0;
         for (int i = 0; i < static_cast<int>(sections_.size()); ++i) {
@@ -1028,13 +1080,6 @@ void MainWindow::on_mouse_down(float lx, float ly)
             save_pad_prefs(pad_path_, pad_prefs_);
             pad_service_sync(pad_prefs_, opts_.dry_run);
             InvalidateRect(hwnd_, nullptr, FALSE);
-            return;
-        }
-    }
-
-    for (const auto& hit : size_hits_) {
-        if (point_in_rect(lx, ly, hit.rect)) {
-            apply_size(hit.percent);
             return;
         }
     }
@@ -1294,6 +1339,7 @@ void MainWindow::on_mouse_down(float lx, float ly)
 
 void MainWindow::on_mouse_wheel(int delta)
 {
+    close_size_list();
     RECT rc;
     GetClientRect(hwnd_, &rc);
     float lh = static_cast<float>(rc.bottom - rc.top) / scale_;
@@ -1333,6 +1379,22 @@ void MainWindow::on_key_down(WPARAM vk)
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return;
+        }
+        return;
+    }
+
+    /* The Size list, open: the arrows move along it, Enter or Space takes
+     * the choice, Escape closes it. */
+    if (size_open_) {
+        if (vk == VK_ESCAPE) {
+            close_size_list();
+        } else if (vk == VK_UP || vk == VK_DOWN) {
+            size_focus_ = std::clamp(size_focus_ + (vk == VK_DOWN ? 1 : -1), 0, kSizeChoices - 1);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else if (vk == VK_RETURN || vk == VK_SPACE) {
+            int percent = kSizePercents[std::clamp(size_focus_, 0, kSizeChoices - 1)];
+            close_size_list();
+            apply_size(percent);
         }
         return;
     }
@@ -1461,6 +1523,7 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
     case WM_ACTIVATE:
         /* Back from Settings, say: what Windows paints may have changed. */
         if (LOWORD(wp) != WA_INACTIVE) InvalidateRect(hwnd_, nullptr, FALSE);
+        else close_size_list();
         return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_MOUSEWHEEL:
         on_mouse_wheel(GET_WHEEL_DELTA_WPARAM(wp));

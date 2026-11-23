@@ -12,10 +12,23 @@ extern "C" {
 #include <cstdlib>
 #include <cwchar>
 #include <string>
+#include <vector>
 
 namespace lares {
 
 // ================================================================ Settings
+
+/* ART_CHEVRON turned over, for a list that is open. */
+static const char* const* chevron_up()
+{
+    static const std::vector<const char*> rows = [] {
+        std::vector<const char*> r;
+        for (int i = 0; ART_CHEVRON[i]; ++i) r.insert(r.begin(), ART_CHEVRON[i]);
+        r.push_back(nullptr);
+        return r;
+    }();
+    return rows.data();
+}
 
 void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
@@ -39,34 +52,28 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
         return cy + h;
     };
 
-    /* Size: chips as wide as their text and 9 px apart, wrapping as they
-     * need; the one nearest the saved size is lit. */
+    /* Size: a dropdown at the right of its row, as wide as its widest
+     * choice, its value 18 px in and its chevron 18 px from the right. Its
+     * list is drawn last, over the rest of the page. */
     heading(L"Accessibility");
+    float btn_h = lh_ + 18.0f;
+    D2D1_RECT_F size_btn = {};
     y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
-        float cy = top + setting(rt, pal, ix, top, iw, L"Size", L"Makes all of Lares larger or smaller.",
-                                 nullptr, 1.0f, 0.0f);
-        cy += kGap;
-        int nearest = 0;
-        for (int i = 1; i < kSizeChoices; ++i) {
-            if (std::abs(kSizePercents[i] - pad_prefs_.size) < std::abs(kSizePercents[nearest] - pad_prefs_.size)) {
-                nearest = i;
-            }
-        }
-        float btn_h = lh_ + 18.0f;
-        float cx = ix;
+        float tw = 0.0f;
         for (int i = 0; i < kSizeChoices; ++i) {
-            std::wstring text = std::to_wstring(kSizePercents[i]) + L"%";
-            float cw = chip_width(text.c_str());
-            if (cx > ix && cx + cw > ix + iw) {
-                cx = ix;
-                cy += btn_h + kHalf;
-            }
-            D2D1_RECT_F rc = D2D1::RectF(cx, cy, cx + cw, cy + btn_h);
-            chip(rt, pal, rc, text.c_str(), i == nearest);
-            if (!measuring_) size_hits_.push_back({ rc, kSizePercents[i] });
-            cx += cw + kHalf;
+            tw = std::max(tw, text_width((std::to_wstring(kSizePercents[i]) + L"%").c_str(), fonts_.body()));
         }
-        return cy + btn_h;
+        float bw = 18.0f + tw + kGap + 18.0f + 18.0f;
+        float h = setting(rt, pal, ix, top, iw - bw - kGap, L"Size", nullptr, nullptr, 1.0f, btn_h);
+        float by = top + std::round((h - btn_h) * 0.5f);
+        size_btn = D2D1::RectF(ix + iw - bw, by, ix + iw, by + btn_h);
+        fill(rt, size_btn, (size_open_ || hovered(size_btn)) ? pal.hover : pal.chip, 9.0f);
+        std::wstring now = std::to_wstring(pad_prefs_.size) + L"%";
+        label(rt, now.c_str(), fonts_.body(), size_btn.left + 18.0f, by + (btn_h - lh_) * 0.5f, tw, pal.text);
+        icon(rt, size_open_ ? chevron_up() : ART_CHEVRON, 2.0f, size_btn.right - 36.0f, by, 18.0f, btn_h,
+             size_open_ ? pal.accent : pal.muted);
+        if (!measuring_) size_hits_.push_back({ size_btn, 0 });
+        return top + h;
     });
     y += kPageGap;
 
@@ -102,6 +109,54 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
     });
 
     content_height_ = (y - start_y) + kPagePadTop + kPagePadBottom;
+    if (size_open_) draw_size_list(rt, pal, size_btn);
+}
+
+int MainWindow::size_index() const
+{
+    int nearest = 0;
+    for (int i = 1; i < kSizeChoices; ++i) {
+        if (std::abs(kSizePercents[i] - pad_prefs_.size) < std::abs(kSizePercents[nearest] - pad_prefs_.size)) {
+            nearest = i;
+        }
+    }
+    return nearest;
+}
+
+/* The Size dropdown's list: a card as wide as its button, 9 px under it (or
+ * over it, where there's no room below), ringed by a 2 px line. Its choices
+ * sit 9 px in, their text in line with the button's; the saved one is lit as
+ * a checked chip, and the one the pointer or the arrow keys are on hovered. */
+void MainWindow::draw_size_list(ID2D1RenderTarget* rt, const Palette& pal, const D2D1_RECT_F& button)
+{
+    float item_h = lh_ + 18.0f;
+    float h = kHalf * 2.0f + item_h * static_cast<float>(kSizeChoices);
+    float top = button.bottom + kHalf;
+    RECT rc = {};
+    GetClientRect(hwnd_, &rc);
+    float view_h = static_cast<float>(rc.bottom) / scale_;
+    if (top + h > view_h && button.top - kHalf - h >= 0.0f) top = button.top - kHalf - h;
+    D2D1_RECT_F panel = D2D1::RectF(button.left, top, button.right, top + h);
+    fill(rt, D2D1::RectF(panel.left - 2.0f, panel.top - 2.0f, panel.right + 2.0f, panel.bottom + 2.0f), pal.line, 11.0f);
+    fill(rt, panel, pal.card, 9.0f);
+    int now = size_index();
+    float iy = top + kHalf;
+    for (int i = 0; i < kSizeChoices; ++i) {
+        D2D1_RECT_F item = D2D1::RectF(panel.left + kHalf, iy, panel.right - kHalf, iy + item_h);
+        bool lit = i == size_focus_;
+        if (i == now) {
+            Rgba ground = pal.accent;
+            if (lit) ground.a *= 0.9f;
+            fill(rt, item, ground, 9.0f);
+        } else if (lit) {
+            fill(rt, item, pal.hover, 9.0f);
+        }
+        std::wstring text = std::to_wstring(kSizePercents[i]) + L"%";
+        label(rt, text.c_str(), fonts_.body(), item.left + kHalf, iy + (item_h - lh_) * 0.5f,
+              item.right - item.left - 18.0f, i == now ? pal.on_accent : pal.text);
+        if (!measuring_) size_hits_.push_back({ item, kSizePercents[i] });
+        iy += item_h;
+    }
 }
 
 // ================================================================== Remote
