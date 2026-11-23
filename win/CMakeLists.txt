@@ -80,6 +80,7 @@ target_link_libraries(lares PRIVATE
     d2d1
     dwrite
     dwmapi
+    uxtheme
     ole32
     windowsapp
     shell32
