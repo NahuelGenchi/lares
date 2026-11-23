@@ -46,6 +46,9 @@ add_executable(lares WIN32
     src/main.cpp
     src/font.cpp
     src/ui.cpp
+    src/ui_pages.cpp
+    src/ui_remote.cpp
+    src/ui_devices.cpp
     res/lares.rc
     res/lares.manifest
 )
