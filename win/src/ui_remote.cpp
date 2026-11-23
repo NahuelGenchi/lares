@@ -9,7 +9,9 @@ extern "C" {
 }
 
 #include <cmath>
+#include <cstdlib>
 #include <cwchar>
+#include <string>
 
 namespace lares {
 
@@ -36,6 +38,37 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
         if (!measuring_) toggle_hits_.push_back({ sw, field, enabled });
         return cy + h;
     };
+
+    /* Size: chips as wide as their text and 9 px apart, wrapping as they
+     * need; the one nearest the saved size is lit. */
+    heading(L"Accessibility");
+    y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
+        float cy = top + setting(rt, pal, ix, top, iw, L"Size", L"Makes all of Lares larger or smaller.",
+                                 nullptr, 1.0f, 0.0f);
+        cy += kGap;
+        int nearest = 0;
+        for (int i = 1; i < kSizeChoices; ++i) {
+            if (std::abs(kSizePercents[i] - pad_prefs_.size) < std::abs(kSizePercents[nearest] - pad_prefs_.size)) {
+                nearest = i;
+            }
+        }
+        float btn_h = lh_ + 18.0f;
+        float cx = ix;
+        for (int i = 0; i < kSizeChoices; ++i) {
+            std::wstring text = std::to_wstring(kSizePercents[i]) + L"%";
+            float cw = chip_width(text.c_str());
+            if (cx > ix && cx + cw > ix + iw) {
+                cx = ix;
+                cy += btn_h + kHalf;
+            }
+            D2D1_RECT_F rc = D2D1::RectF(cx, cy, cx + cw, cy + btn_h);
+            chip(rt, pal, rc, text.c_str(), i == nearest);
+            if (!measuring_) size_hits_.push_back({ rc, kSizePercents[i] });
+            cx += cw + kHalf;
+        }
+        return cy + btn_h;
+    });
+    y += kPageGap;
 
     heading(L"Background");
     y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {

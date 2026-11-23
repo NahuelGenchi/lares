@@ -150,6 +150,22 @@ static void test_config()
     lares::PadPrefs clamped = lares::parse_pad_ini("[pad]\nlow-battery-level=999\nidle-disconnect-minutes=0\n");
     CHECK(clamped.low_level == 50);
     CHECK(clamped.idle_minutes == 1);
+
+    // Settings > Accessibility > Size: 100% unless saved, kept only when it differs
+    CHECK(def.size == 100);
+    CHECK(lares::serialize_pad_ini(def).find("[window]") == std::string::npos);
+    lares::PadPrefs larger;
+    larger.size = 130;
+    std::string with_size = lares::serialize_pad_ini(larger);
+    CHECK(with_size.find("[window]\nsize=130\n") != std::string::npos);
+    CHECK(lares::parse_pad_ini(with_size).size == 130);
+    CHECK(lares::parse_pad_ini("[window]\nsize=20\n").size == lares::kSizeMin);
+    CHECK(lares::parse_pad_ini("[window]\nsize=400\n").size == lares::kSizeMax);
+    CHECK(lares::parse_pad_ini("[window]\nsize=big\n").size == 100);
+    CHECK(lares::parse_pad_ini("[pad]\nsize=120\n").size == 100);
+    for (int i = 0; i < lares::kSizeChoices; ++i) {
+        CHECK(lares::kSizePercents[i] >= lares::kSizeMin && lares::kSizePercents[i] <= lares::kSizeMax);
+    }
 }
 
 static void test_shared_art()
