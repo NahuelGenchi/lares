@@ -2,7 +2,7 @@
 
 ## The project
 
-Lares is a native GNOME app for Linux, in C with GTK 4, that checks and manages a PC and its devices: an Overview, live Hardware readings, Xbox controllers (the work of the retired Padlight extension), Bluetooth headphones, keyboards and mice, remote play with Tailscale, Sunshine and Moonlight, and Settings. A GLib-only helper, `lares-pad`, runs the controller features that work while the window is closed, and a thin JavaScript addon shows a controller icon in GNOME's top bar. `README.md` describes the features.
+Lares is a native GNOME app for Linux, in C with GTK 4, that checks and manages a PC and its devices: an Overview, live Hardware readings, Xbox controllers (the work of the retired Padlight extension), Bluetooth headphones, keyboards and mice, AirDrop with iPhones, iPads and Macs, remote play with Tailscale, Sunshine and Moonlight, and Settings. A GLib-only helper, `lares-pad`, runs the controller features that work while the window is closed, and a thin JavaScript addon shows a controller icon in GNOME's top bar. `README.md` describes the features.
 
 Lightness is a requirement: the window stays around 30 MB of its own memory and the helper under 1 MB. Nothing reads hardware unless something on screen needs it; nothing polls what can be watched; nothing blocks the main thread (a slow sysfs file, such as amdgpu's `power1_average`, is read in a worker thread). Measure before and after a change that could cost memory, CPU or GPU.
 
@@ -20,11 +20,15 @@ Never describe something as working or complete unless a recorded check establis
 | `src/devices.c`, `src/hyperx.c`, `src/hidpp.c`, `src/keylight.h`, `src/device_view.c` | Bluetooth, battery and USB input devices from BlueZ, UPower and sysfs, with their model and connection; HyperX mouse batteries and settings over hidraw; Logitech keyboard brightness, lighting, dim and lights-off timers and startup and shutdown effects over HID++, kept on the keyboard or played live; and the Headphones, Keyboard and Mouse sections |
 | `src/pad/` | The controller core, shared with the helper and free of GTK: detection, batteries, nicknames, evdev input, rumble and Find, the programs using a pad, pairing, settings and the background features |
 | `src/pad_view.c`, `src/pad_picture.c`, `src/pad_map.c`, `src/pad_service.c` | The Controller section, its live pixel-art picture and the picture's map (`data/pad/controller.txt`), and switching the helper and the addon |
+| `src/share.c`, `src/share_view.c` | The Share section: AirDrop with Apple devices, the Wi-Fi card lent to `lares-awdl`, and the Allow step |
+| `src/airdrop/` | AirDrop above the link, GLib only: plists, CPIO, gzip and DVZip, HTTP, mDNS, the Bluetooth LE wake-up, and the TLS receiver and sender |
+| `src/awdl/` | `lares-awdl`, the libc-only AWDL link program that holds `CAP_NET_ADMIN` and `CAP_NET_RAW` (`docs/AIRDROP.md`) |
 | `src/remote_model.c`, `src/remote_view.c` | Remote play: the screen, Sunshine and Tailscale, the Home and Remote modes, and the setup guide |
 | `src/settings_view.c` | The Settings section: Run in the background and the top-bar icon |
 | `src/helper/lares-pad.c`, `src/helper/livelight.c` | The background helper and its D-Bus interface for the addon, and the keyboard lighting it plays live |
 | `data/` | Stylesheet, artwork, the bundled Monocraft font, the desktop file, the helper's unit and the addon (`data/addon/`) |
 | `tests/unit.c`, `tests/addon.mjs` | Unit tests on plain data, and on the addon's controller picture under Node, run by `make check` |
+| `tests/awdl.c`, `tests/formats.c`, `tests/discovery.c`, `tests/share.c` | AirDrop's tests: AWDL frames, the formats, mDNS and Bluetooth LE, and whole transfers over TLS on loopback |
 | `tools/pad-map.py` | Draws the controller picture's map from the artwork; needs Pillow and NumPy, building doesn't |
 | `tools/hidpp-probe.py` | Lists a Logitech device's HID++ 2.0 features and lighting state behind its receiver, with read requests only |
 | `.github/` | Issue form, PR template, the Checks and Project tracking workflows |

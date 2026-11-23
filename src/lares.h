@@ -55,6 +55,8 @@ void pad_view_shown(Lares *app, Section *self, gboolean on);
 GtkWidget *remote_build(Lares *app, Section *self);
 void remote_shown(Lares *app, Section *self, gboolean on);
 GtkWidget *settings_build(Lares *app, Section *self);
+GtkWidget *share_build(Lares *app, Section *self);
+void share_shown(Lares *app, Section *self, gboolean on);
 
 /* Small helpers shared by the sections */
 GtkWidget *ui_label(const char *text, const char *css_class);
