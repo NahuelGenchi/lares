@@ -24,7 +24,7 @@ static constexpr GUID kHidInterfaceGuid = { 0x4d1e55b2, 0xf16f, 0x11cf, { 0x88, 
 
 MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
     : hinst_(hinst), opts_(opts), hw_(opts.dry_run), remote_(opts.dry_run, opts.dry_stream),
-      devices_(opts.dry_run), pads_(opts.dry_run)
+      share_(opts.dry_run), devices_(opts.dry_run), pads_(opts.dry_run)
 {
     if (opts_.color_scheme == "dark") dark_ = true;
     else if (opts_.color_scheme == "light") dark_ = false;
@@ -63,6 +63,7 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
     mode_target_ = mode_t_;
     devices_.set_live_key_light(key_light_from_name(pad_prefs_.key_light), pad_prefs_.key_rgb);
     dev_list_ = devices_.list();
+    share_view_ = share_.view();
 
     sections_ = {
         { "overview",   L"Overview",      ART_OVERVIEW,   true  },
@@ -71,6 +72,7 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
         { "headphones", L"Headphones",    ART_HEADPHONES, devices_.any_of(DevKind::Audio) },
         { "keyboard",   L"Keyboard",      ART_KEYBOARD,   devices_.any_of(DevKind::Keyboard) },
         { "mouse",      L"Mouse",         ART_MOUSE,      devices_.any_of(DevKind::Mouse) },
+        { "share",      L"Share",         ART_SHARE,      opts_.dry_run || share_adapter_present() },
         { "remote",     remote_cfg_.ready ? L"Remote" : L"Set up remote", ART_LAPTOP, true },
         { "settings",   L"Settings",      ART_SLIDERS,    true  },
     };
@@ -212,6 +214,7 @@ bool MainWindow::create()
     remote_.set_notify_hwnd(hwnd_);
     devices_.set_notify_hwnd(hwnd_);
     pads_.set_notify_hwnd(hwnd_);
+    share_.set_notify_hwnd(hwnd_);
     DEV_BROADCAST_DEVICEINTERFACE_W filter = {};
     filter.dbcc_size = sizeof(filter);
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
@@ -294,6 +297,7 @@ void MainWindow::select_section(const std::string& id, bool animate)
             remote_hits_.clear();
             device_hits_.clear();
             pad_hits_.clear();
+            share_hits_.clear();
             int vis = visible_index_of(i);
             nav_pill_target_y_ = kNavPadTop + vis * (nav_item_h() + kHalf);
             if (!animate || !nav_pill_init_) {
@@ -304,6 +308,12 @@ void MainWindow::select_section(const std::string& id, bool animate)
                 start_anim_timer();
             }
             update_sampling_state();
+            if (id == "share") {
+                /* What's set up may have changed since it was last shown. */
+                share_.refresh();
+                share_view_ = share_.view();
+            }
+            sync_share_tick();
             if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
@@ -457,6 +467,7 @@ bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
     for (const auto& h : remote_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : device_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : pad_hits_)    { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& h : share_hits_)  { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     return false;
 }
 
@@ -827,6 +838,7 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
     remote_hits_.clear();
     device_hits_.clear();
     pad_hits_.clear();
+    share_hits_.clear();
     /* LaresClamp: the page is at most 620 wide, 9 px from the sidebar, and
      * .page pads it 18 px on the left and 36 px on the right. */
     float page_w = std::min(kContentMaxW, client_w - kSidebarWidth - kContentLead);
@@ -842,6 +854,7 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
     else if (std::strcmp(id, "hardware") == 0) draw_hardware_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "controller") == 0) draw_controller_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "remote") == 0) draw_remote_page(rt, pal, col_x, col_y, col_w);
+    else if (std::strcmp(id, "share") == 0) draw_share_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "headphones") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Audio);
     else if (std::strcmp(id, "keyboard") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Keyboard);
     else if (std::strcmp(id, "mouse") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Mouse);
@@ -967,6 +980,8 @@ void MainWindow::on_mouse_down(float lx, float ly)
             return;
         }
     }
+
+    if (share_click(lx, ly)) return;
 
     for (const auto& rh : remote_hits_) {
         if (!point_in_rect(lx, ly, rh.rect)) continue;
@@ -1317,6 +1332,22 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         } else if (wp == kDevicesSettleTimerId) {
             KillTimer(hwnd_, kDevicesSettleTimerId);
             devices_.request_refresh();
+            /* The Wi-Fi adapter AirDrop borrows may have come or gone too. */
+            if (!opts_.dry_run) {
+                for (auto& sec : sections_) {
+                    if (std::strcmp(sec.id, "share") == 0 && !sec.visible && share_adapter_present()) {
+                        sec.visible = true;
+                        PostMessageW(hwnd_, kMsgDevicesUpdated, 0, 0);
+                    }
+                }
+                if (std::strcmp(sections_[current_sec_].id, "share") == 0) {
+                    share_.refresh();
+                    share_view_ = share_.view();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                }
+            }
+        } else if (wp == kShareTickTimerId) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return 0;
     case WM_MOUSEMOVE:
@@ -1480,6 +1511,9 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
+    case kMsgShareUpdated:
+        on_share_updated();
+        return 0;
     case kMsgPadsUpdated: {
         pad_list_ = pads_.list();
         ULONGLONG now_ms = GetTickCount64();
@@ -1508,6 +1542,12 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         devices_.set_notify_hwnd(nullptr);
         pads_.set_wanted(false, false);
         pads_.set_notify_hwnd(nullptr);
+        share_.set_notify_hwnd(nullptr);
+        ble_.set_active(false);
+        if (share_tick_) {
+            KillTimer(hwnd_, kShareTickTimerId);
+            share_tick_ = false;
+        }
         if (timer_running_) {
             KillTimer(hwnd_, kAnimTimerId);
             timer_running_ = false;

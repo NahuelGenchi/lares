@@ -550,7 +550,7 @@ uint64_t awdl_node_unicast_wait(const struct awdl_node *n, const struct awdl_pee
 uint64_t awdl_node_multicast_wait(const struct awdl_node *n, awdl_time now);
 
 /* ------------------------------------------------------------ the card (radio.c) */
-enum awdl_mode { AWDL_MODE_IBSS, AWDL_MODE_ACTIVE_MONITOR };
+enum awdl_mode { AWDL_MODE_IBSS, AWDL_MODE_ACTIVE_MONITOR, AWDL_MODE_MONITOR };
 
 /* What a session set up. */
 struct awdl_radio {

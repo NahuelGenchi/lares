@@ -23,6 +23,7 @@ Never describe something as working or complete unless a recorded check establis
 | `src/share.c`, `src/share_view.c` | The Share section: AirDrop with Apple devices, the Wi-Fi card lent to `lares-awdl`, and the Allow step |
 | `src/airdrop/` | AirDrop above the link, GLib only: plists, CPIO, gzip and DVZip, HTTP, mDNS, the Bluetooth LE wake-up, and the TLS receiver and sender |
 | `src/awdl/` | `lares-awdl`, the libc-only AWDL link program that holds `CAP_NET_ADMIN` and `CAP_NET_RAW` (`docs/AIRDROP.md`) |
+| `src/sharecli/main.c` | `lares-share`, `src/share.c` without a window: the Windows port runs it inside WSL, with `win/wsl/` (`docs/WINDOWS.md`) |
 | `src/remote_model.c`, `src/remote_view.c` | Remote play: the screen, Sunshine and Tailscale, the Home and Remote modes, and the setup guide |
 | `src/settings_view.c` | The Settings section: Run in the background and the top-bar icon |
 | `src/helper/lares-pad.c`, `src/helper/livelight.c` | The background helper and its D-Bus interface for the addon, and the keyboard lighting it plays live |

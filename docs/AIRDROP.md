@@ -66,6 +66,8 @@ owly's driver table is the best list of cards known to work: dual-band Realtek `
 
 USB adapters owly reports working both ways with an iPhone, which `lares-awdl` drives: the TP-Link Archer T3U Plus (RTL8812BU, `rtw88_8822bu`, ad-hoc cell on channel 44) and MediaTek MT7612U adapters (`mt76x2u`, active monitor, a 3 MB photo in about 5 s on channel 149). 5 GHz needs the PC's regulatory domain set to its country: under the world domain (`00`) a card may not transmit there and falls back to channel 6.
 
+**A card with neither ad-hoc mode nor active monitor can still work.** The Realtek RTL8188EU (`0bda:8179`, driver `rtl8xxxu`) offers only station and monitor mode. Its plain monitor was measured to ACK unicast all the same (issue #98): probe requests sent from it to nearby access points, once with the card's own address and once with one made up, were answered with first copies of the probe response and no retries, where a card that doesn't ACK gets the same response several times over. `lares-awdl` therefore has a third mode for this driver, a plain monitor on the AWDL channel and nothing else. It was measured on 2.4 GHz, channel 6, and has not been tried with an Apple device yet.
+
 AWDL takes the Wi-Fi card for itself while it runs, unless the card can inject while connected. On the development PC that costs nothing: it is on Ethernet, and the USB adapter is used for nothing else.
 
 ## Design for Lares
@@ -119,6 +121,7 @@ Anyone in radio range can reach a receiver, so every input is hostile until chec
 | AWDL link | `src/awdl/`, `lares-awdl` | Unit tests on frames from the iPhone 17 capture (addresses and names replaced), and on multicast held for the phone's slot; `awdl0`, capabilities, peers and the crash journal in a network namespace; idle at about 240 kB of its own memory, 0 CPU ticks in 12 s |
 | Lares with lares-awdl | `src/share.c` | Lares' Share model against `lares-awdl`'s test mode in a network namespace: the link comes up, the receiver binds to `awdl0`'s address, a photo goes through to Downloads, and the link and `awdl0` go away when receiving stops |
 | Share section | `src/share.c`, `src/share_view.c` | Dry run in a hidden GNOME Shell, light and dark, every state |
+| On Windows, through WSL | `src/sharecli/main.c`, `win/wsl/`, `win/src/share_win.cpp` | The link comes up from the Windows window and the adapter goes back to Windows afterwards; no Apple device yet (`docs/WINDOWS.md`) |
 | With an iPhone | | Checked by the owner with an iPhone 17 on the USB adapter: a file each way. Finding each other took several seconds before the changes under *Finding devices quickly* |
 
 ## Code we can reuse

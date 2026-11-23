@@ -6,14 +6,17 @@
  * nl80211, rtnetlink), sysfs and NetworkManager's nmcli. It follows
  * owly-radio's injection backend (injection/mod.rs and setup.rs, nl80211.rs,
  * rtnl.rs, netlink.rs, native.rs, journal.rs, probe.rs, sys.rs and the
- * drivers.toml quirks), in two of its modes:
+ * drivers.toml quirks), in two of its modes and one of Lares' own:
  *
  * - exclusive, with an ad-hoc cell: the card's interface is taken down and
  *   an IBSS cell on AWDL's BSSID takes its place on the AWDL address, so
  *   the firmware ACKs the phone's unicast, with a monitor interface beside
  *   it for raw frames;
  * - active monitor, for cards without ad-hoc mode that advertise one: an
- *   active monitor on the AWDL address ACKs for itself.
+ *   active monitor on the AWDL address ACKs for itself;
+ * - plain monitor, for rtl8xxxu's RTL8188EU, which has neither: its
+ *   monitor was measured to ACK unicast to any address (docs/AIRDROP.md),
+ *   so one monitor interface is all it takes.
  *
  * owly's shared mode (beside an associated station) and its hidden-AP
  * exclusive mode (hostapd) aren't ported. Every change is written to the
@@ -1487,6 +1490,25 @@ static uint32_t active_monitor(struct setup *s, const uint32_t *freqs, size_t nf
     return 0;
 }
 
+/* For a card whose plain monitor ACKs: a monitor interface beside the
+ * card's own, which stays down. Nothing else is started or stopped, since
+ * some of these cards hear nothing once they've been stopped and started
+ * again (the RTL8188EU lent to WSL, issue #98). */
+static uint32_t plain_monitor(struct setup *s, const uint32_t *freqs, size_t nfreqs, int *mon)
+{
+    *mon = add_monitor(s, MONITOR_DEFAULT);
+    if (*mon < 0)
+        return 0;
+    for (size_t i = 0; i < nfreqs; i++) {
+        int r = set_freq(*mon, freqs[i]);
+        if (r == 0)
+            return freqs[i];
+        awdl_log("the monitor can't tune to %u MHz: %s", freqs[i], strerror(-r));
+    }
+    set_err(s->err, s->errlen, "Couldn't tune the monitor to any of AirDrop's channels.");
+    return 0;
+}
+
 /* Asks for `country`'s regulatory domain where the card lost it, and waits
  * for the kernel to apply it; a driver that manages its own (Intel's LAR)
  * ignores the request, so it isn't made. */
@@ -1562,6 +1584,11 @@ int awdl_radio_up(const char *ifname, uint8_t channel, const awdl_mac *addr, str
         r->mode = AWDL_MODE_ACTIVE_MONITOR;
     } else if (s.caps.adhoc) {
         r->mode = AWDL_MODE_IBSS;
+    } else if (strcmp(driver, "rtl8xxxu") == 0) {
+        /* rtl8xxxu's chips without ad-hoc mode (the RTL8188EU): a plain
+         * monitor ACKed unicast to any address when it was measured, with
+         * probe responses that came once and were never retried (issue #98). */
+        r->mode = AWDL_MODE_MONITOR;
     } else {
         set_err(err, errlen,
                 "This Wi-Fi card (%s) has neither ad-hoc mode nor an active monitor, so it can't "
@@ -1622,6 +1649,8 @@ int awdl_radio_up(const char *ifname, uint8_t channel, const awdl_mac *addr, str
     uint32_t freq;
     if (r->mode == AWDL_MODE_ACTIVE_MONITOR) {
         freq = active_monitor(&s, freqs, nfreqs, &r->monitor_ifindex);
+    } else if (r->mode == AWDL_MODE_MONITOR) {
+        freq = plain_monitor(&s, freqs, nfreqs, &r->monitor_ifindex);
     } else {
         freq = ibss_cell(&s, freqs, nfreqs);
         if (freq)
@@ -1632,7 +1661,8 @@ int awdl_radio_up(const char *ifname, uint8_t channel, const awdl_mac *addr, str
     if (!freq)
         goto fail;
     r->channel = awdl_channel_from_freq(freq);
-    awdl_log("%s mode on %s, channel %u", r->mode == AWDL_MODE_IBSS ? "ad-hoc cell" : "active monitor",
+    awdl_log("%s mode on %s, channel %u",
+             r->mode == AWDL_MODE_IBSS ? "ad-hoc cell" : r->mode == AWDL_MODE_MONITOR ? "plain monitor" : "active monitor",
              ifname, r->channel);
     return 0;
 

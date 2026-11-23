@@ -114,6 +114,8 @@ void share_set_looking(Share *s, gboolean on);
 void share_set_sending(Share *s, const char *const *paths);
 void share_send_to(Share *s, const char *key);
 void share_cancel_send(Share *s);
+/* Ends the link at once rather than after its minute of waiting for a next use. */
+void share_stop_link(Share *s);
 
 /* Whether this PC has a Wi-Fi card at all, for the sidebar: a cheap check. */
 gboolean share_has_card(void);

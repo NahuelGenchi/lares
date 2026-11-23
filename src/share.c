@@ -1410,3 +1410,11 @@ void share_cancel_send(Share *s)
     }
     changed(s);
 }
+
+/* Ends the link now, without the minute it otherwise waits for a next use:
+ * for a caller that is ending itself and must see the card given back. */
+void share_stop_link(Share *s)
+{
+    g_clear_handle_id(&s->linger, g_source_remove);
+    if (s->st.link == LINK_UP || (s->st.link == LINK_STARTING && !s->cert_busy)) link_stop(s);
+}
