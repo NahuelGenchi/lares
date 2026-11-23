@@ -10,6 +10,13 @@ namespace lares {
 inline constexpr int kPadIdleChoices = 4;
 inline constexpr int kPadIdleMinutes[kPadIdleChoices] = { 5, 10, 15, 30 };
 
+// Settings > Accessibility > Size: how much larger or smaller than Windows'
+// own display scale the window is drawn, in percent.
+inline constexpr int kSizeChoices = 7;
+inline constexpr int kSizePercents[kSizeChoices] = { 90, 100, 110, 120, 130, 140, 150 };
+inline constexpr int kSizeMin = 90;
+inline constexpr int kSizeMax = 150;
+
 // Mirrors src/pad/padconf.h and ~/.config/lares/pad.ini keys so Linux and
 // Windows keep the same config format.
 struct PadPrefs {
@@ -23,6 +30,7 @@ struct PadPrefs {
     bool topbar_level = false;
     bool topbar_hide = false;
     bool background = true;
+    int size = 100; // [window] size, Windows only
     std::string key_light = "own";
     uint8_t key_rgb[3] = { 0xff, 0x00, 0x00 };
     std::string nickname_salt;

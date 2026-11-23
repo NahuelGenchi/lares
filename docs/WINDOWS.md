@@ -37,6 +37,7 @@ Lares on Windows follows the same rules as Linux (`AGENTS.md`):
 | **Remote CLI** | planned | `lares home`, `lares remote`, `lares status`, `lares restore`, `--section` | Same commands and exit semantics as Linux |
 | **Share: AirDrop** | confirmed up to the link (issue #98); not yet tried with an Apple device | The Linux AirDrop code inside WSL 2, on a USB Wi-Fi adapter lent by `usbipd-win`; `lares.exe` drives it over pipes and sends the Bluetooth wake-up itself (see *AirDrop through WSL*) | One adapter model so far (Realtek RTL8188EU, 2.4 GHz); needs WSL and a one-time Set up |
 | **Settings, Helper & Tray** | confirmed (issue #92) | `lares-pad.exe` background process (autostart via `HKCU\...\Run`), `Shell_NotifyIconW` tray icon + balloon alerts, and `win/src/livelight.cpp`, the port of `src/helper/livelight.c` | Listens to the receiver instead of polling, finds it again on `WM_DEVICECHANGE`, gives the lights back on quit and at `WM_ENDSESSION`. Measured 2.6 to 4.4 MB private across runs and no CPU while idle |
+| **Settings: Accessibility, Size** | confirmed in dry runs (issue #102); Windows only | One scale for the whole window: Windows' display scale (`GetDpiForWindow`) times the Size, 90% to 150%, through the Direct2D transform, pointer coordinates and the smallest window (640 by 480 layout pixels, at most the work area). A new size resizes the window by the same ratio, inside the work area, unless it is maximised | The window's private memory, fresh on Overview at 96 DPI: 13.3 MB at 100%, 14.1 MB at 100% stretched to 1350 by 1050, 22.1 MB at 150%: what grows is drawing at a larger scale, as at Windows' own 150%. Switching sizes 28 times in a row levels off near 31 MB |
 
 ## Windows Dynamic Lighting
 
@@ -110,7 +111,7 @@ The Linux build (`Makefile` and Ubuntu 26.04 `make check`) stays completely inta
 ### Config and state locations on Windows
 
 - `%APPDATA%\lares\lares.ini` — Remote mode, saved screen/service choices and setup readiness (same INI layout as `~/.config/lares/lares.ini`; dry run uses `lares-dry.ini`).
-- `%APPDATA%\lares\pad.ini` — Controller alerts, notices, keep-awake, idle disconnect, tray icon preferences, G715 live lighting, background toggle and nicknames (same INI layout as `~/.config/lares/pad.ini`).
+- `%APPDATA%\lares\pad.ini` — Controller alerts, notices, keep-awake, idle disconnect, tray icon preferences, G715 live lighting, background toggle and nicknames (same INI layout as `~/.config/lares/pad.ini`), and the window's Size as `[window] size=<percent>`, written only when it isn't 100 (Windows only; Linux ignores the group).
 - `%APPDATA%\lares\airdrop-kit.txt`: the version of AirDrop's programs Set up last installed in WSL, and the distribution. In WSL they live in `/opt/lares-wsl`.
 - For AirDrop: `LARES_WSL_DISTRO=<name>` picks the distribution (the default one otherwise); in a dry run `LARES_DRY_SHARE=<scene>` shows a scene (`setup`, `setup-failed`, `nowsl`, `noadapter`, `receiving`, `quiet`, `incoming`, `incoming-receiving`, `incoming-done`, `looking`, `sending`) and `LARES_DRY_FILES=<path>;<path>` stands in for the file picker.
 - Environment flags matching Linux: `LARES_DRY_RUN=1`, `LARES_DRY_STREAM=1`, `LARES_COLOR_SCHEME=dark|light`, `LARES_SECTION=<id>`.

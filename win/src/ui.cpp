@@ -197,9 +197,17 @@ bool MainWindow::create()
 
     UINT dpi = GetDpiForSystem();
     dpi_scale_ = static_cast<float>(dpi) / 96.0f;
+    update_scale();
 
-    int win_w = static_cast<int>(std::lround(900.0f * dpi_scale_));
-    int win_h = static_cast<int>(std::lround(720.0f * dpi_scale_));
+    /* 900 by 720 at the Size setting, as far as the screen's work area
+     * allows: a large size can ask for more than a small screen has. */
+    int win_w = static_cast<int>(std::lround(900.0f * scale_));
+    int win_h = static_cast<int>(std::lround(720.0f * scale_));
+    RECT work = {};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0) && work.right > work.left && work.bottom > work.top) {
+        win_w = std::min(win_w, static_cast<int>(work.right - work.left));
+        win_h = std::min(win_h, static_cast<int>(work.bottom - work.top));
+    }
 
     const wchar_t* title = opts_.dry_run ? L"Lares (dry run)" : L"Lares";
     hwnd_ = CreateWindowExW(
@@ -218,6 +226,7 @@ bool MainWindow::create()
 
     dpi = GetDpiForWindow(hwnd_);
     dpi_scale_ = static_cast<float>(dpi) / 96.0f;
+    update_scale();
     hw_.set_notify_hwnd(hwnd_);
     remote_.set_notify_hwnd(hwnd_);
     devices_.set_notify_hwnd(hwnd_);
@@ -302,6 +311,8 @@ void MainWindow::select_section(const std::string& id, bool animate)
             editing_nickname_.clear();
             toggle_hits_.clear();
             card_hits_.clear();
+            size_hits_.clear();
+            size_open_ = false;
             remote_hits_.clear();
             device_hits_.clear();
             pad_hits_.clear();
@@ -443,10 +454,58 @@ void MainWindow::clamp_scroll()
     if (!hwnd_) return;
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    float lh = static_cast<float>(rc.bottom - rc.top) / dpi_scale_;
+    float lh = static_cast<float>(rc.bottom - rc.top) / scale_;
     float max_scroll = std::max(0.0f, content_height_ - lh);
     scroll_y_ = std::clamp(scroll_y_, 0.0f, max_scroll);
     scroll_target_y_ = std::clamp(scroll_target_y_, 0.0f, max_scroll);
+}
+
+/* Settings > Accessibility > Size. The window grows or shrinks with what it
+ * shows, as Windows resizes a window when the display scale changes, so the
+ * layout stays as it was; a maximised window keeps its size. It stays inside
+ * the screen's work area. */
+void MainWindow::apply_size(int percent)
+{
+    percent = std::clamp(percent, kSizeMin, kSizeMax);
+    if (percent == pad_prefs_.size) return;
+    float before = scale_;
+    pad_prefs_.size = percent;
+    save_pad_prefs(pad_path_, pad_prefs_);
+    update_scale();
+    /* What is under the pointer has moved: no hover until it moves too. */
+    mouse_in_ = false;
+    hover_on_ = false;
+    if (hwnd_ && !IsZoomed(hwnd_) && !IsIconic(hwnd_)) {
+        RECT wr = {}, cr = {};
+        GetWindowRect(hwnd_, &wr);
+        GetClientRect(hwnd_, &cr);
+        float k = scale_ / before;
+        int w = static_cast<int>(std::lround(static_cast<float>(cr.right) * k)) + (wr.right - wr.left) - cr.right;
+        int h = static_cast<int>(std::lround(static_cast<float>(cr.bottom) * k)) + (wr.bottom - wr.top) - cr.bottom;
+        int x = wr.left, y = wr.top;
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &mi)) {
+            const RECT& wa = mi.rcWork;
+            w = std::min(w, static_cast<int>(wa.right - wa.left));
+            h = std::min(h, static_cast<int>(wa.bottom - wa.top));
+            x = std::clamp(x, static_cast<int>(wa.left), static_cast<int>(wa.right) - w);
+            y = std::clamp(y, static_cast<int>(wa.top), static_cast<int>(wa.bottom) - h);
+        }
+        SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    clamp_scroll();
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void MainWindow::close_size_list()
+{
+    if (!size_open_) return;
+    size_open_ = false;
+    /* Its choices go now, not at the next paint. */
+    size_hits_.erase(std::remove_if(size_hits_.begin(), size_hits_.end(), [](const SizeHit& h) { return h.percent != 0; }),
+                     size_hits_.end());
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
@@ -455,6 +514,12 @@ bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
         if (out) *out = r;
         return true;
     };
+    /* With the Size list open only it and its button take the pointer: a
+     * press anywhere else closes it. */
+    if (size_open_) {
+        for (const auto& h : size_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+        return false;
+    }
     if (lx < kSidebarWidth) {
         if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
             int vis = 0;
@@ -471,6 +536,7 @@ bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
     }
     // In the order on_mouse_down tries them.
     for (const auto& h : toggle_hits_) { if (h.enabled && point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& h : size_hits_)   { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : card_hits_)   { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : remote_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : device_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
@@ -843,6 +909,7 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
 {
     toggle_hits_.clear();
     card_hits_.clear();
+    size_hits_.clear();
     remote_hits_.clear();
     device_hits_.clear();
     pad_hits_.clear();
@@ -884,11 +951,11 @@ void MainWindow::on_paint()
         RECT bind_rc = { 0, 0, px_w, px_h };
         if (SUCCEEDED(dc_rt_->BindDC(mem_dc_, &bind_rc))) {
             Palette pal = current_palette();
-            float lw = static_cast<float>(px_w) / dpi_scale_;
-            float lh = static_cast<float>(px_h) / dpi_scale_;
+            float lw = static_cast<float>(px_w) / scale_;
+            float lh = static_cast<float>(px_h) / scale_;
 
             dc_rt_->BeginDraw();
-            dc_rt_->SetTransform(D2D1::Matrix3x2F::Scale(dpi_scale_, dpi_scale_));
+            dc_rt_->SetTransform(D2D1::Matrix3x2F::Scale(scale_, scale_));
             dc_rt_->Clear(to_d2d(pal.bg));
             draw_sidebar(dc_rt_, pal, lh);
             draw_page(dc_rt_, pal, lw, lh);
@@ -910,7 +977,18 @@ void MainWindow::on_mouse_move(float lx, float ly)
         tracking_mouse_ = (TrackMouseEvent(&tme) != FALSE);
     }
     int new_hover = -1;
-    if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
+    if (size_open_) {
+        for (int i = 0; i < static_cast<int>(size_hits_.size()); ++i) {
+            const auto& h = size_hits_[i];
+            if (h.percent == 0 || !point_in_rect(lx, ly, h.rect)) continue;
+            for (int c = 0; c < kSizeChoices; ++c) {
+                if (kSizePercents[c] == h.percent && c != size_focus_) {
+                    size_focus_ = c;
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                }
+            }
+        }
+    } else if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
         int vis = 0;
         for (int i = 0; i < static_cast<int>(sections_.size()); ++i) {
             if (!sections_[i].visible) continue;
@@ -938,6 +1016,10 @@ void MainWindow::on_mouse_move(float lx, float ly)
 
 void MainWindow::on_mouse_press(float lx, float ly)
 {
+    if (size_open_ && !interactive_rect_at(lx, ly, nullptr)) {
+        close_size_list();
+        return;
+    }
     pressed_ = true;
     press_x_ = lx;
     press_y_ = ly;
@@ -958,6 +1040,26 @@ void MainWindow::on_mouse_release(float lx, float ly)
 
 void MainWindow::on_mouse_down(float lx, float ly)
 {
+    /* The Size dropdown: its button opens or closes the list, a choice is
+     * taken and closes it. */
+    for (const auto& hit : size_hits_) {
+        if (!point_in_rect(lx, ly, hit.rect)) continue;
+        if (hit.percent == 0 && !size_open_) {
+            size_open_ = true;
+            size_focus_ = size_index();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else {
+            int percent = hit.percent;
+            close_size_list();
+            if (percent) apply_size(percent);
+        }
+        return;
+    }
+    if (size_open_) {
+        close_size_list();
+        return;
+    }
+
     if (lx < kSidebarWidth) {
         int vis = 0;
         for (int i = 0; i < static_cast<int>(sections_.size()); ++i) {
@@ -1237,9 +1339,10 @@ void MainWindow::on_mouse_down(float lx, float ly)
 
 void MainWindow::on_mouse_wheel(int delta)
 {
+    close_size_list();
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    float lh = static_cast<float>(rc.bottom - rc.top) / dpi_scale_;
+    float lh = static_cast<float>(rc.bottom - rc.top) / scale_;
     float max_scroll = std::max(0.0f, content_height_ - lh);
     scroll_target_y_ = std::clamp(scroll_target_y_ - (static_cast<float>(delta) / 120.0f) * 72.0f, 0.0f, max_scroll);
     start_anim_timer();
@@ -1276,6 +1379,22 @@ void MainWindow::on_key_down(WPARAM vk)
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return;
+        }
+        return;
+    }
+
+    /* The Size list, open: the arrows move along it, Enter or Space takes
+     * the choice, Escape closes it. */
+    if (size_open_) {
+        if (vk == VK_ESCAPE) {
+            close_size_list();
+        } else if (vk == VK_UP || vk == VK_DOWN) {
+            size_focus_ = std::clamp(size_focus_ + (vk == VK_DOWN ? 1 : -1), 0, kSizeChoices - 1);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else if (vk == VK_RETURN || vk == VK_SPACE) {
+            int percent = kSizePercents[std::clamp(size_focus_, 0, kSizeChoices - 1)];
+            close_size_list();
+            apply_size(percent);
         }
         return;
     }
@@ -1359,8 +1478,8 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     case WM_MOUSEMOVE:
-        on_mouse_move(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
-                      static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
+        on_mouse_move(static_cast<float>(GET_X_LPARAM(lp)) / scale_,
+                      static_cast<float>(GET_Y_LPARAM(lp)) / scale_);
         return 0;
     case WM_MOUSELEAVE:
         tracking_mouse_ = false;
@@ -1375,8 +1494,8 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(lp) == HTCLIENT) {
             POINT pt = {};
             if (GetCursorPos(&pt) && ScreenToClient(hwnd_, &pt)) {
-                float lx = static_cast<float>(pt.x) / dpi_scale_;
-                float ly = static_cast<float>(pt.y) / dpi_scale_;
+                float lx = static_cast<float>(pt.x) / scale_;
+                float ly = static_cast<float>(pt.y) / scale_;
                 SetCursor(LoadCursorW(nullptr, point_over_interactive(lx, ly) ? IDC_HAND : IDC_ARROW));
                 return TRUE;
             }
@@ -1384,12 +1503,12 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_LBUTTONDOWN:
     case WM_LBUTTONDBLCLK:
-        on_mouse_press(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
-                       static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
+        on_mouse_press(static_cast<float>(GET_X_LPARAM(lp)) / scale_,
+                       static_cast<float>(GET_Y_LPARAM(lp)) / scale_);
         return 0;
     case WM_LBUTTONUP:
-        on_mouse_release(static_cast<float>(GET_X_LPARAM(lp)) / dpi_scale_,
-                         static_cast<float>(GET_Y_LPARAM(lp)) / dpi_scale_);
+        on_mouse_release(static_cast<float>(GET_X_LPARAM(lp)) / scale_,
+                         static_cast<float>(GET_Y_LPARAM(lp)) / scale_);
         return 0;
     case WM_CAPTURECHANGED:
         pressed_ = false;
@@ -1404,6 +1523,7 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
     case WM_ACTIVATE:
         /* Back from Settings, say: what Windows paints may have changed. */
         if (LOWORD(wp) != WA_INACTIVE) InvalidateRect(hwnd_, nullptr, FALSE);
+        else close_size_list();
         return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_MOUSEWHEEL:
         on_mouse_wheel(GET_WHEEL_DELTA_WPARAM(wp));
@@ -1417,6 +1537,7 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
     case WM_DPICHANGED: {
         UINT new_dpi = HIWORD(wp);
         dpi_scale_ = static_cast<float>(new_dpi) / 96.0f;
+        update_scale();
         const RECT* suggested = reinterpret_cast<const RECT*>(lp);
         SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
                      suggested->right - suggested->left, suggested->bottom - suggested->top,
@@ -1447,9 +1568,19 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         return FALSE;
     }
     case WM_GETMINMAXINFO: {
+        /* 640 by 480 at the Size setting, so the layout is never narrower
+         * than at 100%, but no more than the screen's work area. */
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-        mmi->ptMinTrackSize.x = static_cast<LONG>(std::lround(640.0f * dpi_scale_));
-        mmi->ptMinTrackSize.y = static_cast<LONG>(std::lround(480.0f * dpi_scale_));
+        LONG min_w = static_cast<LONG>(std::lround(640.0f * scale_));
+        LONG min_h = static_cast<LONG>(std::lround(480.0f * scale_));
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &mi)) {
+            min_w = std::min(min_w, mi.rcWork.right - mi.rcWork.left);
+            min_h = std::min(min_h, mi.rcWork.bottom - mi.rcWork.top);
+        }
+        mmi->ptMinTrackSize.x = min_w;
+        mmi->ptMinTrackSize.y = min_h;
         return 0;
     }
     case WM_SIZE:

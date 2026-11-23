@@ -88,6 +88,8 @@ PadPrefs parse_pad_ini(const std::string& text)
                     p.key_rgb[2] = static_cast<uint8_t>(rgb & 0xff);
                 }
             }
+        } else if (group == "window") {
+            if (key == "size") p.size = parse_int_clamped(val, p.size, kSizeMin, kSizeMax);
         } else if (group == "nicknames") {
             if (!key.empty() && !val.empty()) {
                 // Support both literal tab and GLib keyfile \t / \\ escapes
@@ -136,6 +138,12 @@ std::string serialize_pad_ini(const PadPrefs& p)
         out << "\n[keyboard]\n"
             << "light=" << p.key_light << "\n"
             << "colour=" << hex << "\n";
+    }
+
+    int size = std::clamp(p.size, kSizeMin, kSizeMax);
+    if (size != 100) {
+        out << "\n[window]\n"
+            << "size=" << size << "\n";
     }
 
     if (!p.nicknames.empty()) {
