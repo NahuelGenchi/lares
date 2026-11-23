@@ -311,8 +311,9 @@ void MainWindow::select_section(const std::string& id, bool animate)
             editing_nickname_.clear();
             toggle_hits_.clear();
             card_hits_.clear();
-            size_hits_.clear();
-            size_open_ = false;
+            drops_.clear();
+            drop_open_.clear();
+            drop_items_.clear();
             remote_hits_.clear();
             device_hits_.clear();
             pad_hits_.clear();
@@ -498,14 +499,48 @@ void MainWindow::apply_size(int percent)
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void MainWindow::close_size_list()
+const char* const* chevron_up()
 {
-    if (!size_open_) return;
-    size_open_ = false;
+    static const std::vector<const char*> rows = [] {
+        std::vector<const char*> r;
+        for (int i = 0; ART_CHEVRON[i]; ++i) r.insert(r.begin(), ART_CHEVRON[i]);
+        r.push_back(nullptr);
+        return r;
+    }();
+    return rows.data();
+}
+
+const MainWindow::Dropdown* MainWindow::open_dropdown() const
+{
+    if (drop_open_.empty()) return nullptr;
+    for (const auto& d : drops_) {
+        if (d.key == drop_open_) return &d;
+    }
+    return nullptr;
+}
+
+void MainWindow::close_dropdown()
+{
+    if (drop_open_.empty()) return;
+    drop_open_.clear();
     /* Its choices go now, not at the next paint. */
-    size_hits_.erase(std::remove_if(size_hits_.begin(), size_hits_.end(), [](const SizeHit& h) { return h.percent != 0; }),
-                     size_hits_.end());
+    drop_items_.clear();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+/* Picking the choice in use only closes the list: nothing is asked again. */
+void MainWindow::pick_dropdown(int index)
+{
+    const Dropdown* d = open_dropdown();
+    if (!d || index < 0 || index >= static_cast<int>(d->values.size()) || index == d->checked) {
+        close_dropdown();
+        return;
+    }
+    int value = d->values[static_cast<size_t>(index)];
+    /* A copy: what it does may draw the page again, and its dropdowns with it. */
+    std::function<void(int)> pick = d->pick;
+    close_dropdown();
+    if (pick) pick(value);
 }
 
 bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
@@ -514,10 +549,12 @@ bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
         if (out) *out = r;
         return true;
     };
-    /* With the Size list open only it and its button take the pointer: a
+    /* With a dropdown's list open only it and its button take the pointer: a
      * press anywhere else closes it. */
-    if (size_open_) {
-        for (const auto& h : size_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    if (!drop_open_.empty()) {
+        for (const auto& r : drop_items_) { if (point_in_rect(lx, ly, r)) return found(r); }
+        const Dropdown* d = open_dropdown();
+        if (d && point_in_rect(lx, ly, d->button)) return found(d->button);
         return false;
     }
     if (lx < kSidebarWidth) {
@@ -536,8 +573,8 @@ bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
     }
     // In the order on_mouse_down tries them.
     for (const auto& h : toggle_hits_) { if (h.enabled && point_in_rect(lx, ly, h.rect)) return found(h.rect); }
-    for (const auto& h : size_hits_)   { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
-    for (const auto& h : card_hits_)   { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& d : drops_)       { if (d.enabled && point_in_rect(lx, ly, d.button)) return found(d.button); }
+    for (const auto& h : card_hits_)  { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : remote_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : device_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : pad_hits_)    { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
@@ -550,9 +587,10 @@ bool MainWindow::point_over_interactive(float lx, float ly) const
     return interactive_rect_at(lx, ly, nullptr);
 }
 
+/* Nothing under an open list looks pressable: a press there only closes it. */
 bool MainWindow::hovered(const D2D1_RECT_F& rc) const
 {
-    return mouse_in_ && point_in_rect(mouse_x_, mouse_y_, rc);
+    return mouse_in_ && drop_open_.empty() && point_in_rect(mouse_x_, mouse_y_, rc);
 }
 
 /* The few pieces every page is laid out with, so each follows the 9 px grid
@@ -733,6 +771,94 @@ float MainWindow::setting(ID2D1RenderTarget* rt, const Palette& pal, float x, fl
     return h;
 }
 
+/* A setting's texts with a dropdown at the right of its row. The button is
+ * as wide as its widest choice and looks like a chip: its value 18 px in, its
+ * chevron 18 px from its right edge. Where the title wouldn't fit beside it,
+ * or its line would wrap past three lines there, the texts take the row and
+ * the button goes under them, still at the right. A dropdown that isn't
+ * enabled is dimmed, as a switch is, and takes no click. */
+float MainWindow::setting_dropdown(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w,
+                                  const wchar_t* title, const wchar_t* sub, Dropdown d)
+{
+    bool listed = d.checked >= 0 && d.checked < static_cast<int>(d.choices.size());
+    std::wstring now = listed ? d.choices[static_cast<size_t>(d.checked)] : d.shown;
+    float tw = text_width(now.c_str(), fonts_.body());
+    for (const auto& c : d.choices) tw = std::max(tw, text_width(c.c_str(), fonts_.body()));
+    float bw = 18.0f + tw + kGap + 18.0f + 18.0f;
+    float btn_h = lh_ + 18.0f;
+    float alpha = d.enabled ? 1.0f : 0.5f;
+
+    float h = 0.0f, by = 0.0f, room = w - bw - kGap;
+    bool beside = text_width(title, fonts_.body()) <= room && (!sub || para_height(sub, room) <= 3.0f * kParaLine);
+    if (beside) {
+        h = setting(rt, pal, x, y, room, title, sub, nullptr, alpha, btn_h);
+        by = y + std::round((h - btn_h) * 0.5f);
+    } else {
+        float texts_h = setting(rt, pal, x, y, w, title, sub, nullptr, alpha, 0.0f);
+        by = y + texts_h + kGap;
+        h = texts_h + kGap + btn_h;
+    }
+    D2D1_RECT_F rc = D2D1::RectF(x + w - bw, by, x + w, by + btn_h);
+    bool open = !drop_open_.empty() && drop_open_ == d.key;
+    Rgba ground = (open || (d.enabled && hovered(rc))) ? pal.hover : pal.chip;
+    Rgba text = pal.text, chevron = open ? pal.accent : pal.muted;
+    ground.a *= alpha;
+    text.a *= alpha;
+    chevron.a *= alpha;
+    fill(rt, rc, ground, 9.0f);
+    label(rt, now.c_str(), fonts_.body(), rc.left + 18.0f, by + (btn_h - lh_) * 0.5f, tw, text);
+    icon(rt, open ? chevron_up() : ART_CHEVRON, 2.0f, rc.right - 36.0f, by, 18.0f, btn_h, chevron);
+    if (!measuring_) {
+        d.button = rc;
+        drops_.push_back(std::move(d));
+    }
+    return h;
+}
+
+/* The open dropdown's list: a card as wide as its button, 9 px under it (or
+ * over it, where there's no room below), ringed by a 2 px line. Its choices
+ * sit 9 px in, their text in line with the button's; the one in use is lit as
+ * a checked chip, and the one the pointer or the arrow keys are on hovered.
+ * Drawn after the page, so it covers what's under it. */
+void MainWindow::draw_dropdown_list(ID2D1RenderTarget* rt, const Palette& pal)
+{
+    drop_items_.clear();
+    if (drop_open_.empty()) return;
+    const Dropdown* d = open_dropdown();
+    if (!d) {
+        drop_open_.clear();   // its setting is no longer on the page
+        return;
+    }
+    const D2D1_RECT_F& button = d->button;
+    float item_h = lh_ + 18.0f;
+    float h = kHalf * 2.0f + item_h * static_cast<float>(d->choices.size());
+    float top = button.bottom + kHalf;
+    RECT rc = {};
+    GetClientRect(hwnd_, &rc);
+    float view_h = static_cast<float>(rc.bottom) / scale_;
+    if (top + h > view_h && button.top - kHalf - h >= 0.0f) top = button.top - kHalf - h;
+    D2D1_RECT_F panel = D2D1::RectF(button.left, top, button.right, top + h);
+    fill(rt, D2D1::RectF(panel.left - 2.0f, panel.top - 2.0f, panel.right + 2.0f, panel.bottom + 2.0f), pal.line, 11.0f);
+    fill(rt, panel, pal.card, 9.0f);
+    float iy = top + kHalf;
+    for (int i = 0; i < static_cast<int>(d->choices.size()); ++i) {
+        D2D1_RECT_F item = D2D1::RectF(panel.left + kHalf, iy, panel.right - kHalf, iy + item_h);
+        bool lit = i == drop_focus_;
+        if (i == d->checked) {
+            Rgba ground = pal.accent;
+            if (lit) ground.a *= 0.9f;
+            fill(rt, item, ground, 9.0f);
+        } else if (lit) {
+            fill(rt, item, pal.hover, 9.0f);
+        }
+        const std::wstring& text = d->choices[static_cast<size_t>(i)];
+        label(rt, text.c_str(), fonts_.body(), item.left + kHalf, iy + (item_h - lh_) * 0.5f,
+              item.right - item.left - 18.0f, i == d->checked ? pal.on_accent : pal.text);
+        drop_items_.push_back(item);
+        iy += item_h;
+    }
+}
+
 /* .setting ~ .setting: 18 px, a 2 px line, 18 px. */
 float MainWindow::setting_line(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w)
 {
@@ -909,7 +1035,7 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
 {
     toggle_hits_.clear();
     card_hits_.clear();
-    size_hits_.clear();
+    drops_.clear();
     remote_hits_.clear();
     device_hits_.clear();
     pad_hits_.clear();
@@ -934,6 +1060,7 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
     else if (std::strcmp(id, "keyboard") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Keyboard);
     else if (std::strcmp(id, "mouse") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Mouse);
     else draw_overview_page(rt, pal, col_x, col_y, col_w);
+    draw_dropdown_list(rt, pal);
 
     rt->PopAxisAlignedClip();
 }
@@ -977,15 +1104,11 @@ void MainWindow::on_mouse_move(float lx, float ly)
         tracking_mouse_ = (TrackMouseEvent(&tme) != FALSE);
     }
     int new_hover = -1;
-    if (size_open_) {
-        for (int i = 0; i < static_cast<int>(size_hits_.size()); ++i) {
-            const auto& h = size_hits_[i];
-            if (h.percent == 0 || !point_in_rect(lx, ly, h.rect)) continue;
-            for (int c = 0; c < kSizeChoices; ++c) {
-                if (kSizePercents[c] == h.percent && c != size_focus_) {
-                    size_focus_ = c;
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                }
+    if (!drop_open_.empty()) {
+        for (int i = 0; i < static_cast<int>(drop_items_.size()); ++i) {
+            if (i != drop_focus_ && point_in_rect(lx, ly, drop_items_[static_cast<size_t>(i)])) {
+                drop_focus_ = i;
+                InvalidateRect(hwnd_, nullptr, FALSE);
             }
         }
     } else if (lx >= kNavPadX && lx <= kSidebarWidth - kNavPadX) {
@@ -1016,8 +1139,8 @@ void MainWindow::on_mouse_move(float lx, float ly)
 
 void MainWindow::on_mouse_press(float lx, float ly)
 {
-    if (size_open_ && !interactive_rect_at(lx, ly, nullptr)) {
-        close_size_list();
+    if (!drop_open_.empty() && !interactive_rect_at(lx, ly, nullptr)) {
+        close_dropdown();
         return;
     }
     pressed_ = true;
@@ -1040,23 +1163,24 @@ void MainWindow::on_mouse_release(float lx, float ly)
 
 void MainWindow::on_mouse_down(float lx, float ly)
 {
-    /* The Size dropdown: its button opens or closes the list, a choice is
-     * taken and closes it. */
-    for (const auto& hit : size_hits_) {
-        if (!point_in_rect(lx, ly, hit.rect)) continue;
-        if (hit.percent == 0 && !size_open_) {
-            size_open_ = true;
-            size_focus_ = size_index();
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        } else {
-            int percent = hit.percent;
-            close_size_list();
-            if (percent) apply_size(percent);
+    /* A dropdown: with its list open, a choice is taken and closes it, and
+     * a click anywhere else only closes it; closed, its button opens it. */
+    if (!drop_open_.empty()) {
+        for (int i = 0; i < static_cast<int>(drop_items_.size()); ++i) {
+            if (point_in_rect(lx, ly, drop_items_[static_cast<size_t>(i)])) {
+                pick_dropdown(i);
+                return;
+            }
         }
+        close_dropdown();
         return;
     }
-    if (size_open_) {
-        close_size_list();
+    for (const auto& d : drops_) {
+        if (!d.enabled || !point_in_rect(lx, ly, d.button)) continue;
+        /* On the choice in use; on none, for a value set elsewhere. */
+        drop_open_ = d.key;
+        drop_focus_ = d.checked;
+        InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
 
@@ -1151,102 +1275,10 @@ void MainWindow::on_mouse_down(float lx, float ly)
         if (!point_in_rect(lx, ly, dh.rect)) continue;
         if (dh.kind == DeviceActionKind::OpenDynamicLighting) {
             ShellExecuteW(hwnd_, L"open", L"ms-settings:personalization-lighting", nullptr, nullptr, SW_SHOWNORMAL);
-            return;
+        } else {
+            device_action(dh.dev_id, dh.kind, dh.value);
         }
-        for (auto& d : dev_list_) {
-            if (d.id != dh.dev_id) continue;
-            if (d.kind == DevKind::Mouse) {
-                MouseSettings want = d.mouse;
-                switch (dh.kind) {
-                case DeviceActionKind::MouseStage:
-                    want.active = std::clamp(dh.value, 0, std::max(0, want.stages - 1));
-                    break;
-                case DeviceActionKind::MouseDpiDelta:
-                    if (want.active >= 0 && want.active < want.stages) {
-                        int dpi = ((want.dpi[want.active] + dh.value) / 50) * 50;
-                        want.dpi[want.active] = std::clamp(dpi, want.dpi_min, want.dpi_max);
-                    }
-                    break;
-                case DeviceActionKind::MouseRate:
-                    want.rate = dh.value;
-                    break;
-                case DeviceActionKind::MouseLift:
-                    want.lift_mm = dh.value;
-                    break;
-                case DeviceActionKind::MouseLight:
-                    want.light = static_cast<LightEffect>(dh.value);
-                    if ((want.light == LightEffect::Solid || want.light == LightEffect::Breathing) &&
-                        want.rgb[0] == 0 && want.rgb[1] == 0 && want.rgb[2] == 0) {
-                        want.rgb[0] = 0xff;
-                    }
-                    break;
-                case DeviceActionKind::MouseColour:
-                    if (want.light != LightEffect::Solid && want.light != LightEffect::Breathing) {
-                        want.light = LightEffect::Solid;
-                    }
-                    want.rgb[0] = static_cast<uint8_t>((dh.value >> 16) & 0xff);
-                    want.rgb[1] = static_cast<uint8_t>((dh.value >> 8) & 0xff);
-                    want.rgb[2] = static_cast<uint8_t>(dh.value & 0xff);
-                    break;
-                case DeviceActionKind::MouseBrightness:
-                    want.brightness = std::clamp(dh.value, 0, 100);
-                    break;
-                default:
-                    break;
-                }
-                devices_.apply_mouse_async(d.id, want);
-            } else if (d.kind == DevKind::Keyboard) {
-                KeyboardSettings want = d.keyboard;
-                switch (dh.kind) {
-                case DeviceActionKind::KeyBrightness:
-                    want.brightness = std::clamp(dh.value, 0, 100);
-                    break;
-                case DeviceActionKind::KeyLight:
-                    want.light = static_cast<KeyLight>(dh.value);
-                    if (key_light_coloured(want.light) &&
-                        want.rgb[0] == 0 && want.rgb[1] == 0 && want.rgb[2] == 0) {
-                        want.rgb[0] = 0xff;
-                    }
-                    break;
-                case DeviceActionKind::KeyColour:
-                    if (!key_light_coloured(want.light)) want.light = KeyLight::Solid;
-                    want.rgb[0] = static_cast<uint8_t>((dh.value >> 16) & 0xff);
-                    want.rgb[1] = static_cast<uint8_t>((dh.value >> 8) & 0xff);
-                    want.rgb[2] = static_cast<uint8_t>(dh.value & 0xff);
-                    break;
-                case DeviceActionKind::KeyStartup:
-                    want.startup = (dh.value != 0);
-                    break;
-                case DeviceActionKind::KeyShutdown:
-                    want.shutdown = (dh.value != 0);
-                    break;
-                case DeviceActionKind::KeyDim:
-                    want.dim_s = dh.value;
-                    break;
-                case DeviceActionKind::KeyOff:
-                    want.off_s = dh.value;
-                    break;
-                default:
-                    break;
-                }
-                // Live keyboard lighting effects also save to pad.ini for the helper.
-                bool is_light_pick = (dh.kind == DeviceActionKind::KeyLight || dh.kind == DeviceActionKind::KeyColour);
-                if (is_light_pick) {
-                    static const char* const kLiveNames[4] = { "off", "solid", "breathing", "cycle" };
-                    if (key_light_live(want.light)) {
-                        pad_prefs_.key_light = kLiveNames[static_cast<int>(want.light)];
-                        std::memcpy(pad_prefs_.key_rgb, want.rgb, 3);
-                    } else {
-                        pad_prefs_.key_light = "own";
-                    }
-                    save_pad_prefs(pad_path_, pad_prefs_);
-                    pad_service_sync(pad_prefs_, opts_.dry_run);
-                }
-                if (is_light_pick) devices_.set_live_key_light(want.light, want.rgb);
-                devices_.apply_keyboard_async(d.id, want);
-            }
-            return;
-        }
+        return;
     }
 
     for (const auto& ph : pad_hits_) {
@@ -1313,12 +1345,6 @@ void MainWindow::on_mouse_down(float lx, float ly)
             pad_service_sync(pad_prefs_, opts_.dry_run);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
-        case PadActionKind::IdleMinutesChip:
-            pad_prefs_.idle_minutes = ph.value;
-            save_pad_prefs(pad_path_, pad_prefs_);
-            pad_service_sync(pad_prefs_, opts_.dry_run);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return;
         case PadActionKind::ForgetNickname:
             pad_prefs_.nicknames.erase(ph.pad_path);
             save_pad_prefs(pad_path_, pad_prefs_);
@@ -1337,9 +1363,108 @@ void MainWindow::on_mouse_down(float lx, float ly)
     }
 }
 
+/* What a mouse's or keyboard's control asks: the device's settings as they
+ * are, with that one changed, sent to it. */
+void MainWindow::device_action(const std::string& id, DeviceActionKind kind, int value)
+{
+    for (auto& d : dev_list_) {
+        if (d.id != id) continue;
+        if (d.kind == DevKind::Mouse) {
+            MouseSettings want = d.mouse;
+            switch (kind) {
+            case DeviceActionKind::MouseStage:
+                want.active = std::clamp(value, 0, std::max(0, want.stages - 1));
+                break;
+            case DeviceActionKind::MouseDpiDelta:
+                if (want.active >= 0 && want.active < want.stages) {
+                    int dpi = ((want.dpi[want.active] + value) / 50) * 50;
+                    want.dpi[want.active] = std::clamp(dpi, want.dpi_min, want.dpi_max);
+                }
+                break;
+            case DeviceActionKind::MouseRate:
+                want.rate = value;
+                break;
+            case DeviceActionKind::MouseLift:
+                want.lift_mm = value;
+                break;
+            case DeviceActionKind::MouseLight:
+                want.light = static_cast<LightEffect>(value);
+                if ((want.light == LightEffect::Solid || want.light == LightEffect::Breathing) &&
+                    want.rgb[0] == 0 && want.rgb[1] == 0 && want.rgb[2] == 0) {
+                    want.rgb[0] = 0xff;
+                }
+                break;
+            case DeviceActionKind::MouseColour:
+                if (want.light != LightEffect::Solid && want.light != LightEffect::Breathing) {
+                    want.light = LightEffect::Solid;
+                }
+                want.rgb[0] = static_cast<uint8_t>((value >> 16) & 0xff);
+                want.rgb[1] = static_cast<uint8_t>((value >> 8) & 0xff);
+                want.rgb[2] = static_cast<uint8_t>(value & 0xff);
+                break;
+            case DeviceActionKind::MouseBrightness:
+                want.brightness = std::clamp(value, 0, 100);
+                break;
+            default:
+                break;
+            }
+            devices_.apply_mouse_async(d.id, want);
+        } else if (d.kind == DevKind::Keyboard) {
+            KeyboardSettings want = d.keyboard;
+            switch (kind) {
+            case DeviceActionKind::KeyBrightness:
+                want.brightness = std::clamp(value, 0, 100);
+                break;
+            case DeviceActionKind::KeyLight:
+                want.light = static_cast<KeyLight>(value);
+                if (key_light_coloured(want.light) && want.rgb[0] == 0 && want.rgb[1] == 0 && want.rgb[2] == 0) {
+                    want.rgb[0] = 0xff;
+                }
+                break;
+            case DeviceActionKind::KeyColour:
+                if (!key_light_coloured(want.light)) want.light = KeyLight::Solid;
+                want.rgb[0] = static_cast<uint8_t>((value >> 16) & 0xff);
+                want.rgb[1] = static_cast<uint8_t>((value >> 8) & 0xff);
+                want.rgb[2] = static_cast<uint8_t>(value & 0xff);
+                break;
+            case DeviceActionKind::KeyStartup:
+                want.startup = (value != 0);
+                break;
+            case DeviceActionKind::KeyShutdown:
+                want.shutdown = (value != 0);
+                break;
+            case DeviceActionKind::KeyDim:
+                want.dim_s = value;
+                break;
+            case DeviceActionKind::KeyOff:
+                want.off_s = value;
+                break;
+            default:
+                break;
+            }
+            // Live keyboard lighting effects also save to pad.ini for the helper.
+            bool is_light_pick = (kind == DeviceActionKind::KeyLight || kind == DeviceActionKind::KeyColour);
+            if (is_light_pick) {
+                static const char* const kLiveNames[4] = { "off", "solid", "breathing", "cycle" };
+                if (key_light_live(want.light)) {
+                    pad_prefs_.key_light = kLiveNames[static_cast<int>(want.light)];
+                    std::memcpy(pad_prefs_.key_rgb, want.rgb, 3);
+                } else {
+                    pad_prefs_.key_light = "own";
+                }
+                save_pad_prefs(pad_path_, pad_prefs_);
+                pad_service_sync(pad_prefs_, opts_.dry_run);
+                devices_.set_live_key_light(want.light, want.rgb);
+            }
+            devices_.apply_keyboard_async(d.id, want);
+        }
+        return;
+    }
+}
+
 void MainWindow::on_mouse_wheel(int delta)
 {
-    close_size_list();
+    close_dropdown();
     RECT rc;
     GetClientRect(hwnd_, &rc);
     float lh = static_cast<float>(rc.bottom - rc.top) / scale_;
@@ -1383,18 +1508,20 @@ void MainWindow::on_key_down(WPARAM vk)
         return;
     }
 
-    /* The Size list, open: the arrows move along it, Enter or Space takes
-     * the choice, Escape closes it. */
-    if (size_open_) {
-        if (vk == VK_ESCAPE) {
-            close_size_list();
+    /* A dropdown's list, open: the arrows move along it, Enter or Space
+     * takes the choice, Escape closes it. */
+    if (!drop_open_.empty()) {
+        const Dropdown* d = open_dropdown();
+        if (!d || vk == VK_ESCAPE) {
+            close_dropdown();
         } else if (vk == VK_UP || vk == VK_DOWN) {
-            size_focus_ = std::clamp(size_focus_ + (vk == VK_DOWN ? 1 : -1), 0, kSizeChoices - 1);
+            /* From none, Down goes to the first and Up to the last. */
+            int last = std::max(0, static_cast<int>(d->choices.size()) - 1);
+            if (drop_focus_ < 0) drop_focus_ = vk == VK_DOWN ? 0 : last;
+            else drop_focus_ = std::clamp(drop_focus_ + (vk == VK_DOWN ? 1 : -1), 0, last);
             InvalidateRect(hwnd_, nullptr, FALSE);
         } else if (vk == VK_RETURN || vk == VK_SPACE) {
-            int percent = kSizePercents[std::clamp(size_focus_, 0, kSizeChoices - 1)];
-            close_size_list();
-            apply_size(percent);
+            pick_dropdown(drop_focus_);
         }
         return;
     }
@@ -1523,7 +1650,7 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
     case WM_ACTIVATE:
         /* Back from Settings, say: what Windows paints may have changed. */
         if (LOWORD(wp) != WA_INACTIVE) InvalidateRect(hwnd_, nullptr, FALSE);
-        else close_size_list();
+        else close_dropdown();
         return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_MOUSEWHEEL:
         on_mouse_wheel(GET_WHEEL_DELTA_WPARAM(wp));
