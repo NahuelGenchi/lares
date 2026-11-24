@@ -1,2 +1,0 @@
-# What Lares runs inside WSL keeps Unix line ends on a Windows checkout too.
-win/wsl/* text eol=lf

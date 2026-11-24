@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* AirDrop on Windows (docs/WINDOWS.md). Windows gives no program the raw
- * 802.11 frames AirDrop's link needs, so the link and everything above it
- * run in WSL as they do on Linux: `lares-share` (src/sharecli/main.c) is
- * src/share.c without a window, and usbipd-win lends it the USB Wi-Fi
- * adapter while AirDrop is on. This is the Windows end of that: what's
- * still to set up, the session's process and what it says, and the paths
- * between the two systems. */
+/* AirDrop on Windows (docs/WINDOWS.md, issue #109). Windows gives no
+ * program the raw 802.11 frames AirDrop's link needs, so lares-share.exe
+ * (win/share/) drives a USB Wi-Fi adapter itself, over Windows' own WinUSB
+ * driver, and runs AWDL, IPv6, TLS and AirDrop above it. This is lares.exe's
+ * end of that: what's still to set up, the session's process and what it
+ * says. */
 #pragma once
 #include <cstdint>
 #include <string>
@@ -39,7 +38,7 @@ struct ShareIncoming {
     bool links = false;
     std::string sender, message;
     std::vector<std::string> names;   // file names, or URLs
-    std::vector<std::string> saved;   // where they were saved, as WSL sees it, once done
+    std::vector<std::string> saved;   // where they were saved (UTF-8), once done
     uint64_t done = 0, total = 0;
 };
 
@@ -65,10 +64,10 @@ struct ShareSession {
  * no "state" line. */
 bool share_parse_block(const std::vector<std::string>& lines, ShareSession& out);
 
-/* "C:\Users\me\a.txt" as WSL mounts it, "/mnt/c/Users/me/a.txt", and back.
- * Empty for a path that has no drive letter, or isn't under /mnt/<letter>/. */
-std::string wsl_path_from_windows(const std::wstring& path);
-std::wstring windows_path_from_wsl(const std::string& path);
+/* The "send" command for `paths`, in UTF-8 with a tab before each, and the
+ * names it sends in `names`; a path with a tab or a line break in it can't
+ * travel in a line and is left out. Empty if none is left. */
+std::string share_send_line(const std::vector<std::wstring>& paths, std::vector<std::wstring>* names);
 
 /* "IMG_0412.HEIC and 1 more": what a sender offers, briefly. */
 std::string share_offer_text(const ShareIncoming& in);
@@ -83,18 +82,16 @@ inline constexpr uint16_t kAppleCompanyId = 0x004C;
 inline constexpr size_t kAirdropWakeBytes = 20;
 void airdrop_wake_data(const uint8_t tag[3], uint8_t out[kAirdropWakeBytes]);
 
-/* The USB Wi-Fi adapter the WSL side knows how to start: Realtek RTL8188EU. */
+/* The USB Wi-Fi adapter lares-share.exe knows how to drive: Realtek RTL8188EU. */
 inline constexpr wchar_t kShareAdapterId[] = L"USB\\VID_0BDA&PID_8179";
-inline constexpr wchar_t kShareAdapterUsbipd[] = L"0bda:8179";
 
 #ifdef _WIN32
 inline constexpr UINT kMsgShareUpdated = WM_APP + 5;
 
 enum class ShareSetup {
-    NoWsl,        // no WSL distribution
     NoAdapter,    // the adapter isn't plugged in
-    NeedsSetup,   // usbipd-win, sharing the adapter, or the programs in WSL
-    Ready,
+    NeedsSetup,   // the adapter is on Windows' own driver
+    Ready,        // the adapter is on WinUSB, for lares-share.exe
 };
 
 /* What the Share page shows. */
@@ -122,11 +119,13 @@ public:
     void set_notify_hwnd(HWND hwnd) { notify_hwnd_.store(hwnd); }
     ShareView view() const;
 
-    /* Looks again at what's set up: registry and files only, WSL isn't started. */
+    /* Looks again at what's set up: the adapter's driver, nothing started. */
     void refresh();
-    /* Installs what's missing, on a worker thread: usbipd-win and sharing
-     * the adapter (asks for administrator rights), then the WSL side. */
+    /* Gives the adapter Windows' WinUSB driver, on a worker thread; asks
+     * for administrator rights, one time. */
     void run_setup();
+    /* Gives it back to Windows' own driver, the same way. */
+    void give_back();
 
     void set_receiving(bool on);
     void answer(bool accept);
@@ -146,7 +145,7 @@ private:
     void read_loop(HANDLE from, HANDLE proc);
     void end_session();
     void notify();
-    void setup_worker();
+    void setup_worker(bool winusb);
     void dry_command(const std::string& line);
 
     bool dry_run_ = false;

@@ -8,10 +8,6 @@
 #include <cstring>
 
 #ifdef _WIN32
-#include "config.h"
-
-#include <cwctype>
-
 #include <cfgmgr32.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -176,68 +172,26 @@ std::string narrow(const std::wstring& w)
     return out;
 }
 
-std::wstring widen(const std::string& s)
+std::wstring base_name(const std::wstring& path)
 {
-    std::wstring out;
-    for (size_t i = 0; i < s.size();) {
-        unsigned char b = static_cast<unsigned char>(s[i]);
-        uint32_t c = 0xFFFD;
-        size_t n = 1;
-        if (b < 0x80) {
-            c = b;
-        } else if ((b & 0xE0) == 0xC0 && i + 1 < s.size()) {
-            c = ((b & 0x1Fu) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3Fu);
-            n = 2;
-        } else if ((b & 0xF0) == 0xE0 && i + 2 < s.size()) {
-            c = ((b & 0x0Fu) << 12) | ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 6) |
-                (static_cast<unsigned char>(s[i + 2]) & 0x3Fu);
-            n = 3;
-        } else if ((b & 0xF8) == 0xF0 && i + 3 < s.size()) {
-            c = ((b & 0x07u) << 18) | ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 12) |
-                ((static_cast<unsigned char>(s[i + 2]) & 0x3Fu) << 6) | (static_cast<unsigned char>(s[i + 3]) & 0x3Fu);
-            n = 4;
-        }
-        if (c >= 0x10000) {
-            c -= 0x10000;
-            out += static_cast<wchar_t>(0xD800 + (c >> 10));
-            out += static_cast<wchar_t>(0xDC00 + (c & 0x3FF));
-        } else {
-            out += static_cast<wchar_t>(c);
-        }
-        i += n;
-    }
-    return out;
-}
-
-bool drive_letter(wchar_t c)
-{
-    return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+    size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
 }
 
 } // namespace
 
-std::string wsl_path_from_windows(const std::wstring& path)
+std::string share_send_line(const std::vector<std::wstring>& paths, std::vector<std::wstring>* names)
 {
-    if (path.size() < 3 || !drive_letter(path[0]) || path[1] != L':' || (path[2] != L'\\' && path[2] != L'/')) return {};
-    std::wstring tail = path.substr(2);
-    std::replace(tail.begin(), tail.end(), L'\\', L'/');
-    std::string out = "/mnt/";
-    out += static_cast<char>(path[0] | 0x20);
-    return out + narrow(tail);
+    std::string line = "send";
+    bool any = false;
+    for (const std::wstring& p : paths) {
+        if (p.empty() || p.find_first_of(L"\t\r\n") != std::wstring::npos) continue;
+        line += "\t" + narrow(p);
+        if (names) names->push_back(base_name(p));
+        any = true;
+    }
+    return any ? line : std::string();
 }
-
-std::wstring windows_path_from_wsl(const std::string& path)
-{
-    if (path.size() < 7 || path.compare(0, 5, "/mnt/") != 0 || path[6] != '/') return {};
-    if (!drive_letter(static_cast<wchar_t>(path[5]))) return {};
-    std::wstring out;
-    out += static_cast<wchar_t>(path[5] & ~0x20);
-    out += L':';
-    std::wstring tail = widen(path.substr(6));
-    std::replace(tail.begin(), tail.end(), L'/', L'\\');
-    return out + tail;
-}
-
 std::string share_offer_text(const ShareIncoming& in)
 {
     size_t n = in.names.size();
@@ -296,104 +250,6 @@ void airdrop_wake_data(const uint8_t tag[3], uint8_t out[kAirdropWakeBytes])
 
 namespace {
 
-constexpr wchar_t kRunScript[] = L"/opt/lares-wsl/bin/run.sh";
-
-std::wstring reg_string(HKEY root, const wchar_t* key, const wchar_t* value)
-{
-    wchar_t buf[512];
-    DWORD size = sizeof(buf);
-    if (RegGetValueW(root, key, value, RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, buf, &size) != ERROR_SUCCESS)
-        return {};
-    return buf;
-}
-
-bool file_there(const std::wstring& path)
-{
-    DWORD attr = GetFileAttributesW(path.c_str());
-    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-std::wstring wsl_exe()
-{
-    wchar_t dir[MAX_PATH];
-    UINT n = GetSystemDirectoryW(dir, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
-    std::wstring path = std::wstring(dir) + L"\\wsl.exe";
-    return file_there(path) ? path : std::wstring();
-}
-
-/* The distribution AirDrop runs in: the default one, unless that is a
- * container tool's own. */
-std::wstring wsl_distro()
-{
-    wchar_t env[128];
-    DWORD got = GetEnvironmentVariableW(L"LARES_WSL_DISTRO", env, 128);
-    const wchar_t* lxss = L"Software\\Microsoft\\Windows\\CurrentVersion\\Lxss";
-    auto usable = [](const std::wstring& name) {
-        /* wsl.exe takes the name as it's written, quotes and all, so it
-         * goes on the command line bare: letters, digits, ".", "-" and "_". */
-        for (wchar_t c : name)
-            if (!(c < 128 && (iswalnum(c) || c == L'.' || c == L'-' || c == L'_'))) return false;
-        return !name.empty() && name.compare(0, 14, L"docker-desktop") != 0 &&
-               name.compare(0, 15, L"rancher-desktop") != 0 && name.compare(0, 14, L"podman-machine") != 0;
-    };
-    if (got > 0 && got < 128) return usable(env) ? std::wstring(env) : std::wstring();
-    std::wstring guid = reg_string(HKEY_CURRENT_USER, lxss, L"DefaultDistribution");
-    if (!guid.empty()) {
-        std::wstring name = reg_string(HKEY_CURRENT_USER, (std::wstring(lxss) + L"\\" + guid).c_str(), L"DistributionName");
-        if (usable(name)) return name;
-    }
-    HKEY key = nullptr;
-    std::wstring found;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, lxss, 0, KEY_READ, &key) != ERROR_SUCCESS) return {};
-    for (DWORD i = 0; found.empty(); ++i) {
-        wchar_t sub[128];
-        DWORD len = 128;
-        if (RegEnumKeyExW(key, i, sub, &len, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
-        std::wstring name = reg_string(key, sub, L"DistributionName");
-        if (usable(name)) found = name;
-    }
-    RegCloseKey(key);
-    return found;
-}
-
-std::wstring usbipd_exe()
-{
-    std::wstring dir = reg_string(HKEY_LOCAL_MACHINE, L"SOFTWARE\\usbipd-win", L"APPLICATIONFOLDER");
-    if (dir.empty()) return {};
-    if (dir.back() != L'\\') dir += L'\\';
-    std::wstring path = dir + L"usbipd.exe";
-    return file_there(path) ? path : std::wstring();
-}
-
-/* Whether usbipd-win shares the adapter, and whether WSL has it right now:
- * it keeps what it shares here, with an "Attached" key while it's lent. */
-bool adapter_shared(bool* lent = nullptr)
-{
-    if (lent) *lent = false;
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\usbipd-win\\Devices", 0, KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
-        return false;
-    bool shared = false;
-    for (DWORD i = 0; !shared; ++i) {
-        wchar_t sub[128];
-        DWORD len = 128;
-        if (RegEnumKeyExW(key, i, sub, &len, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
-        std::wstring id = reg_string(key, sub, L"InstanceId");
-        shared = _wcsnicmp(id.c_str(), kShareAdapterId, wcslen(kShareAdapterId)) == 0;
-        if (shared && lent) {
-            HKEY attached = nullptr;
-            std::wstring path = std::wstring(sub) + L"\\Attached";
-            if (RegOpenKeyExW(key, path.c_str(), 0, KEY_READ | KEY_WOW64_64KEY, &attached) == ERROR_SUCCESS) {
-                *lent = true;
-                RegCloseKey(attached);
-            }
-        }
-    }
-    RegCloseKey(key);
-    return shared;
-}
-
 std::wstring exe_dir()
 {
     wchar_t path[MAX_PATH];
@@ -404,129 +260,56 @@ std::wstring exe_dir()
     return slash == std::wstring::npos ? std::wstring() : dir.substr(0, slash);
 }
 
+/* lares-share.exe, which comes beside lares.exe. */
+std::wstring share_exe()
+{
+    return exe_dir() + L"\\lares-share.exe";
+}
+
+enum class AdapterDriver { Absent, Other, WinUsb };
+
+/* The adapter's device, if it's plugged in, and whether Windows gives it
+ * WinUSB (Set up's doing) or its own driver. */
+AdapterDriver adapter_driver()
+{
+    const ULONG filter = CM_GETIDLIST_FILTER_ENUMERATOR | CM_GETIDLIST_FILTER_PRESENT;
+    ULONG len = 0;
+    if (CM_Get_Device_ID_List_SizeW(&len, kShareAdapterId, filter) != CR_SUCCESS || len <= 1) return AdapterDriver::Absent;
+    std::vector<wchar_t> list(len);
+    if (CM_Get_Device_ID_ListW(kShareAdapterId, list.data(), len, filter) != CR_SUCCESS) return AdapterDriver::Absent;
+    for (const wchar_t* id = list.data(); *id; id += wcslen(id) + 1) {
+        DEVINST inst = 0;
+        if (CM_Locate_DevNodeW(&inst, const_cast<wchar_t*>(id), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) continue;
+        wchar_t service[64] = L"";
+        ULONG size = sizeof(service) - sizeof(wchar_t);
+        if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_SERVICE, nullptr, service, &size, 0) == CR_SUCCESS &&
+            _wcsicmp(service, L"WinUSB") == 0)
+            return AdapterDriver::WinUsb;
+        return AdapterDriver::Other;
+    }
+    return AdapterDriver::Absent;
+}
+
+ShareSetup look()
+{
+    switch (adapter_driver()) {
+    case AdapterDriver::WinUsb: return ShareSetup::Ready;
+    case AdapterDriver::Other: return ShareSetup::NeedsSetup;
+    default: return ShareSetup::NoAdapter;
+    }
+}
+
 std::string read_small_file(const std::wstring& path)
 {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return {};
-    char buf[256];
+    char buf[512];
     DWORD n = 0;
     std::string out;
     if (ReadFile(f, buf, sizeof(buf), &n, nullptr)) out.assign(buf, n);
     CloseHandle(f);
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) out.pop_back();
     return out;
-}
-
-void write_small_file(const std::wstring& path, const std::string& text)
-{
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return;
-    DWORD n = 0;
-    WriteFile(f, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
-    CloseHandle(f);
-}
-
-/* The programs for WSL that came with this Lares, and their version. */
-std::wstring kit_dir()
-{
-    return exe_dir() + L"\\wsl";
-}
-
-std::string kit_version()
-{
-    return read_small_file(kit_dir() + L"\\VERSION");
-}
-
-/* The version setup last installed in WSL, and where. */
-std::wstring kit_mark_path()
-{
-    return config_dir_path() + L"\\airdrop-kit.txt";
-}
-
-std::string kit_mark(const std::wstring& distro)
-{
-    return kit_version() + " " + narrow(distro);
-}
-
-ShareSetup look()
-{
-    std::wstring distro = wsl_distro();
-    if (wsl_exe().empty() || distro.empty()) return ShareSetup::NoWsl;
-    if (!share_adapter_present()) return ShareSetup::NoAdapter;
-    if (usbipd_exe().empty() || !adapter_shared()) return ShareSetup::NeedsSetup;
-    std::string version = kit_version();
-    if (version.empty() || read_small_file(kit_mark_path()) != kit_mark(distro)) return ShareSetup::NeedsSetup;
-    return ShareSetup::Ready;
-}
-
-/* Runs a program without a window and takes what it writes; -1 if it
- * didn't start, 124 if it ran out of time. */
-int run_quiet(const std::wstring& cmdline, std::string* out, DWORD timeout_ms)
-{
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
-    HANDLE rd = nullptr, wr = nullptr;
-    if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
-    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-    HANDLE nul = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
-
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = nul;
-    si.hStdOutput = wr;
-    si.hStdError = nul;
-    PROCESS_INFORMATION pi = {};
-    std::wstring cmd = cmdline;
-    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
-    CloseHandle(wr);
-    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
-    if (!ok) {
-        CloseHandle(rd);
-        return -1;
-    }
-    /* The read ends when the program does; a watchdog ends one that hangs. */
-    HANDLE proc = pi.hProcess;
-    std::atomic<bool> timed_out{ false };
-    std::thread watchdog([proc, timeout_ms, &timed_out] {
-        if (WaitForSingleObject(proc, timeout_ms) == WAIT_TIMEOUT) {
-            timed_out = true;
-            TerminateProcess(proc, 124);
-        }
-    });
-    char buf[1024];
-    DWORD n = 0;
-    while (ReadFile(rd, buf, sizeof(buf), &n, nullptr) && n > 0)
-        if (out && out->size() < 64 * 1024) out->append(buf, n);
-    watchdog.join();
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(rd);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return timed_out ? 124 : static_cast<int>(code);
-}
-
-/* Gives the adapter back to Windows, whatever state the session left it in. */
-void detach_adapter()
-{
-    std::wstring usbipd = usbipd_exe();
-    if (usbipd.empty()) return;
-    run_quiet(L"\"" + usbipd + L"\" detach --hardware-id " + kShareAdapterUsbipd, nullptr, 15000);
-}
-
-std::wstring downloads_dir()
-{
-    PWSTR path = nullptr;
-    std::wstring out;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &path)) && path) out = path;
-    CoTaskMemFree(path);
-    return out;
-}
-
-std::wstring base_name(const std::wstring& path)
-{
-    size_t slash = path.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? path : path.substr(slash + 1);
 }
 
 void write_line(HANDLE to, const std::string& line)
@@ -539,14 +322,7 @@ void write_line(HANDLE to, const std::string& line)
 
 bool share_adapter_present()
 {
-    ULONG len = 0;
-    if (CM_Get_Device_ID_List_SizeW(&len, kShareAdapterId, CM_GETIDLIST_FILTER_ENUMERATOR | CM_GETIDLIST_FILTER_PRESENT) == CR_SUCCESS &&
-        len > 1)   // more than the list's own ending
-        return true;
-    /* While WSL has it, Windows lists usbipd-win's stand-in in its place. */
-    bool lent = false;
-    adapter_shared(&lent);
-    return lent;
+    return adapter_driver() != AdapterDriver::Absent;
 }
 
 // ------------------------------------------------------------- the manager
@@ -578,17 +354,15 @@ ShareManager::ShareManager(bool dry_run) : dry_run_(dry_run)
         view_.s.incoming.names = { "IMG_0412.HEIC", "IMG_0413.HEIC" };
         view_.s.incoming.total = 5200000;
         view_.s.incoming.done = state == ShareIncomingState::Receiving ? 2100000 : 0;
-        if (state == ShareIncomingState::Done) view_.s.incoming.saved = { "/mnt/c/Users/me/Downloads/IMG_0412.HEIC" };
+        if (state == ShareIncomingState::Done) view_.s.incoming.saved = { "C:\\Users\\me\\Downloads\\IMG_0412.HEIC" };
     };
-    if (want == L"nowsl") {
-        view_.setup = ShareSetup::NoWsl;
-    } else if (want == L"noadapter") {
+    if (want == L"noadapter") {
         view_.setup = ShareSetup::NoAdapter;
     } else if (want == L"setup") {
         view_.setup = ShareSetup::NeedsSetup;
     } else if (want == L"setup-failed") {
         view_.setup = ShareSetup::NeedsSetup;
-        view_.setup_error = "Couldn't install the packages in WSL. Is this PC online?";
+        view_.setup_error = "Nothing changed: Windows' permission wasn't given.";
     } else if (want == L"receiving") {
         receiving();
     } else if (want == L"quiet") {
@@ -651,7 +425,7 @@ void ShareManager::refresh()
     ShareSetup setup = look();
     {
         std::lock_guard<std::mutex> lock(mu_);
-        /* Not under a session: what it does to the adapter isn't news. */
+        /* Not under a session: the adapter is lares-share.exe's then. */
         if (view_.setup_busy || proc_ || view_.setup == setup) return;
         view_.setup = setup;
         if (setup == ShareSetup::Ready) view_.setup_error.clear();
@@ -667,82 +441,71 @@ void ShareManager::run_setup()
         std::lock_guard<std::mutex> lock(mu_);
         if (view_.setup_busy) return;
         view_.setup_error.clear();
-        if (dry_run_) {
-            view_.setup = ShareSetup::Ready;
-        } else {
-            view_.setup_busy = true;
-        }
+        if (dry_run_) view_.setup = ShareSetup::Ready;
+        else view_.setup_busy = true;
     }
     notify();
     if (dry_run_) return;
     if (setup_thread_.joinable()) setup_thread_.join();
-    setup_thread_ = std::thread([this] { setup_worker(); });
+    setup_thread_ = std::thread([this] { setup_worker(true); });
 }
 
-void ShareManager::setup_worker()
+void ShareManager::give_back()
+{
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (view_.setup_busy || proc_) return;
+        view_.setup_error.clear();
+        if (dry_run_) view_.setup = ShareSetup::NeedsSetup;
+        else view_.setup_busy = true;
+    }
+    notify();
+    if (dry_run_) return;
+    if (setup_thread_.joinable()) setup_thread_.join();
+    setup_thread_ = std::thread([this] { setup_worker(false); });
+}
+
+/* lares-share.exe switches the adapter's driver, as administrator: one
+ * prompt, and what it did in a file, since its console can't be read. */
+void ShareManager::setup_worker(bool winusb)
 {
     std::string error;
-    std::wstring distro = wsl_distro();
-
-    /* usbipd-win, and the adapter shared with it: both ask for
-     * administrator rights, in one prompt. */
-    if (usbipd_exe().empty() || !adapter_shared()) {
-        std::wstring ps =
-            L"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \""
-            L"$u = Join-Path $env:ProgramFiles 'usbipd-win\\usbipd.exe'; "
-            L"if (-not (Test-Path $u)) { winget install --exact --id dorssel.usbipd-win --silent "
-            L"--accept-source-agreements --accept-package-agreements --disable-interactivity | Out-Null }; "
-            L"if (-not (Test-Path $u)) { exit 2 }; "
-            L"& $u bind --hardware-id ";
-        ps += kShareAdapterUsbipd;
-        ps += L" | Out-Null; exit $LASTEXITCODE\"";
-        SHELLEXECUTEINFOW sei = {};
-        sei.cbSize = sizeof(sei);
-        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-        sei.lpVerb = L"runas";
-        sei.lpFile = L"powershell.exe";
-        sei.lpParameters = ps.c_str();
-        sei.nShow = SW_HIDE;
-        if (!ShellExecuteExW(&sei) || !sei.hProcess) {
-            error = "Setting AirDrop up needs administrator rights.";
-        } else {
-            WaitForSingleObject(sei.hProcess, 10 * 60 * 1000);
-            DWORD code = 1;
-            GetExitCodeProcess(sei.hProcess, &code);
-            CloseHandle(sei.hProcess);
-            if (code == 2 || usbipd_exe().empty())
-                error = "Couldn't install usbipd-win. Install it from github.com/dorssel/usbipd-win, then set up again.";
-            else if (!adapter_shared())
-                error = "Couldn't share the Wi-Fi adapter with WSL.";
+    wchar_t tmp[MAX_PATH];
+    DWORD n = GetTempPathW(MAX_PATH, tmp);
+    std::wstring log = (n && n < MAX_PATH - 40 ? std::wstring(tmp) : exe_dir() + L"\\") + L"lares-share-setup.txt";
+    DeleteFileW(log.c_str());
+    std::wstring exe = share_exe();
+    std::wstring params = std::wstring(winusb ? L"--use-winusb" : L"--use-windows-driver") + L" --log \"" + log + L"\"";
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe.c_str();
+    sei.lpParameters = params.c_str();
+    sei.nShow = SW_HIDE;
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        error = "This copy of Lares came without lares-share.exe.";
+    } else if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+        error = GetLastError() == ERROR_CANCELLED ? "Nothing changed: Windows' permission wasn't given."
+                                                  : "Couldn't ask Windows for permission.";
+    } else {
+        WaitForSingleObject(sei.hProcess, 2 * 60 * 1000);
+        CloseHandle(sei.hProcess);
+        std::string said = read_small_file(log);
+        DeleteFileW(log.c_str());
+        if (said.compare(0, 9, "driver ok") != 0) {
+            const char kFailed[] = "driver failed ";
+            error = said.compare(0, sizeof(kFailed) - 1, kFailed) == 0 ? said.substr(sizeof(kFailed) - 1)
+                    : winusb ? "Couldn't give the adapter the WinUSB driver."
+                             : "Couldn't give the adapter back to Windows.";
         }
     }
-
-    /* The WSL side: packages, the adapter's firmware and Lares' programs. */
-    if (error.empty()) {
-        std::string kit = wsl_path_from_windows(kit_dir());
-        if (kit.empty() || kit_version().empty()) {
-            error = "This copy of Lares came without its programs for WSL.";
-        } else {
-            std::string out;
-            std::wstring cmd = L"\"" + wsl_exe() + L"\" -d " + distro + L" -u root -e bash \"" + widen(kit) + L"/setup.sh\"";
-            int code = run_quiet(cmd, &out, 30 * 60 * 1000);
-            if (out.find("setup ok") != std::string::npos) {
-                write_small_file(kit_mark_path(), kit_mark(distro));
-            } else if (out.find("setup failed packages") != std::string::npos) {
-                error = "Couldn't install the packages in WSL. Is this PC online?";
-            } else if (out.find("setup failed firmware") != std::string::npos) {
-                error = "Couldn't find the Wi-Fi adapter's firmware in WSL.";
-            } else if (out.find("setup failed build") != std::string::npos) {
-                error = "Couldn't build AirDrop's programs in WSL.";
-            } else if (code == 124) {
-                error = "Setting up in WSL took too long.";
-            } else {
-                error = "Couldn't set AirDrop up in WSL. It needs Ubuntu or Debian there.";
-            }
-        }
-    }
-
+    /* Windows takes a moment to start the device on its new driver. */
     ShareSetup setup = look();
+    for (int i = 0; i < 20 && error.empty() && (setup == ShareSetup::Ready) != winusb; ++i) {
+        Sleep(250);
+        setup = look();
+    }
     {
         std::lock_guard<std::mutex> lock(mu_);
         view_.setup_busy = false;
@@ -758,10 +521,7 @@ bool ShareManager::start_session()
 {
     /* mu_ is held, and no session is on. */
     if (reader_.joinable()) reader_.join();   // the session before, which has ended
-    std::wstring wsl = wsl_exe(), distro = wsl_distro();
-    std::string downloads = wsl_path_from_windows(downloads_dir());
-    if (wsl.empty() || distro.empty() || downloads.empty()) return false;
-
+    std::wstring exe = share_exe();
     SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
     HANDLE in_rd = nullptr, in_wr = nullptr, out_rd = nullptr, out_wr = nullptr;
     if (!CreatePipe(&in_rd, &in_wr, &sa, 0)) return false;
@@ -781,8 +541,8 @@ bool ShareManager::start_session()
     si.hStdOutput = out_wr;
     si.hStdError = nul;
     PROCESS_INFORMATION pi = {};
-    std::wstring cmd = L"\"" + wsl + L"\" -d " + distro + L" -u root -e " + kRunScript + L" \"" + widen(downloads) + L"\"";
-    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    std::wstring cmd = L"\"" + exe + L"\"";
+    BOOL ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     CloseHandle(in_rd);
     CloseHandle(out_wr);
     if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
@@ -836,7 +596,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
             if (!view_.s.sending && !view_.s.wake) view_.files.clear();
             if (!view_.s.idle()) armed_ = true;
             /* Used and idle again, with nothing waiting: the session ends,
-             * and the adapter goes back to Windows. */
+             * and the adapter powers down. */
             if (armed_ && view_.s.idle() && pending_.empty() && !quitting_) {
                 write_line(to_child_, "quit\n");
                 quitting_ = true;
@@ -848,7 +608,6 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
 
     /* It ended: by being asked to, or by itself. */
     WaitForSingleObject(proc, 30000);
-    detach_adapter();
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (to_child_) CloseHandle(to_child_);
@@ -860,12 +619,9 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
         view_.running = false;
         view_.s = ShareSession();
         if (!heard && !closing_) {
-            /* It never spoke: its programs aren't in WSL any more. */
-            DeleteFileW(kit_mark_path().c_str());
-            view_.setup = ShareSetup::NeedsSetup;
-            view_.setup_error = "AirDrop's programs are missing in WSL. Set it up again.";
+            view_.error = "lares-share.exe stopped as it started.";
             pending_.clear();
-        } else if (!asked) {
+        } else if (!asked && !closing_) {
             view_.error = "AirDrop stopped.";
             pending_.clear();
         }
@@ -886,7 +642,7 @@ void ShareManager::resume()
     lines.swap(pending_);
     if (lines.empty()) return;
     if (!start_session()) {
-        view_.error = "Couldn't start AirDrop in WSL.";
+        view_.error = "Couldn't start AirDrop.";
         view_.files.clear();
         return;
     }
@@ -914,7 +670,7 @@ void ShareManager::command(const std::string& line)
             if (start_session()) {
                 write_line(to_child_, out);
             } else {
-                view_.error = "Couldn't start AirDrop in WSL.";
+                view_.error = "Couldn't start AirDrop.";
                 view_.files.clear();
             }
         }
@@ -930,8 +686,8 @@ void ShareManager::end_session()
         closing_ = true;
         pending_.clear();
         if (proc_ && to_child_) {
-            /* Closing its input stops it as "quit" does, and it gives the
-             * adapter back on its way out. */
+            /* Closing its input stops it as "quit" does, and it powers the
+             * adapter down on its way out. */
             if (!quitting_) write_line(to_child_, "quit\n");
             quitting_ = true;
             CloseHandle(to_child_);
@@ -941,12 +697,7 @@ void ShareManager::end_session()
         }
     }
     if (!reader_.joinable()) return;
-    if (proc && WaitForSingleObject(proc, 2500) == WAIT_TIMEOUT) {
-        /* Lares is closing and the session is slow to end: the adapter is
-         * taken back from here, and what's left of the session ended. */
-        detach_adapter();
-        if (WaitForSingleObject(proc, 1500) == WAIT_TIMEOUT) TerminateProcess(proc, 1);
-    }
+    if (proc && WaitForSingleObject(proc, 5000) == WAIT_TIMEOUT) TerminateProcess(proc, 1);
     if (proc) CloseHandle(proc);
     reader_.join();
 }
@@ -961,18 +712,12 @@ void ShareManager::cancel_send() { command("cancel"); }
 
 void ShareManager::send(const std::vector<std::wstring>& paths)
 {
-    std::string line = "send";
     std::vector<std::wstring> names;
-    for (const std::wstring& p : paths) {
-        std::string w = wsl_path_from_windows(p);
-        if (w.empty()) continue;
-        line += "\t" + w;
-        names.push_back(base_name(p));
-    }
-    if (names.empty()) {
+    std::string line = share_send_line(paths, &names);
+    if (line.empty()) {
         {
             std::lock_guard<std::mutex> lock(mu_);
-            view_.error = "Those files aren't on one of this PC's drives, so AirDrop can't reach them.";
+            view_.error = "Those files' names can't be sent.";
         }
         command("look off");
         return;

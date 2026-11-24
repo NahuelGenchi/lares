@@ -658,8 +658,8 @@ static void test_hid_find()
     CHECK(!lares::windows_lighting_on(L""));
 }
 
-/* AirDrop's Windows end: what lares-share says, the paths between Windows
- * and WSL, and the Bluetooth wake-up's bytes. */
+/* AirDrop's Windows end: what lares-share.exe says, the send command's
+ * paths, and the Bluetooth wake-up's bytes. */
 static void test_share()
 {
     using namespace lares;
@@ -716,17 +716,16 @@ static void test_share()
     CHECK(s.incoming.state == ShareIncomingState::Done && s.incoming.links && s.incoming.saved.size() == 1);
     CHECK(!s.idle());   // a card that's still shown keeps the session
 
-    CHECK(wsl_path_from_windows(L"C:\\Users\\me\\My file.txt") == "/mnt/c/Users/me/My file.txt");
-    CHECK(wsl_path_from_windows(L"d:/x/y.bin") == "/mnt/d/x/y.bin");
-    CHECK(wsl_path_from_windows(L"E:\\ni\u00F1o\\\U0001F600.png") == "/mnt/e/ni\xC3\xB1o/\xF0\x9F\x98\x80.png");
-    CHECK(wsl_path_from_windows(L"\\\\server\\share\\a.txt").empty());
-    CHECK(wsl_path_from_windows(L"relative\\a.txt").empty());
-    CHECK(wsl_path_from_windows(L"C:").empty());
-    CHECK(windows_path_from_wsl("/mnt/c/Users/me/Downloads/IMG 1.HEIC") == L"C:\\Users\\me\\Downloads\\IMG 1.HEIC");
-    CHECK(windows_path_from_wsl("/mnt/e/ni\xC3\xB1o/\xF0\x9F\x98\x80.png") == L"E:\\ni\u00F1o\\\U0001F600.png");
-    CHECK(windows_path_from_wsl("/home/me/a.txt").empty());
-    CHECK(windows_path_from_wsl("/mnt/wsl/a.txt").empty());
-    CHECK(windows_path_from_wsl("/mnt/c").empty());
+    /* Paths go to lares-share.exe as they are, in UTF-8, a tab before each. */
+    std::vector<std::wstring> sent_names;
+    CHECK(share_send_line({ L"C:\\Users\\me\\My file.txt", L"E:\\ni\u00F1o\\\U0001F600.png" }, &sent_names) ==
+          "send\tC:\\Users\\me\\My file.txt\tE:\\ni\xC3\xB1o\\\xF0\x9F\x98\x80.png");
+    CHECK(sent_names.size() == 2 && sent_names[0] == L"My file.txt" && sent_names[1] == L"\U0001F600.png");
+    sent_names.clear();
+    CHECK(share_send_line({ L"C:\\a\tb.txt", L"\\\\server\\share\\c.txt" }, &sent_names) == "send\t\\\\server\\share\\c.txt");
+    CHECK(sent_names.size() == 1 && sent_names[0] == L"c.txt");
+    CHECK(share_send_line({ L"C:\\line\nbreak.txt" }, nullptr).empty());
+    CHECK(share_send_line({}, nullptr).empty());
 
     ShareIncoming in;
     CHECK(share_offer_text(in) == "files");
