@@ -194,7 +194,8 @@ int main(void)
     share_set_looking(share, FALSE);
     share_set_receiving(share, FALSE);
     share_stop_link(share);
-    for (int i = 0; i < 250 && share_state(share)->link != LINK_OFF && share_state(share)->link != LINK_FAILED; i++) {
+    for (int i = 0; i < 250 && ((share_state(share)->link != LINK_OFF && share_state(share)->link != LINK_FAILED)
+                                || share_bluetooth_lent(share)); i++) {
         gint64 until = g_get_monotonic_time() + 100 * 1000;
         while (g_get_monotonic_time() < until) g_main_context_iteration(NULL, FALSE);
         g_usleep(20 * 1000);

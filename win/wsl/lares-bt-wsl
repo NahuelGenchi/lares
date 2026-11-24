@@ -1,0 +1,33 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 Nahuel Genchi
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Lends this PC's Bluetooth radio to WSL while AirDrop's wake-up is wanted,
+# for a radio that can't advertise from Windows (issue #107):
+#   lares-bt-wsl on|off     the radio's usbipd hardware ID in LARES_BT_ID
+# "on" returns once BlueZ has the radio powered, so the advertisement that
+# lares-share asked for goes out; "off" gives it back to Windows.
+USBIPD=${LARES_USBIPD:-/mnt/c/Program Files/usbipd-win/usbipd.exe}
+ID=$LARES_BT_ID
+[ -n "$ID" ] && [ -x "$USBIPD" ] || exit 2
+radio() { ls /sys/class/bluetooth 2>/dev/null | grep -q '^hci'; }
+
+case "$1" in
+on)
+  modprobe btusb 2>/dev/null
+  radio || "$USBIPD" attach --wsl --hardware-id "$ID" </dev/null >/dev/null 2>&1
+  for i in $(seq 1 40); do radio && break; sleep 0.25; done
+  radio || exit 1
+  systemctl start bluetooth 2>/dev/null
+  for i in $(seq 1 40); do
+    bluetoothctl power on 2>/dev/null | grep -q succeeded && exit 0
+    sleep 0.25
+  done
+  exit 1
+  ;;
+off)
+  "$USBIPD" detach --hardware-id "$ID" </dev/null >/dev/null 2>&1
+  exit 0
+  ;;
+esac
+exit 2

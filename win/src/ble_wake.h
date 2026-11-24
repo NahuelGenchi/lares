@@ -6,8 +6,15 @@
  * advertisement src/airdrop/ble.c registers with BlueZ on Linux. */
 #pragma once
 #include <cstdint>
+#include <string>
 
 namespace lares {
+
+/* The usbipd hardware ID ("0a12:0001") of this PC's Bluetooth radio when
+ * it's on USB and Windows can't advertise with it (no peripheral role), so
+ * it can be lent to WSL for the wake-up instead (issue #107); "" otherwise.
+ * It asks Windows' Bluetooth stack and waits: for a worker thread. */
+std::string bluetooth_radio_to_lend();
 
 enum class BleWakeState {
     Off,

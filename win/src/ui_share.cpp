@@ -180,7 +180,13 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, floa
                             L"back in.",
                             pal.muted);
         }
-        if (s.wake && ble_.state() == BleWakeState::Failed) {
+        if (s.wake && v.bt_lent) {
+            cy += kGap;
+            cy = text_block(cy,
+                            L"While Lares looks for devices, this PC's Bluetooth calls them awake from WSL, so other "
+                            L"Bluetooth devices disconnect until it's done.",
+                            pal.muted);
+        } else if (s.wake && ble_.state() == BleWakeState::Failed) {
             cy += kGap;
             cy = text_block(cy,
                             L"This PC's Bluetooth can't call nearby devices awake. Open AirDrop on the other device "
@@ -447,7 +453,8 @@ void MainWindow::on_share_updated()
 {
     share_.resume();
     share_view_ = share_.view();
-    bool wake = share_view_.running && share_view_.s.wake && !opts_.dry_run;
+    /* A radio lent to WSL calls devices awake from there (issue #107). */
+    bool wake = share_view_.running && share_view_.s.wake && !opts_.dry_run && !share_view_.bt_lent;
     ble_.set_active(wake);
     sync_share_tick();
     InvalidateRect(hwnd_, nullptr, FALSE);

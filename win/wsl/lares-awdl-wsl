@@ -7,7 +7,9 @@
 # lares-awdl on it, and gives it back when that ends (issue #98).
 #
 # The adapter hears only on its first start after Windows had it, and
-# Windows needs a few seconds with it in between. So each session is:
+# Windows needs a few seconds with it in between. The chip also needs
+# AirDrop's address and no retries, which rtl8xxxu doesn't give it (#107).
+# So each session is:
 # Windows has it, attach, bring up, lares-awdl starts it once, detach; and a
 # session that comes right after another, or finds the adapter still
 # attached, waits for Windows first.
@@ -57,6 +59,24 @@ while [ $# -gt 0 ]; do
 done
 "$BIN/lares-awdl" "${args[@]}" <&0 &   # a background job would get /dev/null otherwise
 child=$!
+
+# The chip ACKs only frames to the address it holds, and rtl8xxxu gives it
+# none for a monitor: once lares-awdl's monitor is up with AirDrop's address,
+# the chip gets that one, or an iPhone's frames go unacknowledged (#107).
+own_address() {
+  local dev n
+  dev=$(lsusb | grep $ID | sed -E 's/Bus ([0-9]+) Device ([0-9]+).*/\/dev\/bus\/usb\/\1\/\2/')
+  for i in $(seq 1 100); do
+    for n in /sys/class/net/*; do
+      [ -e "$n/phy80211" ] && [ "$(cat "$n/type" 2>/dev/null)" = 803 ] || continue
+      "$BIN/rtlwake" "$dev" address "$(cat "$n/address")"
+      return
+    done
+    sleep 0.1
+  done
+  echo "the chip kept the address it had: no monitor came up" >&2
+}
+own_address </dev/null >&2 &
 wait $child
 code=$?
 [ -n "$stop" ] && wait $child   # a signal ends the first wait early

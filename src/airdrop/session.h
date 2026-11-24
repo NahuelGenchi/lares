@@ -39,6 +39,9 @@ typedef struct {
     /* Saved files' paths, or an accepted link share's URLs. */
     void (*received)(guint id, gboolean links, GPtrArray *items, gpointer user);
     void (*failed)(guint id, const char *message, gpointer user);
+    /* How an upload went, for a log: formats, sizes and counts, never a
+     * name. Optional. */
+    void (*trace)(guint id, const char *line, gpointer user);
 } AirdropReceiverCallbacks;
 
 typedef struct AirdropReceiver AirdropReceiver;

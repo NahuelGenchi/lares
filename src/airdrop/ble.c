@@ -7,7 +7,10 @@
  * registers it with the first adapter that offers LE advertising. Every
  * call is asynchronous, and a failure only stops the advertisement: it's
  * logged once, for debugging. BlueZ advertises a registration as soon as
- * the adapter is powered, so a switched-off adapter is left alone. */
+ * the adapter is powered, so a switched-off adapter is left alone. While
+ * BlueZ or an adapter is missing it looks again every second for a while:
+ * an adapter can arrive after the advertisement is asked for, as one lent
+ * to WSL does (issue #107). */
 #include "discovery.h"
 #include <string.h>
 
@@ -18,6 +21,8 @@
 #define AIRDROP_TYPE     0x05
 /* BLE-5: the interval current Apple devices answer to. */
 #define INTERVAL_MS      100
+#define RETRY_MS         1000
+#define RETRIES          30
 
 /* BLE-2, version 3: reserved 0x40, the tag, four reserved zeros, the
  * version, then four 2-byte contact hashes, all zero here (BLE-3), and a
@@ -61,6 +66,8 @@ struct AirdropBle {
     guint serial;
     guint8 data[20];          /* the AirDrop TLV: type, length, payload */
     gboolean logged;
+    guint retry;              /* the next look for BlueZ and an adapter */
+    guint tries;
 };
 
 static void log_once(AirdropBle *b, const char *what, GError *e)
@@ -137,6 +144,22 @@ static gboolean export(AirdropBle *b)
 }
 
 static void do_register(AirdropBle *b);
+static void start(AirdropBle *b);
+
+static gboolean look_again(gpointer data)
+{
+    AirdropBle *b = data;
+    b->retry = 0;
+    if (b->active) start(b);
+    return G_SOURCE_REMOVE;
+}
+
+/* BlueZ or an adapter isn't there yet: look again in a second, for a while. */
+static void again(AirdropBle *b, const char *what, GError *e)
+{
+    if (b->active && b->tries++ < RETRIES) b->retry = g_timeout_add(RETRY_MS, look_again, b);
+    else log_once(b, what, e);
+}
 
 static void registered(GObject *src, GAsyncResult *res, gpointer data)
 {
@@ -183,7 +206,7 @@ static void objects_ready(GObject *src, GAsyncResult *res, gpointer data)
     }
     AirdropBle *b = data;
     if (!v) {
-        log_once(b, "can't list BlueZ's adapters", e);
+        again(b, "can't list BlueZ's adapters", e);
         g_error_free(e);
         return;
     }
@@ -203,7 +226,7 @@ static void objects_ready(GObject *src, GAsyncResult *res, gpointer data)
     g_variant_iter_free(objects);
     g_variant_unref(v);
     if (!best) {
-        log_once(b, "no Bluetooth adapter offers LE advertising", NULL);
+        again(b, "no Bluetooth adapter offers LE advertising", NULL);
         return;
     }
     g_free(b->adapter);
@@ -249,6 +272,8 @@ static void unregistered(GObject *src, GAsyncResult *res, gpointer data)
  * arrive in order. */
 static void stop(AirdropBle *b)
 {
+    g_clear_handle_id(&b->retry, g_source_remove);
+    b->tries = 0;
     if (b->cancel) {
         g_cancellable_cancel(b->cancel);
         g_clear_object(&b->cancel);

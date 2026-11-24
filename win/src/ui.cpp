@@ -232,6 +232,7 @@ bool MainWindow::create()
     devices_.set_notify_hwnd(hwnd_);
     pads_.set_notify_hwnd(hwnd_);
     share_.set_notify_hwnd(hwnd_);
+    share_.set_bluetooth_probe(bluetooth_radio_to_lend);
     DEV_BROADCAST_DEVICEINTERFACE_W filter = {};
     filter.dbcc_size = sizeof(filter);
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;

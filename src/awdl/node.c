@@ -468,7 +468,10 @@ static void evict_stalest(struct awdl_node *n)
     peer_remove(n, stalest);
 }
 
-static void rx_action(struct awdl_node *n, awdl_time now, bool has_rssi, int8_t rssi,
+/* `late`: how long after its target TX time the frame went out (its PHY TX
+ * time less its target TX time, AWDL-3), which is when its sync parameters
+ * were true. */
+static void rx_action(struct awdl_node *n, awdl_time now, uint32_t late, bool has_rssi, int8_t rssi,
                       const awdl_mac *src, uint8_t subtype, const uint8_t *tlvs, size_t len)
 {
     struct awdl_peer *peer = peer_find(n, src);
@@ -498,14 +501,19 @@ static void rx_action(struct awdl_node *n, awdl_time now, bool has_rssi, int8_t 
         peer->has_rssi = true;
     }
     bool up = peer_absorb(peer, &advert, subtype == AWDL_SUBTYPE_MIF);
-    if (advert.has_sync) {
-        peer->sync_offset_us = awdl_clock_error_tu(&n->clock, now, advert.sync.next_tu,
+    /* AWDL-7: the schedule as of the target TX time. An iPhone's frames wait
+     * a millisecond or so for the air, once 28 ms: read as of arrival, one
+     * moved our clock by as much (issue #107). Longer than a slot is no
+     * schedule to follow. */
+    if (advert.has_sync && late <= AWDL_TX_LATE_MAX_US) {
+        awdl_time at = now > late ? now - late : now;
+        peer->sync_offset_us = awdl_clock_error_tu(&n->clock, at, advert.sync.next_tu,
                                                    advert.sync.aw_counter)
                                * (int64_t)AWDL_TU_US;
         peer->has_sync_offset = true;
-        /* AWDL-7: follow the master's schedule. */
+        /* Follow the master's schedule. */
         if (ours)
-            awdl_clock_update(&n->clock, now, advert.sync.next_tu, advert.sync.aw_counter);
+            awdl_clock_update(&n->clock, at, advert.sync.next_tu, advert.sync.aw_counter);
     }
     if (up) {
         n->host.peer_up(n->host.ctx, peer);
@@ -587,7 +595,7 @@ static void receive(struct awdl_node *n, awdl_time now, bool has_rssi, int8_t rs
     switch (f.kind) {
     case AWDL_RX_ACTION:
         if (!awdl_mac_eq(&f.h.src, &n->cfg.addr))
-            rx_action(n, now, has_rssi, rssi, &f.h.src, f.subtype, f.tlvs, f.tlvs_len);
+            rx_action(n, now, f.phy_tx - f.target_tx, has_rssi, rssi, &f.h.src, f.subtype, f.tlvs, f.tlvs_len);
         break;
     case AWDL_RX_ADDBA:
         /* AWDL-15 */
