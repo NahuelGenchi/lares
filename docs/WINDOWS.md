@@ -35,7 +35,7 @@ Lares on Windows follows the same rules as Linux (`AGENTS.md`):
 | **Remote: Screen switching** | confirmed | `EnumDisplaySettingsW` + `ChangeDisplaySettingsExW` (without `CDS_UPDATEREGISTRY`, so changes stay temporary) | **Confirmed** on `\\.\DISPLAY1` for 16:9 (`1920×1080`) and 16:10 (`1680×1050`) modes |
 | **Remote: Tailscale & Sunshine** | confirmed | `tailscale.exe status --json` / `up` / `down`; `OpenSCManagerW` / `QueryServiceStatusEx` on `SunshineService`; `sunshine.log` for active stream; `sunshine_state.json` checked only for non-empty `named_devices` and zeroed with `SecureZeroMemory` | Starting/stopping `SunshineService` needs Administrator once to grant `SERVICE_START \| SERVICE_STOP` to the user (one-time **Allow** button via UAC) |
 | **Remote CLI** | planned | `lares home`, `lares remote`, `lares status`, `lares restore`, `--section` | Same commands and exit semantics as Linux |
-| **Share: AirDrop** | confirmed up to the link (issue #109); not yet tried natively with an Apple device | `lares-share.exe` drives a USB Wi-Fi adapter over Windows' WinUSB and runs AWDL, IPv6 (lwIP), TLS (Schannel) and AirDrop itself; `lares.exe` sends the Bluetooth wake-up (see *AirDrop without WSL*) | One adapter model so far (Realtek RTL8188EU, 2.4 GHz); a one-time Set up |
+| **Share: AirDrop** | confirmed with an iPhone 17, a file each way (issue #109) | `lares-share.exe` drives a USB Wi-Fi adapter over Windows' WinUSB and runs AWDL, IPv6 (lwIP), TLS (Schannel) and AirDrop itself; `lares.exe` sends the Bluetooth wake-up (see *AirDrop without WSL*) | One adapter model so far (Realtek RTL8188EU, 2.4 GHz); a one-time Set up |
 | **Settings, Helper & Tray** | confirmed (issue #92) | `lares-pad.exe` background process (autostart via `HKCU\...\Run`), `Shell_NotifyIconW` tray icon + balloon alerts, and `win/src/livelight.cpp`, the port of `src/helper/livelight.c` | Listens to the receiver instead of polling, finds it again on `WM_DEVICECHANGE`, gives the lights back on quit and at `WM_ENDSESSION`. Measured 2.6 to 4.4 MB private across runs and no CPU while idle |
 | **Settings: Accessibility, Size** | confirmed in dry runs (issue #102); Windows only | One scale for the whole window: Windows' display scale (`GetDpiForWindow`) times the Size, 90% to 150%, through the Direct2D transform, pointer coordinates and the smallest window (640 by 480 layout pixels, at most the work area). A new size resizes the window by the same ratio, inside the work area, unless it is maximised | The window's private memory, fresh on Overview at 96 DPI: 13.3 MB at 100%, 14.1 MB at 100% stretched to 1350 by 1050, 22.1 MB at 150%: what grows is drawing at a larger scale, as at Windows' own 150%. Switching sizes 28 times in a row levels off near 31 MB |
 
@@ -83,7 +83,17 @@ AirDrop's link, AWDL, is made of raw 802.11 frames sent and heard in monitor mod
 - With the link up, `lares-share.exe` used 5.2 MB of private memory and no measurable CPU over 10 s.
 - Unit tests (`lares-share-unit`): the driver's descriptors and its bring-up on a fake register file, AirDrop's formats with Linux's vectors (their output byte for byte the same as Linux's), and whole transfers, a photo and a folder and a decline, over TLS 1.3 between two links in one process.
 
-**Not checked:** anything with an Apple device: hearing an iPhone's AWDL frames natively, the link with it, a transfer either way. Also unchecked: Give back to Windows on the real adapter.
+**With an iPhone 17**, checked by the owner on 2026-11-24 with the installed Lares, WSL not running, in one session of the Share page (from `share.log` and `lares-awdl.log`, which hold no names):
+
+- The link was up 0.6 s after Receive was turned on, and the iPhone was a valid AWDL peer 0.05 s later.
+- **Receiving.** The iPhone asked to send at 16.6 s. The photo (DVZip, a PNG of 24 KB and its AppleDouble entry) was saved at 19.6 s, the owner's Accept included.
+- **Sending.** Lares started looking at 29.6 s. The iPhone was listed at 31.1 s, found both on AWDL and over mDNS. It accepted at 44.7 s, and the file was sent at 45.8 s.
+- The link counted 293 AWDL action frames and 198 data frames from the iPhone, sent 137 unicast data frames, and had no send failures.
+- The owner found it far faster than through WSL.
+
+That copy was this branch with PR #108's AWDL timing fix merged in.
+
+**Not checked:** Give back to Windows on the real adapter.
 
 **Limits.** One adapter model, on 2.4 GHz, where an iPhone gives AirDrop little air time. The Bluetooth wake-up needs Windows' Bluetooth on. The ported driver is GPL-2.0-only, so `lares-share.exe` as a whole is GPL-2.0-only; Lares' own files stay GPL-2.0-or-later.
 ## Hardware probes on the Windows 11 development PC
