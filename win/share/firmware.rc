@@ -1,0 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Nahuel Genchi
+// SPDX-License-Identifier: GPL-2.0-or-later
+// The RTL8188EU's firmware, as linux-firmware ships it (Realtek's licence:
+// firmware/LICENCE.rtlwifi_firmware.txt), inside lares-share.exe.
+#define LARES_RTL_FIRMWARE 101
+LARES_RTL_FIRMWARE RCDATA "firmware/rtl8188eufw.bin"
