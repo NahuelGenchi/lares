@@ -3,7 +3,7 @@
 /* The Share page, laid out as src/share_view.c lays its own: AirDrop's two
  * settings, what's coming in, the devices nearby while sending, and the
  * Wi-Fi card. What's different on Windows is the step before it works:
- * WSL, usbipd-win and Lares' programs there (share_win.h). */
+ * giving the adapter Windows' WinUSB driver, once (share_win.h). */
 #include "ui.h"
 #include "ui_internal.h"
 extern "C" {
@@ -92,15 +92,12 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, floa
         float cy = top;
         if (v.setup != ShareSetup::Ready) {
             std::wstring text = kIntro;
-            if (v.setup == ShareSetup::NoWsl) {
-                text += L" On Windows, AirDrop runs inside WSL, which this PC doesn't have yet. Open a terminal, run "
-                        L"wsl --install, restart the PC, and come back here.";
-            } else if (v.setup == ShareSetup::NoAdapter) {
+            if (v.setup == ShareSetup::NoAdapter) {
                 text += L" On Windows, AirDrop needs a USB Wi-Fi adapter of its own, and the one Lares knows, a Realtek "
                         L"RTL8188EU, isn't plugged in.";
             } else {
-                text += L" Lares lends AirDrop the USB Wi-Fi adapter while it's on, through WSL. Setting that up "
-                        L"installs usbipd-win on Windows and a few packages in WSL, and asks for administrator "
+                text += L" On Windows, Lares drives the USB Wi-Fi adapter itself. Setting that up gives the adapter "
+                        L"Windows' own WinUSB driver, so it's AirDrop's alone from then on, and asks for administrator "
                         L"rights, one time.";
             }
             cy = text_block(cy, text, pal.text);
@@ -118,8 +115,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, floa
                 cy += btn_h;
                 if (v.setup_busy) {
                     cy += kGap;
-                    cy = text_block(cy, L"This takes a few minutes the first time. Windows asks for permission once.",
-                                    pal.muted);
+                    cy = text_block(cy, L"Windows asks for permission once.", pal.muted);
                 }
             }
             if (!v.setup_error.empty()) {
@@ -332,10 +328,25 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, floa
         if (have_card) {
             cy += kGap;
             cy = text_block(cy,
-                            L"AirDrop borrows this adapter from Windows while it's on: a Wi-Fi connection on it "
-                            L"pauses meanwhile. On 2.4 GHz alone, an iPhone gives AirDrop little time: photos take "
-                            L"about a minute each.",
+                            v.setup == ShareSetup::Ready
+                                ? L"Lares drives this adapter for AirDrop alone: Windows doesn't use it for Wi-Fi. On "
+                                  L"2.4 GHz alone, an iPhone gives AirDrop little time: photos take about a minute each."
+                                : L"Windows uses this adapter for Wi-Fi now.",
                             pal.muted);
+            /* Set up's change, undone the same way: one permission prompt. */
+            if (v.setup == ShareSetup::Ready && !v.running) {
+                cy += kGap;
+                if (v.setup_busy) {
+                    const wchar_t* busy = L"Giving it back…";
+                    D2D1_RECT_F rc = D2D1::RectF(ix, cy, ix + chip_width(busy), cy + btn_h);
+                    fill(rt, rc, pal.chip, 9.0f);
+                    label(rt, busy, fonts_.body(), rc.left, rc.top + (btn_h - lh_) * 0.5f, rc.right - rc.left, pal.muted,
+                          DWRITE_TEXT_ALIGNMENT_CENTER);
+                } else {
+                    button(ix, cy, L"Give back to Windows", false, ShareActionKind::GiveBack);
+                }
+                cy += btn_h;
+            }
         }
         return cy;
     });
@@ -436,8 +447,8 @@ bool MainWindow::share_click(float lx, float ly)
                 ShellExecuteW(hwnd_, L"open", utf8_to_wide(value).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             break;
         case ShareActionKind::ShowFolder: {
-            std::wstring path = windows_path_from_wsl(value);
-            if (!path.empty() && !opts_.dry_run) {
+            std::wstring path = utf8_to_wide(value);
+            if (!path.empty() && path.find(L'"') == std::wstring::npos && !opts_.dry_run) {
                 std::wstring args = L"/select,\"" + path + L"\"";
                 ShellExecuteW(hwnd_, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
             }
@@ -448,6 +459,9 @@ bool MainWindow::share_click(float lx, float ly)
             break;
         case ShareActionKind::CancelSend:
             share_.cancel_send();
+            break;
+        case ShareActionKind::GiveBack:
+            share_.give_back();
             break;
         case ShareActionKind::OpenBluetoothSettings:
             if (!opts_.dry_run) ShellExecuteW(hwnd_, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL);

@@ -590,4 +590,8 @@ void awdl_host_name(char *out);
 /* Defined by main.c: sleeps up to `ms`, false when asked to stop. */
 bool awdl_wait_ms(unsigned ms);
 /* Human diagnostics on stderr. */
+#if defined(__GNUC__)
 void awdl_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+#else
+void awdl_log(const char *fmt, ...);   /* MSVC, for the Windows port (issue #109) */
+#endif

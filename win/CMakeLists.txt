@@ -120,28 +120,87 @@ target_link_libraries(lares-win-unit PRIVATE
 enable_testing()
 add_test(NAME lares-win-unit COMMAND lares-win-unit)
 
-# The kit the Share section sets WSL up with (issue #98): the scripts and the
-# Linux sources lares-awdl and lares-share are built from there, beside
-# lares.exe, with a VERSION that changes when any of them does.
-file(GLOB WSL_KIT_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/wsl/*
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/awdl/*
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/airdrop/*
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/sharecli/*
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/share.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/share.h)
-set(WSL_KIT_HASH "")
-foreach(f ${WSL_KIT_FILES})
-    file(SHA256 ${f} h)
-    string(APPEND WSL_KIT_HASH ${h})
-endforeach()
-string(SHA256 WSL_KIT_VERSION "${WSL_KIT_HASH}")
-string(SUBSTRING ${WSL_KIT_VERSION} 0 16 WSL_KIT_VERSION)
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/wsl-kit-version "${WSL_KIT_VERSION}\n")
-add_custom_command(TARGET lares POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/wsl $<TARGET_FILE_DIR:lares>/wsl
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/../src/awdl $<TARGET_FILE_DIR:lares>/wsl/src/awdl
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/../src/airdrop $<TARGET_FILE_DIR:lares>/wsl/src/airdrop
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/../src/sharecli $<TARGET_FILE_DIR:lares>/wsl/src/sharecli
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/../src/share.c ${CMAKE_CURRENT_SOURCE_DIR}/../src/share.h $<TARGET_FILE_DIR:lares>/wsl/src/
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/wsl-kit-version $<TARGET_FILE_DIR:lares>/wsl/VERSION)
+# ---------------------------------------------------------------------------
+# AirDrop without WSL (issue #109): lares-share.exe runs the Wi-Fi adapter
+# over WinUSB, AWDL, IPv6 and AirDrop itself, and talks to lares.exe in
+# lines (win/share/main.cpp).
+
+# Vendored libraries: zlib 1.3.1 (zlib licence) and lwIP 2.2.1's IPv6, UDP
+# and TCP (BSD-3-Clause). Their own warnings aren't Lares' to fix.
+file(GLOB LARES_ZLIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib/*.c)
+add_library(lares_zlib STATIC ${LARES_ZLIB_SOURCES})
+set_property(TARGET lares_zlib PROPERTY COMPILE_OPTIONS /W3 /utf-8 /wd4996 /wd4267 /wd4244)
+target_include_directories(lares_zlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib)
+
+set(LWIP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip/src)
+add_library(lares_lwip STATIC
+    ${LWIP_DIR}/core/def.c ${LWIP_DIR}/core/inet_chksum.c ${LWIP_DIR}/core/init.c ${LWIP_DIR}/core/ip.c
+    ${LWIP_DIR}/core/mem.c ${LWIP_DIR}/core/memp.c ${LWIP_DIR}/core/netif.c ${LWIP_DIR}/core/pbuf.c
+    ${LWIP_DIR}/core/stats.c ${LWIP_DIR}/core/sys.c ${LWIP_DIR}/core/tcp.c ${LWIP_DIR}/core/tcp_in.c
+    ${LWIP_DIR}/core/tcp_out.c ${LWIP_DIR}/core/timeouts.c ${LWIP_DIR}/core/udp.c
+    ${LWIP_DIR}/core/ipv6/icmp6.c ${LWIP_DIR}/core/ipv6/inet6.c ${LWIP_DIR}/core/ipv6/ip6.c
+    ${LWIP_DIR}/core/ipv6/ip6_addr.c ${LWIP_DIR}/core/ipv6/ip6_frag.c ${LWIP_DIR}/core/ipv6/mld6.c
+    ${LWIP_DIR}/core/ipv6/nd6.c
+    ${LWIP_DIR}/api/api_lib.c ${LWIP_DIR}/api/api_msg.c ${LWIP_DIR}/api/err.c ${LWIP_DIR}/api/if_api.c
+    ${LWIP_DIR}/api/netbuf.c ${LWIP_DIR}/api/sockets.c ${LWIP_DIR}/api/tcpip.c
+    share/net/sys_arch.c)
+set_property(TARGET lares_lwip PROPERTY COMPILE_OPTIONS /W3 /utf-8 /wd4996 /wd4267 /wd4244 /wd4312)
+target_include_directories(lares_lwip PUBLIC ${LWIP_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/share/net)
+
+# The Realtek driver, ported from Linux rtl8xxxu: GPL-2.0-only.
+set(RTL_SOURCES
+    share/rtl8188eu.c
+    share/rtl8188eu_tables.c)
+# AirDrop's formats on plain bytes: plists, CPIO, compression, HTTP, mDNS
+# messages, names.
+set(AIRDROP_FORMAT_SOURCES
+    share/airdrop/names.cpp
+    share/airdrop/plist.cpp
+    share/airdrop/cpio.cpp
+    share/airdrop/compress.cpp
+    share/airdrop/http.cpp
+    share/airdrop/mdns.cpp)
+add_library(lares_share_core STATIC
+    share/rtl_usb.c
+    ../src/awdl/frame.c
+    ../src/awdl/node.c
+    ${RTL_SOURCES}
+    ${AIRDROP_FORMAT_SOURCES})
+# The Linux AWDL sources build as they are; casts that gcc takes quietly
+# don't get rewritten for MSVC.
+set_source_files_properties(../src/awdl/frame.c ../src/awdl/node.c PROPERTIES COMPILE_OPTIONS "/wd4310")
+target_include_directories(lares_share_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/share
+    ${CMAKE_CURRENT_SOURCE_DIR}/share/airdrop
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/awdl)
+target_link_libraries(lares_share_core PUBLIC lares_lwip lares_zlib winusb setupapi cfgmgr32 secur32 crypt32 ncrypt bcrypt advapi32 shell32 ole32)
+
+# What only the program itself uses: the driver switch, the link, the IP
+# stack's interface, TLS and the session.
+add_library(lares_share_link STATIC
+    share/driver_setup.cpp
+    share/link.c
+    share/net.c
+    share/tls.cpp
+    share/model.cpp
+    share/airdrop/session.cpp
+    share/airdrop/mdns_io.cpp)
+target_link_libraries(lares_share_link PUBLIC lares_share_core newdev)
+
+add_executable(lares-share share/main.cpp share/firmware.rc)
+target_link_libraries(lares-share PRIVATE lares_share_link)
+
+add_executable(lares-share-unit
+    tests/share_unit.cpp
+    tests/share_rtl.cpp
+    tests/share_formats.cpp
+    tests/share_net.cpp)
+target_include_directories(lares-share-unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+target_link_libraries(lares-share-unit PRIVATE lares_share_link)
+add_test(NAME lares-share-unit COMMAND lares-share-unit)
+
+# lares.exe starts lares-share.exe from beside itself; the firmware's licence
+# travels with it.
+add_dependencies(lares lares-share)
+add_custom_command(TARGET lares-share POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/share/firmware/LICENCE.rtlwifi_firmware.txt $<TARGET_FILE_DIR:lares-share>/)

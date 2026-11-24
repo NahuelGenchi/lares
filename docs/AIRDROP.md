@@ -122,7 +122,7 @@ Anyone in radio range can reach a receiver, so every input is hostile until chec
 | AWDL link | `src/awdl/`, `lares-awdl` | Unit tests on frames from the iPhone 17 capture (addresses and names replaced), and on multicast held for the phone's slot; `awdl0`, capabilities, peers and the crash journal in a network namespace; idle at about 240 kB of its own memory, 0 CPU ticks in 12 s |
 | Lares with lares-awdl | `src/share.c` | Lares' Share model against `lares-awdl`'s test mode in a network namespace: the link comes up, the receiver binds to `awdl0`'s address, a photo goes through to Downloads, and the link and `awdl0` go away when receiving stops |
 | Share section | `src/share.c`, `src/share_view.c` | Dry run in a hidden GNOME Shell, light and dark, every state |
-| On Windows, through WSL | `src/sharecli/main.c`, `win/wsl/`, `win/src/share_win.cpp` | The link comes up from the Windows window and the adapter goes back to Windows afterwards; no Apple device yet (`docs/WINDOWS.md`) |
+| On Windows, without WSL | `win/share/` (`lares-share.exe`), `win/src/share_win.cpp` | Checked by the owner with an iPhone 17: a file each way, the iPhone listed 1.6 s after looking started. Also: the RTL8188EU driven over WinUSB, and whole transfers over TLS between two links in one process (`docs/WINDOWS.md`) |
 | With an iPhone | | Checked by the owner with an iPhone 17 on the USB adapter: a file each way. Finding each other took several seconds before the changes under *Finding devices quickly* |
 
 ## Code we can reuse

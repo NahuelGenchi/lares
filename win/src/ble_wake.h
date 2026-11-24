@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* The Bluetooth LE advertisement that wakes AirDrop receivers, sent from
- * Windows while Lares looks for devices to send to: the rest of AirDrop
- * runs in WSL, which has no Bluetooth radio (docs/WINDOWS.md). It's the
+/* The Bluetooth LE advertisement that wakes AirDrop receivers, sent by
+ * Windows' own Bluetooth while Lares looks for devices to send to; the rest
+ * of AirDrop runs in lares-share.exe (docs/WINDOWS.md). It's the
  * advertisement src/airdrop/ble.c registers with BlueZ on Linux. */
 #pragma once
 #include <cstdint>
