@@ -103,6 +103,7 @@ private:
         SendTo,
         CancelSend,
         GiveBack,
+        OpenBluetoothSettings,
     };
 
     struct ShareHit {

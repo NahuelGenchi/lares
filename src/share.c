@@ -67,7 +67,7 @@ struct Share {
     guint dry_timer;
 
     gboolean looking;         /* finding devices while files are being picked */
-    guint valid_peers;        /* AWDL peers the link counts as valid now */
+    GHashTable *awdl_peers;   /* MACs of the AWDL peers the link counts as valid now */
     gboolean heard;           /* one was, since this use began */
     guint quiet_timer;
     guint linger;
@@ -126,7 +126,7 @@ static void quiet_watch(Share *s)
 static void quiet_restart(Share *s)
 {
     g_clear_handle_id(&s->quiet_timer, g_source_remove);
-    s->heard = s->valid_peers > 0;
+    s->heard = g_hash_table_size(s->awdl_peers) > 0;
     s->st.quiet = FALSE;
 }
 
@@ -647,15 +647,22 @@ static void receiver_failed(guint id, const char *message, gpointer user)
     ShareIncoming *in = incoming_for(s, id);
     if (!in) return;
     in->state = INCOMING_FAILED;
-    share_log(s, "receiving failed");
+    /* The receiver's messages are its own fixed texts: no names. */
+    share_log(s, "receiving failed: %s", message ? message : "?");
     g_free(in->message);
     in->message = g_strdup(message);
     changed(s);
     update_link(s);
 }
 
+/* The receiver's trace holds formats, sizes and counts, never a name. */
+static void receiver_trace(guint id, const char *line, gpointer user)
+{
+    share_log(user, "%s", line);
+}
+
 static const AirdropReceiverCallbacks RECEIVER = {
-    receiver_offer, receiver_withdrawn, receiver_progress, receiver_received, receiver_failed,
+    receiver_offer, receiver_withdrawn, receiver_progress, receiver_received, receiver_failed, receiver_trace,
 };
 
 static void discovered(GObject *src, GAsyncResult *res, gpointer data);
@@ -743,6 +750,16 @@ static void add_candidate(Share *s, const char *key, const char *address, guint1
     try_discover(s, c);
 }
 
+/* DISC-5: asks an AWDL peer directly, at its link-local address. */
+static void ask_peer(Share *s, const char *mac)
+{
+    char *key = g_strconcat("awdl:", mac, NULL);
+    char *ll = share_link_local(mac, s->iface);
+    if (ll) add_candidate(s, key, ll, AIRDROP_PORT, 0);
+    g_free(ll);
+    g_free(key);
+}
+
 static void drop_device(Share *s, const char *key)
 {
     g_hash_table_remove(s->candidates, key);
@@ -813,6 +830,11 @@ static void parts_apply(Share *s)
     if (finding(s)) {
         if (!s->discover_cancel) s->discover_cancel = g_cancellable_new();
         if (!s->retry) s->retry = g_timeout_add_seconds(DISCOVER_RETRY, retry_discover, s);
+        /* Peers already met while only receiving are asked too (issue #107). */
+        GHashTableIter it;
+        gpointer mac;
+        g_hash_table_iter_init(&it, s->awdl_peers);
+        while (g_hash_table_iter_next(&it, &mac, NULL)) ask_peer(s, mac);
     } else {
         if (s->discover_cancel) {
             g_cancellable_cancel(s->discover_cancel);
@@ -862,32 +884,27 @@ static void link_event(Share *s, GHashTable *ev)
         s->st.link = LINK_UP;
         share_log(s, "link up on channel %s", (const char *)g_hash_table_lookup(ev, "channel"));
         g_clear_pointer(&s->st.link_error, g_free);
-        s->valid_peers = 0;
+        g_hash_table_remove_all(s->awdl_peers);
         s->heard = FALSE;
         parts_apply(s);
         quiet_watch(s);
     } else if (g_str_equal(kind, "peer")) {
         const char *state = g_hash_table_lookup(ev, "state");
+        const char *mac = g_hash_table_lookup(ev, "address");
         share_log(s, "AWDL peer %s", state ? state : "?");
-        if (state && g_str_equal(state, "valid")) {
-            s->valid_peers++;
+        if (!state || !mac) return;
+        if (g_str_equal(state, "valid")) {
+            g_hash_table_add(s->awdl_peers, g_strdup(mac));
             s->heard = TRUE;
             quiet_watch(s);
-        } else if (state && g_str_equal(state, "gone") && s->valid_peers > 0) {
-            s->valid_peers--;
-        }
-        if (!s->iface || !finding(s)) return;
-        const char *mac = g_hash_table_lookup(ev, "address");
-        if (!mac || !state) return;
-        char *key = g_strconcat("awdl:", mac, NULL);
-        if (g_str_equal(state, "valid")) {
-            char *ll = share_link_local(mac, s->iface);
-            if (ll) add_candidate(s, key, ll, AIRDROP_PORT, 0); /* DISC-5 */
-            g_free(ll);
+            if (s->iface && finding(s)) ask_peer(s, mac);
         } else if (g_str_equal(state, "gone")) {
+            g_hash_table_remove(s->awdl_peers, mac);
+            if (!s->iface || !finding(s)) return;
+            char *key = g_strconcat("awdl:", mac, NULL);
             drop_device(s, key);
+            g_free(key);
         }
-        g_free(key);
     } else if (g_str_equal(kind, "error")) {
         g_free(s->st.link_error);
         s->st.link_error = g_strdup(g_hash_table_lookup(ev, "message"));
@@ -945,7 +962,7 @@ static void on_link_exit(GObject *src, GAsyncResult *res, gpointer data)
     parts_stop(s);
     g_clear_pointer(&s->iface, g_free);
     g_clear_pointer(&s->address, g_free);
-    s->valid_peers = 0;
+    g_hash_table_remove_all(s->awdl_peers);
     s->st.link = expected || status == 0 ? LINK_OFF : LINK_FAILED;
     quiet_watch(s);
     if (s->st.link == LINK_FAILED && !s->st.link_error)
@@ -1207,6 +1224,7 @@ Share *share_new(void)
     s->dry = g_getenv("LARES_DRY_RUN") != NULL;
     s->st.devices = g_ptr_array_new_with_free_func(device_free);
     s->candidates = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, candidate_free);
+    s->awdl_peers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     s->st.name = computer_name();
     s->service_id = random_id();
     /* Not the machine's host name: that would tell strangers nearby, and

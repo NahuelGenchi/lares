@@ -72,6 +72,8 @@ AirDrop's link, AWDL, is made of raw 802.11 frames sent and heard in monitor mod
 - Linux's power-off for this chip leaves out a step of Realtek's own sequence: turning the MAC off through the hardware state machine (register 0x04, bit 9). Without it the next power-on finds the MAC still on and its steps do nothing. The radio then hears energy but decodes almost nothing (measured: 2 good frames of about 170 in 3 s), which is why Linux's driver heard only on its first start after Windows had the chip. `lares-share.exe` takes the MAC off properly at every power-on and power-off.
 - Frames are timed by the chip's TSF, mapped to the host clock twice a second, rather than by when USB delivered them.
 
+**The Bluetooth wake-up.** An iPhone opens its AirDrop receiver only once a nearby sender's Bluetooth LE advert wakes it, and refuses `/Discover` until then. `lares.exe` sends that advert with Windows' own Bluetooth (`BluetoothLEAdvertisementPublisher`, non-connectable, Apple's manufacturer data from `src/airdrop/ble.c`); the radio never leaves Windows, so nothing connected to it drops. It needs Bluetooth switched on: with it off the publisher aborts with `RadioNotAvailable`, and the page says Bluetooth is off and offers Windows' Bluetooth settings (issue #107). An earlier note said the development PC's CSR `0a12:0001` dongle couldn't advertise; it was measured with Bluetooth off. Windows does deny that radio the LE *peripheral role*: at each start BTHPORT logs event 34, "minimum required supported state mask is 0x2491f7fffff, got 0x1fffffff", since a Bluetooth 4.0 controller lacks the 4.1 state combinations (bits 29 to 41). That role only gates connectable advertising and GATT servers; the wake-up's non-connectable advert starts all the same. Also learned there: `IOCTL_BTH_HCI_VENDOR_COMMAND`, with `SeLoadDriverPrivilege`, passes vendor commands (OGF `0x3f`) but refuses standard ones with `ERROR_INVALID_PARAMETER`, and `bthport.sys` reads an undocumented per-radio `LEMinImportantStateException` beside its LE settings; neither is needed.
+
 **Checked** on the development PC, 2026-11-24:
 
 - Set up's switch, run as administrator: the adapter moved to *WinUsb Device*, and opened afterwards without administrator rights.
@@ -95,7 +97,7 @@ That copy was this branch with PR #108's AWDL timing fix merged in.
 
 **Not checked:** Give back to Windows on the real adapter.
 
-**Limits.** One adapter model, on 2.4 GHz, where an iPhone gives AirDrop little air time. The Bluetooth wake-up needs Windows' Bluetooth on. The ported driver is GPL-2.0-only, so `lares-share.exe` as a whole is GPL-2.0-only; Lares' own files stay GPL-2.0-or-later.
+**Limits.** One adapter model, on 2.4 GHz, where an iPhone gives AirDrop little air time. A radio Windows can't advertise with at all, Bluetooth on, leaves the page saying to open AirDrop on the other device first. The ported driver is GPL-2.0-only, so `lares-share.exe` as a whole is GPL-2.0-only; Lares' own files stay GPL-2.0-or-later.
 ## Hardware probes on the Windows 11 development PC
 
 On 2026-11-21, read-only user-mode probes were run on a Windows 11 Home (Build 26200) PC with no Administrator elevation. **Confirmed:**
@@ -140,7 +142,7 @@ The Linux build (`Makefile` and Ubuntu 26.04 `make check`) stays completely inta
 ### Permissions on Windows
 
 - **Hardware, HyperX mouse, Logitech G715, Xbox controller, Bluetooth, display modes, Tailscale user toggles:** zero Administrator privileges required (all HID & storage probes confirmed unprivileged).
-- **AirDrop:** giving the Wi-Fi adapter Windows' WinUSB driver asks for Administrator once, in Set up, and so does giving it back. Using it needs none: `lares-share.exe` runs as the user.
+- **AirDrop:** giving the Wi-Fi adapter Windows' WinUSB driver asks for Administrator once, in Set up, and so does giving it back. Using it needs none: `lares-share.exe` runs as the user, and the Bluetooth wake-up needs none either.
 - **Sunshine service toggle (`SunshineService`):** starting and stopping a Windows service requires service DACL permission. The Remote section offers a one-time **Allow** button that launches a small elevated helper (`ShellExecuteW("runas")`) to grant `SERVICE_START | SERVICE_STOP` on `SunshineService` to the current user's SID — mirroring Linux's one-time `pkexec` Allow buttons. Uninstalling or revoking removes that ACE.
 
 ## Phased implementation plan (Milestone M5)

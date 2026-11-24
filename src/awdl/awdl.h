@@ -43,6 +43,7 @@ typedef uint64_t awdl_time;
 #define AWDL_ECHO_US            3000000u /* OWLY-2: an ICMPv6 echo to each valid peer */
 #define AWDL_PACKET_EXPIRY_US   2000000u /* packets waiting longer for their slot are dropped */
 #define AWDL_SYN_HOLD_US        2000000u /* AWDL-18 */
+#define AWDL_TX_LATE_MAX_US     AWDL_SLOT_US /* a frame's PHY TX time past its target, AWDL-3 */
 #define AWDL_BURST_PAUSE_US     500u    /* after AWDL_BURST frames for one input */
 #define AWDL_RETRY_PAUSE_US     500u    /* after the radio's queue was full */
 #define AWDL_MULTICAST_RETRY_US 100000u /* multicast the radio refused is retried this long */

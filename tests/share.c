@@ -105,7 +105,17 @@ static void on_failed(guint id, const char *message, gpointer user)
     g_test_message("receiver failed: %s", message);
 }
 
-static const AirdropReceiverCallbacks CB = { on_offer, on_withdrawn, on_progress, on_received, on_failed };
+/* The trace never names a file: the loopback's file is called Café. */
+static guint traces;
+
+static void on_trace(guint id, const char *line, gpointer user)
+{
+    traces++;
+    g_test_message("receiver trace: %s", line);
+    g_assert_null(strstr(line, "Caf"));
+}
+
+static const AirdropReceiverCallbacks CB = { on_offer, on_withdrawn, on_progress, on_received, on_failed, on_trace };
 
 static void discovered(GObject *src, GAsyncResult *res, gpointer user)
 {
@@ -221,6 +231,7 @@ static void test_loopback(void)
     g_assert_cmpuint(f.names->len, ==, 1);
     g_assert_cmpstr(f.names->pdata[0], ==, "Café ☕.txt");
     g_assert_cmpuint(f.received, ==, 1);
+    g_assert_cmpuint(traces, >, 0); /* the upload's format and its entries */
     char *want = g_build_filename(inbox, "Café ☕.txt", NULL);
     g_assert_cmpstr(f.saved->pdata[0], ==, want);
     assert_contents(want, text);

@@ -218,7 +218,7 @@ static void receiver_unref(AirdropReceiver *r)
 }
 
 /* What a connection's thread tells the main context. */
-typedef enum { NOTE_OFFER, NOTE_WITHDRAWN, NOTE_PROGRESS, NOTE_RECEIVED, NOTE_FAILED } NoteKind;
+typedef enum { NOTE_OFFER, NOTE_WITHDRAWN, NOTE_PROGRESS, NOTE_RECEIVED, NOTE_FAILED, NOTE_TRACE } NoteKind;
 
 typedef struct {
     AirdropReceiver *r;
@@ -250,6 +250,7 @@ static gboolean note_deliver(gpointer data)
     case NOTE_PROGRESS: if (r->cb.progress) r->cb.progress(id, n->done, n->total, r->user); break;
     case NOTE_RECEIVED: if (r->cb.received) r->cb.received(id, n->offer.links, n->offer.names, r->user); break;
     case NOTE_FAILED: if (r->cb.failed) r->cb.failed(id, n->message, r->user); break;
+    case NOTE_TRACE: if (r->cb.trace) r->cb.trace(id, n->message, r->user); break;
     }
     return G_SOURCE_REMOVE;
 }
@@ -305,7 +306,49 @@ typedef struct {
     guint64 written;
     gint64 last_progress;
     GError *upload_error;
+
+    /* what the upload looked like, for the trace: never a name */
+    guint64 raw_in, archive_in;
+    guint8 raw_head[4], archive_head[6];
+    guint entries;
 } Conn;
+
+static void G_GNUC_PRINTF(2, 3) trace(Conn *c, const char *fmt, ...)
+{
+    if (!c->r->cb.trace) return;
+    Note *n = g_new0(Note, 1);
+    n->kind = NOTE_TRACE;
+    n->offer.id = c->id;
+    va_list ap;
+    va_start(ap, fmt);
+    n->message = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+    note(c->r, n);
+}
+
+/* A sender's header value as protocol text only, for the trace. */
+static char *plain(const char *value)
+{
+    GString *s = g_string_new(NULL);
+    for (const char *p = value ? value : ""; *p && s->len < 40; p++)
+        g_string_append_c(s, g_ascii_isalnum(*p) || strchr("/.-+;=", *p) ? *p : '?');
+    return g_string_free(s, FALSE);
+}
+
+static char *hex(const guint8 *b, gsize n)
+{
+    GString *s = g_string_new(NULL);
+    for (gsize i = 0; i < n; i++) g_string_append_printf(s, "%02x", b[i]);
+    return g_string_free(s, FALSE);
+}
+
+/* The extension of the last component, lowercased, or "" : what an entry and
+ * a listed name are compared by in the trace. */
+static char *ext_of(const char *name)
+{
+    const char *dot = name ? strrchr(name, '.') : NULL;
+    return dot && dot != name && strlen(dot) <= 8 ? g_ascii_strdown(dot, -1) : g_strdup("");
+}
 
 static void listed_free(gpointer data)
 {
@@ -380,7 +423,10 @@ static gboolean entry_begin(const char *path, CpioType type, guint64 size, gpoin
     Conn *c = user;
     c->skipping = FALSE;
     char **parts = components(path);
-    if (!parts) return refuse(error, "An archive entry has an unsafe name.");
+    if (!parts) {
+        trace(c, "entry %u: unsafe name, refused", ++c->entries);
+        return refuse(error, "An archive entry has an unsafe name.");
+    }
     guint n = g_strv_length(parts);
     gboolean ok = FALSE;
     if (n == 0) { /* the root entry (UP-2a) */
@@ -453,6 +499,24 @@ static gboolean entry_begin(const char *path, CpioType type, guint64 size, gpoin
     g_free(file);
     ok = c->fd >= 0;
 out:
+    /* The first entries and any refused one, compared with the list by
+     * extension and by whether the name is the same: no names. */
+    if (++c->entries <= 8 || !ok) {
+        char *e = ext_of(n ? parts[n - 1] : NULL);
+        GString *l = g_string_new(NULL);
+        for (guint i = 0; c->listed && i < c->listed->len && i < 4; i++) {
+            Listed *x = c->listed->pdata[i];
+            char *le = ext_of(x->name);
+            g_string_append_printf(l, "%s%s%s%s", i ? ", " : "", x->wrapper ? "wrapped " : x->dir ? "folder " : "",
+                                   le[0] ? le : "no extension", n && g_str_equal(parts[n - 1], x->name) ? " (same name)" : "");
+            g_free(le);
+        }
+        trace(c, "entry %u: %u parts, %s, %" G_GUINT64_FORMAT " bytes, %s; listed: %s; %s", c->entries, n,
+              type == CPIO_DIR ? "folder" : type == CPIO_FILE ? "file" : "other", size, e[0] ? e : "no extension",
+              l->len ? l->str : "nothing", ok ? "taken" : "refused");
+        g_string_free(l, TRUE);
+        g_free(e);
+    }
     g_strfreev(parts);
     return ok;
 }
@@ -508,6 +572,9 @@ static const CpioCallbacks CPIO = { entry_begin, entry_data, entry_end };
 static gboolean to_cpio(const guint8 *buf, gsize len, gpointer user, GError **error)
 {
     Conn *c = user;
+    for (gsize i = 0; i < len && c->archive_in + i < sizeof c->archive_head; i++)
+        c->archive_head[c->archive_in + i] = buf[i];
+    c->archive_in += len;
     if (c->archive_done) return TRUE;
     return cpio_reader_feed(c->cpio, buf, len, &c->archive_done, error);
 }
@@ -531,6 +598,37 @@ static void remove_tree(const char *path)
     g_rmdir(path);
 }
 
+/* Moves `from` to `to` unless something is there already: 0, or an errno.
+ * Where the file system has no RENAME_NOREPLACE, as WSL's mount of the
+ * Windows drives (issue #107), a file goes by a hard link and an unlink, or
+ * by a rename over a name taken with O_EXCL, and a folder by a rename over
+ * an empty folder mkdir made: each refuses a name that's taken. */
+static int move_noreplace(const char *from, const char *to)
+{
+    if (renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE) == 0) return 0;
+    int err = errno;
+    if (err != EINVAL && err != ENOSYS && err != EOPNOTSUPP) return err;
+    struct stat st;
+    if (lstat(from, &st) < 0) return errno;
+    if (S_ISDIR(st.st_mode)) {
+        if (mkdir(to, 0700) < 0) return errno;
+    } else if (link(from, to) == 0) {
+        unlink(from);
+        return 0;
+    } else if (errno == EPERM || errno == EOPNOTSUPP || errno == ENOSYS) { /* no hard links */
+        int fd = open(to, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd < 0) return errno;
+        close(fd);
+    } else {
+        return errno;
+    }
+    if (rename(from, to) == 0) return 0;
+    err = errno;
+    if (S_ISDIR(st.st_mode)) rmdir(to);
+    else unlink(to);
+    return err;
+}
+
 /* `name` in `folder`, or "name (2).ext" and so on, moved without ever
  * replacing anything (SEC-2). Returns the path it got, or NULL. */
 static char *move_unique(const char *from, const char *folder, const char *name)
@@ -542,11 +640,11 @@ static char *move_unique(const char *from, const char *folder, const char *name)
         char *candidate = i == 1 ? g_strdup(name) : g_strdup_printf("%s (%d)%s", stem, i, ext ? dot : "");
         char *to = g_build_filename(folder, candidate, NULL);
         g_free(candidate);
-        if (renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE) == 0) {
+        int err = move_noreplace(from, to);
+        if (err == 0) {
             g_free(stem);
             return to;
         }
-        int err = errno;
         g_free(to);
         if (err != EEXIST) break;
     }
@@ -566,6 +664,14 @@ static void upload_reset(Conn *c)
 
 static void upload_failed(Conn *c, const char *message)
 {
+    char *raw = hex(c->raw_head, MIN(c->raw_in, sizeof c->raw_head));
+    char *arc = hex(c->archive_head, MIN(c->archive_in, sizeof c->archive_head));
+    trace(c, "upload failed: %" G_GUINT64_FORMAT " bytes in (starting %s), %" G_GUINT64_FORMAT
+          " unpacked (starting %s), %u entries, %" G_GUINT64_FORMAT " written, archive %s",
+          c->raw_in, raw[0] ? raw : "-", c->archive_in, arc[0] ? arc : "-", c->entries, c->written,
+          c->archive_done ? "complete" : "not complete");
+    g_free(raw);
+    g_free(arc);
     upload_reset(c);
     Note *n = g_new0(Note, 1);
     n->kind = NOTE_FAILED;
@@ -823,6 +929,15 @@ static gboolean upload_start(Conn *c, GHashTable *headers)
     }
     const char *type = g_hash_table_lookup(headers, "content-type");
     gboolean dvzip = type && !g_ascii_strcasecmp(type, "application/x-dvzip");
+    char *t = plain(type), *te = plain(g_hash_table_lookup(headers, "transfer-encoding")),
+         *cl = plain(g_hash_table_lookup(headers, "content-length")),
+         *ce = plain(g_hash_table_lookup(headers, "content-encoding"));
+    trace(c, "upload: type %s, transfer-encoding %s, length %s, content-encoding %s, %u listed",
+          t, te[0] ? te : "-", cl[0] ? cl : "-", ce[0] ? ce : "-", c->listed ? c->listed->len : 0);
+    g_free(t);
+    g_free(te);
+    g_free(cl);
+    g_free(ce);
     if (!dvzip && !(type && !g_ascii_strcasecmp(type, "application/x-cpio"))) {
         c->fail = 406; /* UP-4 */
         return TRUE;
@@ -872,6 +987,8 @@ static gboolean http_body(const guint8 *buf, gsize len, gpointer user, GError **
 {
     Conn *c = user;
     if (c->route == ROUTE_UPLOAD) {
+        for (gsize i = 0; i < len && c->raw_in + i < sizeof c->raw_head; i++) c->raw_head[c->raw_in + i] = buf[i];
+        c->raw_in += len;
         if (c->fail || !c->inflate || c->upload_error) return TRUE; /* discarded; answered at its end */
         if (!airdrop_inflater_feed(c->inflate, buf, len, &c->upload_error)) return TRUE;
         return TRUE;
