@@ -180,7 +180,21 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, floa
                             L"back in.",
                             pal.muted);
         }
-        if (s.wake && ble_.state() == BleWakeState::Failed) {
+        /* A dry run shows the Bluetooth note with LARES_DRY_BLUETOOTH=off. */
+        BleWakeState wake_state = opts_.dry_run
+                                      ? (GetEnvironmentVariableW(L"LARES_DRY_BLUETOOTH", nullptr, 0) > 0 ? BleWakeState::RadioOff
+                                                                                                         : BleWakeState::Off)
+                                      : ble_.state();
+        if (s.wake && wake_state == BleWakeState::RadioOff) {
+            cy += kGap;
+            cy = text_block(cy,
+                            L"Bluetooth is off, so Lares can't call nearby iPhones, iPads and Macs awake. Turn it on "
+                            L"to send to them.",
+                            pal.muted);
+            cy += kGap;
+            button(ix, cy, L"Bluetooth settings", false, ShareActionKind::OpenBluetoothSettings);
+            cy += btn_h;
+        } else if (s.wake && wake_state == BleWakeState::Failed) {
             cy += kGap;
             cy = text_block(cy,
                             L"This PC's Bluetooth can't call nearby devices awake. Open AirDrop on the other device "
@@ -434,6 +448,9 @@ bool MainWindow::share_click(float lx, float ly)
             break;
         case ShareActionKind::CancelSend:
             share_.cancel_send();
+            break;
+        case ShareActionKind::OpenBluetoothSettings:
+            if (!opts_.dry_run) ShellExecuteW(hwnd_, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL);
             break;
         }
         return true;

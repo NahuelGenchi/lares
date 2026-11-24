@@ -102,6 +102,7 @@ private:
         ShowFolder,
         SendTo,
         CancelSend,
+        OpenBluetoothSettings,
     };
 
     struct ShareHit {

@@ -1091,12 +1091,49 @@ static void test_node_iphone_frames(void)
     awdl_node_frame(n, START + AWDL_TICK_US, rx.has_rssi, rx.rssi, rx.frame, rx.len);
     g_assert_cmpint(R.delivered, ==, 0);
     g_assert_cmpuint(n->stats.rx_data, ==, 1);
-    /* Our clock follows its schedule (AWDL-7). */
+    /* Our clock follows its schedule (AWDL-7), as of the frame's target TX
+     * time: this one went out a little after it. */
     rx = captured(PSF_HEX, buf, sizeof buf);
+    struct awdl_rx_frame f;
+    g_assert_cmpint(awdl_frame_parse(rx.frame, rx.len, &f), ==, 0);
+    uint32_t late = f.phy_tx - f.target_tx;
+    g_assert_cmpuint(late, >, 0);
+    g_assert_cmpuint(late, <=, AWDL_TX_LATE_MAX_US);
     awdl_time t = START + AWDL_TICK_US + 1000;
     awdl_node_frame(n, t, rx.has_rssi, rx.rssi, rx.frame, rx.len);
-    g_assert_cmpint(awdl_clock_error_tu(&n->clock, t, 21, 0x14ea), ==, 0);
-    g_assert_cmpuint(awdl_clock_slot(&n->clock, t), ==, (0x14ea / 4) % 16);
+    g_assert_cmpint(awdl_clock_error_tu(&n->clock, t - late, 21, 0x14ea), ==, 0);
+    g_assert_cmpuint(awdl_clock_slot(&n->clock, t - late), ==, (0x14ea / 4) % 16);
+    g_free(n);
+}
+
+static void put_le32(uint8_t *p, uint32_t v)
+{
+    for (int i = 0; i < 4; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
+}
+
+/* spec: AWDL-3, AWDL-7: a frame that waited for the air carries the
+ * schedule as of its target TX time (issue #107). */
+static void test_node_follows_target_time(void)
+{
+    struct awdl_node *n = node_new(6, AWDL_PRESENCE_FIXED, false);
+    struct awdl_sequence s;
+    seq_from(&s, PHONE_SEQ);
+    awdl_time t = meet(n, &s) + 200000;
+    uint8_t buf[1024];
+    /* PHY and target TX times sit 8 and 12 bytes into the action body. */
+    size_t len = frame_from(buf, sizeof buf, &PHONE, AWDL_SUBTYPE_PSF, &s, 480, 40);
+    put_le32(buf + AWDL_HEADER_LEN + 8, 1010000);
+    put_le32(buf + AWDL_HEADER_LEN + 12, 1000000);
+    feed(n, t, buf, len);
+    /* 40 TU to the boundary was true 10 ms before it arrived. */
+    g_assert_cmpint(awdl_clock_error_tu(&n->clock, t - 10000, 40, 480), ==, 0);
+    /* Out later than a slot past its target: not followed. */
+    len = frame_from(buf, sizeof buf, &PHONE, AWDL_SUBTYPE_PSF, &s, 484, 10);
+    put_le32(buf + AWDL_HEADER_LEN + 8, 1000000 + (uint32_t)AWDL_SLOT_US + 1);
+    put_le32(buf + AWDL_HEADER_LEN + 12, 1000000);
+    feed(n, t + 1000, buf, len);
+    g_assert_cmpint(awdl_clock_error_tu(&n->clock, t - 10000, 40, 480), ==, 0);
     g_free(n);
 }
 
@@ -1636,6 +1673,7 @@ int main(int argc, char **argv)
     g_test_add_func("/awdl/ip/packets", test_ip);
     g_test_add_func("/awdl/json", test_json);
     g_test_add_func("/awdl/node/iphone-frames", test_node_iphone_frames);
+    g_test_add_func("/awdl/node/target-time", test_node_follows_target_time);
     g_test_add_func("/awdl/node/sequence", test_node_fixed_sequence);
     g_test_add_func("/awdl/node/valid-once", test_node_valid_once);
     g_test_add_func("/awdl/node/spoofed-peers", test_node_spoofed_peers);

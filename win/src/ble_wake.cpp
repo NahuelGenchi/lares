@@ -6,6 +6,7 @@
 #include <atomic>
 #include <random>
 
+#include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
@@ -70,7 +71,11 @@ void BleWake::set_active(bool on)
                                                       const BluetoothLEAdvertisementPublisherStatusChangedEventArgs& e) {
             switch (e.Status()) {
             case BluetoothLEAdvertisementPublisherStatus::Started: impl->state = BleWakeState::On; break;
-            case BluetoothLEAdvertisementPublisherStatus::Aborted: impl->state = BleWakeState::Failed; break;
+            case BluetoothLEAdvertisementPublisherStatus::Aborted:
+                impl->state = e.Error() == winrt::Windows::Devices::Bluetooth::BluetoothError::RadioNotAvailable
+                                  ? BleWakeState::RadioOff
+                                  : BleWakeState::Failed;
+                break;
             default: break;
             }
         });

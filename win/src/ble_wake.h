@@ -9,11 +9,15 @@
 
 namespace lares {
 
+/* No peripheral role is needed: the advertisement isn't connectable, and a
+ * Bluetooth 4.0 radio Windows denies that role to sends it all the same
+ * (issue #107). What stops it is Bluetooth switched off. */
 enum class BleWakeState {
     Off,
     Starting,
     On,
-    Failed,   // no radio, the radio is off, or it can't advertise
+    RadioOff, // Bluetooth is switched off in Windows
+    Failed,   // no radio, or it can't advertise
 };
 
 class BleWake {

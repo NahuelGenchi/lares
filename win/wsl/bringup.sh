@@ -12,6 +12,8 @@
 #   sysfs loader; udev would answer that request with "not found", so it
 #   waits meanwhile.
 # - The driver doesn't always take at the first try after an attach.
+# - rtl8xxxu retries unicast 48 times whatever radiotap asks, which holds up
+#   the link: rtlwake sets the retry limit to 0 once it has the chip (#107).
 #
 # Prints "ready <ifname>" or "failed <why>".
 BIN=$(dirname "$(readlink -f "$0")")
@@ -54,7 +56,12 @@ for try in 1 2 3 4; do
     [ -n "$ifname" ] && break
     sleep 0.25
   done
-  if [ -n "$ifname" ]; then log "try $try: $ifname"; echo "ready $ifname"; exit 0; fi
+  if [ -n "$ifname" ]; then
+    log "try $try: $ifname"
+    "$BIN/rtlwake" "$dev" noretry >&2 || log "the retry limit stays as rtl8xxxu set it"
+    echo "ready $ifname"
+    exit 0
+  fi
   log "try $try: the driver didn't take"
   sleep 1
 done
