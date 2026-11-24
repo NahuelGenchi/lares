@@ -832,9 +832,10 @@ struct Conn {
             }
             if (const Value* size = f.find("FileSize", Value::Type::Integer); size && size->get_integer() > 0)
                 total += static_cast<uint64_t>(size->get_integer());
-            /* Two items saved under one name would collide in staging. */
+            /* Two items saved under one name would collide in staging, and
+             * Windows' names differ by more than case. */
             for (const Listed& x : listed)
-                if (x.name == l.name || windows_name(x.name) == windows_name(l.name)) bad = true;
+                if (x.name == l.name || _wcsicmp(windows_name(x.name).c_str(), windows_name(l.name).c_str()) == 0) bad = true;
             if (bad) break;
             offer.names.push_back(l.name);
             listed.push_back(std::move(l));
