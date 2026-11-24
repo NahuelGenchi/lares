@@ -3,7 +3,6 @@
 #include "share_win.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -367,10 +366,9 @@ std::wstring usbipd_exe()
     return file_there(path) ? path : std::wstring();
 }
 
-/* Whether usbipd-win shares the device whose instance ID starts with
- * `prefix`, and whether WSL has it right now: it keeps what it shares here,
- * with an "Attached" key while it's lent. */
-bool usbipd_shares(const wchar_t* prefix, bool* lent = nullptr)
+/* Whether usbipd-win shares the adapter, and whether WSL has it right now:
+ * it keeps what it shares here, with an "Attached" key while it's lent. */
+bool adapter_shared(bool* lent = nullptr)
 {
     if (lent) *lent = false;
     HKEY key = nullptr;
@@ -382,7 +380,7 @@ bool usbipd_shares(const wchar_t* prefix, bool* lent = nullptr)
         DWORD len = 128;
         if (RegEnumKeyExW(key, i, sub, &len, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
         std::wstring id = reg_string(key, sub, L"InstanceId");
-        shared = _wcsnicmp(id.c_str(), prefix, wcslen(prefix)) == 0;
+        shared = _wcsnicmp(id.c_str(), kShareAdapterId, wcslen(kShareAdapterId)) == 0;
         if (shared && lent) {
             HKEY attached = nullptr;
             std::wstring path = std::wstring(sub) + L"\\Attached";
@@ -394,23 +392,6 @@ bool usbipd_shares(const wchar_t* prefix, bool* lent = nullptr)
     }
     RegCloseKey(key);
     return shared;
-}
-
-bool adapter_shared(bool* lent = nullptr)
-{
-    return usbipd_shares(kShareAdapterId, lent);
-}
-
-/* "0a12:0001" as the start of a USB instance ID, USB\VID_0A12&PID_0001;
- * "" for anything that isn't a usbipd hardware ID. */
-std::wstring usb_prefix(const std::string& hwid)
-{
-    if (hwid.size() != 9 || hwid[4] != ':') return {};
-    for (size_t i = 0; i < 9; ++i)
-        if (i != 4 && !isxdigit(static_cast<unsigned char>(hwid[i]))) return {};
-    std::wstring w = widen(hwid);
-    for (auto& c : w) c = towupper(c);
-    return L"USB\\VID_" + w.substr(0, 4) + L"&PID_" + w.substr(5, 4);
 }
 
 std::wstring exe_dir()
@@ -465,21 +446,6 @@ std::wstring kit_mark_path()
 std::string kit_mark(const std::wstring& distro)
 {
     return kit_version() + " " + narrow(distro);
-}
-
-/* The Bluetooth radio Set up shared for lending to WSL, as its usbipd
- * hardware ID (issue #107). */
-std::wstring bt_mark_path()
-{
-    return config_dir_path() + L"\\airdrop-bluetooth.txt";
-}
-
-/* That radio, while usbipd-win still shares it; "" when there's none. */
-std::string bt_to_lend()
-{
-    std::string id = read_small_file(bt_mark_path());
-    std::wstring prefix = usb_prefix(id);
-    return !prefix.empty() && usbipd_shares(prefix.c_str()) ? id : std::string();
 }
 
 ShareSetup look()
@@ -540,14 +506,12 @@ int run_quiet(const std::wstring& cmdline, std::string* out, DWORD timeout_ms)
     return timed_out ? 124 : static_cast<int>(code);
 }
 
-/* Gives the adapter back to Windows, whatever state the session left it in,
- * and the Bluetooth radio it may have lent (`bt`, a usbipd hardware ID). */
-void detach_adapter(const std::string& bt = {})
+/* Gives the adapter back to Windows, whatever state the session left it in. */
+void detach_adapter()
 {
     std::wstring usbipd = usbipd_exe();
     if (usbipd.empty()) return;
     run_quiet(L"\"" + usbipd + L"\" detach --hardware-id " + kShareAdapterUsbipd, nullptr, 15000);
-    if (!usb_prefix(bt).empty()) run_quiet(L"\"" + usbipd + L"\" detach --hardware-id " + widen(bt), nullptr, 15000);
 }
 
 std::wstring downloads_dir()
@@ -661,8 +625,6 @@ ShareManager::ShareManager(bool dry_run) : dry_run_(dry_run)
         view_.s.wake = true;
         view_.files = { L"Notes.pdf" };
     }
-    /* LARES_DRY_BT: as if the session lent the Bluetooth radio to WSL. */
-    view_.bt_lent = GetEnvironmentVariableW(L"LARES_DRY_BT", nullptr, 0) > 0;
 }
 
 ShareManager::~ShareManager()
@@ -722,23 +684,16 @@ void ShareManager::setup_worker()
     std::string error;
     std::wstring distro = wsl_distro();
 
-    /* A Bluetooth radio Windows can't advertise with is shared too, to be
-     * lent to WSL for the wake-up while Lares looks for devices (issue #107). */
-    std::string bt = bt_probe_ ? bt_probe_() : std::string();
-    std::wstring bt_prefix = usb_prefix(bt);
-    bool bt_unshared = !bt_prefix.empty() && !usbipd_shares(bt_prefix.c_str());
-
-    /* usbipd-win, and the adapters shared with it: all ask for
+    /* usbipd-win, and the adapter shared with it: both ask for
      * administrator rights, in one prompt. */
-    if (usbipd_exe().empty() || !adapter_shared() || bt_unshared) {
+    if (usbipd_exe().empty() || !adapter_shared()) {
         std::wstring ps =
             L"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \""
             L"$u = Join-Path $env:ProgramFiles 'usbipd-win\\usbipd.exe'; "
             L"if (-not (Test-Path $u)) { winget install --exact --id dorssel.usbipd-win --silent "
             L"--accept-source-agreements --accept-package-agreements --disable-interactivity | Out-Null }; "
-            L"if (-not (Test-Path $u)) { exit 2 }; ";
-        if (bt_unshared) ps += L"& $u bind --hardware-id " + widen(bt) + L" | Out-Null; ";
-        ps += L"& $u bind --hardware-id ";
+            L"if (-not (Test-Path $u)) { exit 2 }; "
+            L"& $u bind --hardware-id ";
         ps += kShareAdapterUsbipd;
         ps += L" | Out-Null; exit $LASTEXITCODE\"";
         SHELLEXECUTEINFOW sei = {};
@@ -761,11 +716,6 @@ void ShareManager::setup_worker()
                 error = "Couldn't share the Wi-Fi adapter with WSL.";
         }
     }
-    /* Remembered for the sessions; sending only misses its wake-up without it. */
-    if (!bt_prefix.empty() && usbipd_shares(bt_prefix.c_str()))
-        write_small_file(bt_mark_path(), bt);
-    else
-        DeleteFileW(bt_mark_path().c_str());
 
     /* The WSL side: packages, the adapter's firmware and Lares' programs. */
     if (error.empty()) {
@@ -811,7 +761,6 @@ bool ShareManager::start_session()
     std::wstring wsl = wsl_exe(), distro = wsl_distro();
     std::string downloads = wsl_path_from_windows(downloads_dir());
     if (wsl.empty() || distro.empty() || downloads.empty()) return false;
-    std::string bt = bt_to_lend();
 
     SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
     HANDLE in_rd = nullptr, in_wr = nullptr, out_rd = nullptr, out_wr = nullptr;
@@ -833,7 +782,6 @@ bool ShareManager::start_session()
     si.hStdError = nul;
     PROCESS_INFORMATION pi = {};
     std::wstring cmd = L"\"" + wsl + L"\" -d " + distro + L" -u root -e " + kRunScript + L" \"" + widen(downloads) + L"\"";
-    if (!bt.empty()) cmd += L" " + widen(bt);   // checked: hex digits and a colon
     BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     CloseHandle(in_rd);
     CloseHandle(out_wr);
@@ -849,8 +797,6 @@ bool ShareManager::start_session()
     from_child_ = out_rd;
     armed_ = false;
     quitting_ = false;
-    bt_id_ = bt;
-    view_.bt_lent = !bt.empty();
     view_.running = true;
     view_.error.clear();
     view_.s = ShareSession();
@@ -902,12 +848,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
 
     /* It ended: by being asked to, or by itself. */
     WaitForSingleObject(proc, 30000);
-    std::string bt;
-    {
-        std::lock_guard<std::mutex> lock(mu_);
-        bt = bt_id_;
-    }
-    detach_adapter(bt);
+    detach_adapter();
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (to_child_) CloseHandle(to_child_);
@@ -984,10 +925,8 @@ void ShareManager::command(const std::string& line)
 void ShareManager::end_session()
 {
     HANDLE proc = nullptr;
-    std::string bt;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        bt = bt_id_;
         closing_ = true;
         pending_.clear();
         if (proc_ && to_child_) {
@@ -1004,9 +943,8 @@ void ShareManager::end_session()
     if (!reader_.joinable()) return;
     if (proc && WaitForSingleObject(proc, 2500) == WAIT_TIMEOUT) {
         /* Lares is closing and the session is slow to end: the adapter is
-         * taken back from here, the Bluetooth radio too, and what's left of
-         * the session ended. */
-        detach_adapter(bt);
+         * taken back from here, and what's left of the session ended. */
+        detach_adapter();
         if (WaitForSingleObject(proc, 1500) == WAIT_TIMEOUT) TerminateProcess(proc, 1);
     }
     if (proc) CloseHandle(proc);

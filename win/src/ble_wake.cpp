@@ -4,11 +4,7 @@
 #include "share_win.h"
 
 #include <atomic>
-#include <cwctype>
 #include <random>
-
-#include <windows.h>
-#include <objbase.h>
 
 #include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
@@ -19,49 +15,7 @@
 namespace lares {
 
 using namespace winrt::Windows::Devices::Bluetooth::Advertisement;
-using winrt::Windows::Devices::Bluetooth::BluetoothAdapter;
 using winrt::Windows::Storage::Streams::DataWriter;
-
-namespace {
-
-/* The four hex digits after `key` in a device path, lowercased, or "". */
-std::string hex4_after(const std::wstring& path, const wchar_t* key)
-{
-    size_t at = path.find(key);
-    if (at == std::wstring::npos || at + 4 + 4 > path.size()) return {};
-    std::string out;
-    for (size_t i = at + 4; i < at + 8; ++i) {
-        wchar_t c = path[i];
-        if (!iswxdigit(c)) return {};
-        out += static_cast<char>(towlower(c));
-    }
-    return out;
-}
-
-} // namespace
-
-std::string bluetooth_radio_to_lend()
-{
-    HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    std::string out;
-    try {
-        BluetoothAdapter adapter = BluetoothAdapter::GetDefaultAsync().get();
-        if (adapter && !adapter.IsPeripheralRoleSupported() && adapter.IsLowEnergySupported()) {
-            /* Its device path names the USB device it is:
-             * \\?\USB#VID_0A12&PID_0001#... */
-            std::wstring path(adapter.DeviceId().c_str());
-            for (auto& c : path) c = towupper(c);
-            if (path.find(L"USB#VID_") != std::wstring::npos) {
-                std::string vid = hex4_after(path, L"VID_"), pid = hex4_after(path, L"PID_");
-                if (!vid.empty() && !pid.empty()) out = vid + ":" + pid;
-            }
-        }
-    } catch (const winrt::hresult_error&) {
-        out.clear();
-    }
-    if (SUCCEEDED(com)) CoUninitialize();
-    return out;
-}
 
 struct BleWake::Impl {
     BluetoothLEAdvertisementPublisher publisher{ nullptr };
@@ -117,7 +71,11 @@ void BleWake::set_active(bool on)
                                                       const BluetoothLEAdvertisementPublisherStatusChangedEventArgs& e) {
             switch (e.Status()) {
             case BluetoothLEAdvertisementPublisherStatus::Started: impl->state = BleWakeState::On; break;
-            case BluetoothLEAdvertisementPublisherStatus::Aborted: impl->state = BleWakeState::Failed; break;
+            case BluetoothLEAdvertisementPublisherStatus::Aborted:
+                impl->state = e.Error() == winrt::Windows::Devices::Bluetooth::BluetoothError::RadioNotAvailable
+                                  ? BleWakeState::RadioOff
+                                  : BleWakeState::Failed;
+                break;
             default: break;
             }
         });

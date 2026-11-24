@@ -103,7 +103,6 @@ struct ShareView {
     bool setup_busy = false;
     std::string setup_error;
     bool running = false;          // a session is on
-    bool bt_lent = false;          // the session lends the Bluetooth radio to WSL for the wake-up (issue #107)
     ShareSession s;
     ULONGLONG left_at_ms = 0;      // when `s.left` was said, for the countdown
     std::vector<std::wstring> files;   // what's being sent
@@ -121,9 +120,6 @@ public:
     ShareManager& operator=(const ShareManager&) = delete;
 
     void set_notify_hwnd(HWND hwnd) { notify_hwnd_.store(hwnd); }
-    /* How Set up asks which Bluetooth radio to lend to WSL for the wake-up
-     * (ble_wake.h's bluetooth_radio_to_lend, which only the window links). */
-    void set_bluetooth_probe(std::string (*probe)()) { bt_probe_ = probe; }
     ShareView view() const;
 
     /* Looks again at what's set up: registry and files only, WSL isn't started. */
@@ -155,12 +151,10 @@ private:
 
     bool dry_run_ = false;
     std::atomic<HWND> notify_hwnd_{ nullptr };
-    std::string (*bt_probe_)() = nullptr;
 
     mutable std::mutex mu_;
     ShareView view_;
     std::vector<std::string> pending_;   // commands for the session that follows one that's ending
-    std::string bt_id_;                  // the Bluetooth radio this session may lend, "vid:pid", or ""
     bool armed_ = false;                 // the session has been used: it may end once idle
     bool quitting_ = false;              // the session was told to end
     bool restart_ = false;               // and another is to follow it

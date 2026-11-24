@@ -116,9 +116,6 @@ void share_send_to(Share *s, const char *key);
 void share_cancel_send(Share *s);
 /* Ends the link at once rather than after its minute of waiting for a next use. */
 void share_stop_link(Share *s);
-/* Whether a Bluetooth radio lent through LARES_BT is still away, or on its
- * way, so a process that ends can wait for it to go back. */
-gboolean share_bluetooth_lent(Share *s);
 
 /* Whether this PC has a Wi-Fi card at all, for the sidebar: a cheap check. */
 gboolean share_has_card(void);

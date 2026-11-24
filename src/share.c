@@ -55,9 +55,6 @@ struct Share {
 
     AirdropMdns *mdns;
     AirdropBle *ble;
-    GSubprocess *bt_proc;     /* LARES_BT lending or giving back the Bluetooth radio */
-    gboolean bt_want, bt_have;
-    gboolean bt_failed;       /* lending failed: not again until looking starts over */
     AirdropReceiver *receiver;
     guint receive_timer;
 
@@ -1083,69 +1080,16 @@ static void link_stop(Share *s)
     if (!s->link_kill) s->link_kill = g_timeout_add_seconds(LINK_STOP_GRACE, kill_link, s);
 }
 
-static void bt_next(Share *s);
-
-static void bt_done(GObject *src, GAsyncResult *res, gpointer data)
-{
-    Share *s = data;
-    GSubprocess *p = G_SUBPROCESS(src);
-    gboolean ok = g_subprocess_wait_check_finish(p, res, NULL);
-    gboolean lend = GPOINTER_TO_INT(g_object_get_data(src, "lend"));
-    if (lend && !ok) {
-        /* It may be halfway here: given back, and not asked for again
-         * until looking starts over. */
-        s->bt_failed = TRUE;
-        s->bt_have = TRUE;
-        s->bt_want = FALSE;
-    } else {
-        s->bt_have = lend;   /* a failed giving back leaves it to lares.exe's own detach */
-    }
-    share_log(s, "Bluetooth %s%s", lend ? "lent here" : "given back", ok ? "" : ": failed");
-    g_clear_object(&s->bt_proc);
-    bt_next(s);
-}
-
-/* One lending or giving back at a time, toward what's wanted now. */
-static void bt_next(Share *s)
-{
-    const char *helper = g_getenv("LARES_BT");
-    if (s->bt_proc || !helper || !*helper || s->bt_want == s->bt_have) return;
-    gboolean lend = s->bt_want;
-    const char *argv[] = { helper, lend ? "on" : "off", NULL };
-    GError *e = NULL;
-    s->bt_proc = g_subprocess_newv(argv, G_SUBPROCESS_FLAGS_STDOUT_SILENCE | G_SUBPROCESS_FLAGS_STDERR_SILENCE, &e);
-    if (!s->bt_proc) {
-        share_log(s, "Bluetooth can't be lent: %s", e->message);
-        g_error_free(e);
-        s->bt_want = s->bt_have;
-        return;
-    }
-    g_object_set_data(G_OBJECT(s->bt_proc), "lend", GINT_TO_POINTER(lend));
-    g_subprocess_wait_check_async(s->bt_proc, NULL, bt_done, s);
-}
-
 /* The Bluetooth advert wakes phones while devices are looked for, from
  * the moment files are being picked: it needs no link, and a phone takes
- * seconds to wake, which can pass while the link comes up. On Windows,
- * whose Bluetooth may not advertise, the kit's run.sh can name a helper
- * (LARES_BT) that lends the radio to WSL meanwhile; the advert waits for
- * the radio to arrive (issue #107). */
+ * seconds to wake, which can pass while the link comes up. */
 static void apply_ble(Share *s)
 {
     gboolean on = finding(s) && s->st.setup == SHARE_READY && !s->dry;
     if (on && !s->ble) s->ble = airdrop_ble_new();
-    if (on && !s->bt_failed) {
-        s->bt_want = TRUE;
-        bt_next(s);
-    }
     if (s->ble && airdrop_ble_is_active(s->ble) != on) {
         airdrop_ble_set_active(s->ble, on);
         share_log(s, "Bluetooth advert %s", on ? "on" : "off");
-    }
-    if (!on) {
-        s->bt_failed = FALSE;
-        s->bt_want = FALSE;
-        bt_next(s);
     }
 }
 
@@ -1491,9 +1435,4 @@ void share_stop_link(Share *s)
 {
     g_clear_handle_id(&s->linger, g_source_remove);
     if (s->st.link == LINK_UP || (s->st.link == LINK_STARTING && !s->cert_busy)) link_stop(s);
-}
-
-gboolean share_bluetooth_lent(Share *s)
-{
-    return s->bt_proc != NULL || s->bt_have;
 }
