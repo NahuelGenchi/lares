@@ -364,6 +364,46 @@ void test_session(bool accept)
     CHECK(h.wait([&] { return h.discovered; }, 20));
     CHECK(h.peer == "Test PC/Windows");
 
+    /* Contacts Only policy: unmatched /Discover returns 401 (no peer); matched record succeeds. */
+    const std::string allowed_hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    receiver->set_policy(true, { allowed_hash });
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.discovered = false;
+        h.peer.clear();
+    }
+    ad::discover(loop, there, receiver->port(), cancel, [&](std::optional<ad::Peer> p, const std::string& e) {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.discovered = true;
+        h.peer = p ? p->name + "/" + p->model : "none: " + e;
+        h.cv.notify_all();
+    });
+    CHECK(h.wait([&] { return h.discovered; }, 20));
+    CHECK(h.peer.rfind("none:", 0) == 0);
+
+    std::string xml_rec =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>"
+        "<key>ValidatedEmailHashes</key><array><string>" + allowed_hash + "</string></array>"
+        "</dict></plist>";
+    std::vector<uint8_t> rec_bytes(xml_rec.begin(), xml_rec.end());
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.discovered = false;
+        h.peer.clear();
+    }
+    ad::discover(
+        loop, there, receiver->port(), cancel,
+        [&](std::optional<ad::Peer> p, const std::string& e) {
+            std::lock_guard<std::mutex> lock(h.mu);
+            h.discovered = true;
+            h.peer = p ? p->name + "/" + p->model : "none: " + e;
+            h.cv.notify_all();
+        },
+        rec_bytes);
+    CHECK(h.wait([&] { return h.discovered; }, 20));
+    CHECK(h.peer == "Test PC/Windows");
+    receiver->set_policy(false, {});
+
     ad::SendRequest req;
     req.addr = there;
     req.port = receiver->port();

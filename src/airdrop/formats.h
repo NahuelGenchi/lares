@@ -36,6 +36,11 @@ gboolean airdrop_safe_name(const char *name);
 GVariant *bplist_decode(const guint8 *data, gsize len, GError **error);
 GBytes *bplist_encode(GVariant *value, GError **error);
 
+/* Extracts lowercase 64-char SHA-256 hex hashes from ValidatedEmailHashes and
+ * ValidatedPhoneHashes inside a SenderRecordData CMS SignedData envelope
+ * (or raw XML/binary validation plist). Caller unrefs the returned array. */
+GPtrArray *airdrop_extract_record_hashes(const guint8 *data, gsize len);
+
 /* ---- CPIO archives, UP-2 ----
  *
  * The writer emits odc (magic 070707); the reader accepts odc and newc

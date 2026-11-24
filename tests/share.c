@@ -61,6 +61,34 @@ static void test_uti(void)
     g_assert_cmpstr(airdrop_uti("Trip", TRUE), ==, "public.folder");
 }
 
+static void test_device_and_contacts(void)
+{
+    g_assert_cmpstr(share_model_label("iPhone17,1", "Susuin"), ==, "iPhone");
+    g_assert_cmpstr(share_model_label("MacBookAir10,1", "Alex"), ==, "MacBook Air");
+    g_assert_cmpstr(share_model_label("MacBookPro18,3", "Work"), ==, "MacBook Pro");
+    g_assert_cmpstr(share_model_label("iPad14,5", "Maya"), ==, "iPad");
+    g_assert_cmpint(share_device_kind("iPhone17,1", "Susuin"), ==, DEVICE_KIND_PHONE);
+    g_assert_cmpint(share_device_kind("MacBookAir10,1", "Alex"), ==, DEVICE_KIND_LAPTOP);
+    g_assert_cmpint(share_device_kind("iPad14,5", "Maya"), ==, DEVICE_KIND_TABLET);
+
+    char *init = share_initials("Susuin");
+    g_assert_cmpstr(init, ==, "S");
+    g_free(init);
+    init = share_initials("Alex Rivera");
+    g_assert_cmpstr(init, ==, "AR");
+    g_free(init);
+
+    char *eh = share_hash_email("  Alice@Example.COM ");
+    char *want_eh = g_compute_checksum_for_string(G_CHECKSUM_SHA256, "alice@example.com", -1);
+    g_assert_cmpstr(eh, ==, want_eh);
+    g_free(want_eh);
+    g_free(eh);
+
+    GPtrArray *ph = share_hash_phone_variants("+1 (555) 123-4567");
+    g_assert_cmpuint(ph->len, ==, 2);
+    g_ptr_array_unref(ph);
+}
+
 /* ------------------------------------------------------------- loopback */
 
 typedef struct {
@@ -220,6 +248,18 @@ static void test_loopback(void)
     g_assert_cmpstr(f.peer->name, ==, "Test PC");
     g_assert_cmpstr(f.peer->model, ==, "Linux");
 
+    /* Contacts Only policy rejects unauthenticated /Discover (StatusCode 401). */
+    const char *allowed[] = { "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", NULL };
+    airdrop_receiver_set_policy(f.r, TRUE, allowed);
+    AirdropPeer *prev_peer = f.peer;
+    f.peer = NULL;
+    airdrop_discover_async("::1", port, NULL, discovered, &f);
+    run(&f);
+    g_assert_null(f.peer);
+    g_clear_error(&f.error);
+    airdrop_receiver_set_policy(f.r, FALSE, NULL);
+    f.peer = prev_peer;
+
     /* A file, in DVZip (flags unknown, UP-1b). */
     const char *text = "Hello from the loopback.\n";
     char *a = write_file(outbox, "Café ☕.txt", text);
@@ -327,6 +367,7 @@ int main(int argc, char **argv)
     g_test_add_func("/share/parse-event", test_parse_event);
     g_test_add_func("/share/link-local", test_link_local);
     g_test_add_func("/share/uti", test_uti);
+    g_test_add_func("/share/device-and-contacts", test_device_and_contacts);
     g_test_add_func("/share/loopback", test_loopback);
     int status = g_test_run();
     remove_all(tmp_root);

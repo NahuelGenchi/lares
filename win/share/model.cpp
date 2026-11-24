@@ -136,6 +136,9 @@ struct Share::Impl {
     std::shared_ptr<tls::Identity> cert;
     std::unique_ptr<airdrop::MdnsIo> mdns;
     std::unique_ptr<airdrop::Receiver> receiver;
+    std::set<std::string> contact_hashes;
+    DiscoverMode prev_mode = DiscoverMode::Off;
+    std::wstring thumb_file;
     unsigned receive_timer = 0, retry = 0, quiet_timer = 0, linger = 0;
 
     std::map<std::string, Candidate> candidates;
@@ -155,7 +158,38 @@ struct Share::Impl {
     {
         if (s.fn_) s.fn_();
     }
-    bool finding() { return st().sending || s.looking_; }
+    bool finding() { return st().browsing || st().sending || s.looking_; }
+
+    void clear_thumb()
+    {
+        if (!thumb_file.empty()) {
+            DeleteFileW(thumb_file.c_str());
+            thumb_file.clear();
+        }
+    }
+
+    std::string write_thumb(unsigned id, const std::vector<uint8_t>& bytes)
+    {
+        clear_thumb();
+        if (bytes.empty()) return {};
+        wchar_t tmp[MAX_PATH];
+        DWORD n = GetTempPathW(MAX_PATH, tmp);
+        if (!n || n >= MAX_PATH - 48) return {};
+        wchar_t leaf[48];
+        swprintf(leaf, 48, L"lares-airdrop-thumb-%lu-%u.img", static_cast<unsigned long>(GetCurrentProcessId()), id);
+        std::wstring path = std::wstring(tmp) + leaf;
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return {};
+        DWORD wrote = 0;
+        BOOL ok = WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
+        CloseHandle(f);
+        if (!ok || wrote != bytes.size()) {
+            DeleteFileW(path.c_str());
+            return {};
+        }
+        thumb_file = path;
+        return utf8(path);
+    }
 
     // ------------------------------------------------------------ the log
 
@@ -354,6 +388,9 @@ struct Share::Impl {
             auto in = std::make_unique<Incoming>();
             in->id = o.id;
             in->sender = o.sender;
+            in->sender_model = o.sender_model;
+            in->matched_hash = o.matched_hash;
+            in->thumb_path = write_thumb(o.id, o.file_icon);
             in->links = o.links;
             in->names = o.names;
             in->total = o.total;
@@ -363,6 +400,7 @@ struct Share::Impl {
         cb.withdrawn = [this](unsigned id) {
             Incoming* in = incoming_for(id);
             if (!in || in->state != IncomingState::Asking) return;
+            clear_thumb();
             st().incoming.reset();
             changed();
             update_link();
@@ -426,7 +464,10 @@ struct Share::Impl {
                 receiver = airdrop::Receiver::start(loop(), a, st().name, download_folder(), cert, receiver_callbacks(), err);
             else
                 err = "Bad address " + address;
-            if (!receiver) st().link_error = err;
+            if (receiver) receiver->set_policy(st().mode == DiscoverMode::ContactsOnly, contact_hashes);
+            else st().link_error = err;
+        } else if (receiver && (st().receiving || incoming_on)) {
+            receiver->set_policy(st().mode == DiscoverMode::ContactsOnly, contact_hashes);
         } else if (!st().receiving && !incoming_on && receiver) {
             receiver.reset();
         }
@@ -617,7 +658,9 @@ struct Share::Impl {
         if (failed) {
             if (st().link_error.empty()) st().link_error = why.empty() ? "The AirDrop link stopped." : why;
             /* Nothing can work without the link: turn receiving off. */
+            st().mode = DiscoverMode::Off;
             st().receiving = false;
+            st().browsing = false;
             loop().cancel(receive_timer);
         }
         changed();
@@ -698,6 +741,7 @@ Share::Share(Loop& loop) : loop_(loop), d_(std::make_unique<Impl>(*this))
 
 Share::~Share()
 {
+    d_->clear_thumb();
     d_->parts_stop();
     if (d_->link) d_->link_end(false, {});
     if (d_->stopper.joinable()) d_->stopper.join();
@@ -712,19 +756,54 @@ void Share::refresh()
     d_->changed();
 }
 
-void Share::set_receiving(bool on)
+void Share::set_mode(DiscoverMode mode)
 {
-    if (on && st_.setup != Setup::Ready) return;
-    st_.receiving = on;
+    if (mode != DiscoverMode::Off && st_.setup != Setup::Ready) return;
+    if (mode == DiscoverMode::Everyone && st_.mode != DiscoverMode::Everyone) d_->prev_mode = st_.mode;
+    st_.mode = mode;
+    st_.receiving = mode != DiscoverMode::Off;
     loop_.cancel(d_->receive_timer);
-    if (on) {
-        d_->log_session("receiving on");
+    if (mode == DiscoverMode::Everyone) {
+        d_->log_session("discoverable: everyone for 10 minutes");
         st_.receive_until = Loop::Clock::now() + std::chrono::seconds(kReceiveSeconds);
         d_->receive_timer = loop_.after(kReceiveSeconds * 1000, [this] {
             d_->receive_timer = 0;
-            set_receiving(false);
+            set_mode(d_->prev_mode);
         });
         if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    } else if (mode == DiscoverMode::ContactsOnly) {
+        d_->log_session("discoverable: contacts only");
+        st_.receive_until = {};
+        if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    } else {
+        st_.receive_until = {};
+    }
+    if (d_->receiver) d_->receiver->set_policy(mode == DiscoverMode::ContactsOnly, d_->contact_hashes);
+    d_->changed();
+    d_->update_link();
+}
+
+void Share::set_receiving(bool on)
+{
+    set_mode(on ? DiscoverMode::Everyone : DiscoverMode::Off);
+}
+
+void Share::set_contact_hashes(std::set<std::string> hashes)
+{
+    d_->contact_hashes = std::move(hashes);
+    if (d_->receiver) d_->receiver->set_policy(st_.mode == DiscoverMode::ContactsOnly, d_->contact_hashes);
+}
+
+void Share::set_browsing(bool on)
+{
+    if (on == st_.browsing || (on && st_.setup != Setup::Ready)) return;
+    st_.browsing = on;
+    if (on) {
+        d_->log_session("browsing nearby devices");
+        if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    } else if (!st_.sending && !looking_) {
+        st_.devices.clear();
+        d_->candidates.clear();
     }
     d_->changed();
     d_->update_link();
@@ -735,8 +814,12 @@ void Share::answer(bool accept)
     Incoming* in = st_.incoming.get();
     if (!in || in->state != IncomingState::Asking) return;
     if (d_->receiver) d_->receiver->answer(in->id, accept);
-    if (accept) in->state = IncomingState::Receiving;
-    else st_.incoming.reset();
+    if (accept) {
+        in->state = IncomingState::Receiving;
+    } else {
+        d_->clear_thumb();
+        st_.incoming.reset();
+    }
     d_->changed();
     d_->update_link();
 }
@@ -745,6 +828,7 @@ void Share::dismiss_incoming()
 {
     Incoming* in = st_.incoming.get();
     if (!in || in->state == IncomingState::Asking || in->state == IncomingState::Receiving) return;
+    d_->clear_thumb();
     st_.incoming.reset();
     d_->changed();
 }
@@ -756,7 +840,7 @@ void Share::set_looking(bool on)
     if (on) {
         d_->log_session("looking while files are picked");
         if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
-    } else if (!st_.sending) {
+    } else if (!st_.sending && !st_.browsing) {
         st_.devices.clear();
         d_->candidates.clear();
     }
@@ -770,8 +854,8 @@ void Share::set_sending(const std::vector<std::wstring>& paths)
     if (on && st_.setup != Setup::Ready) return;
     if (!on) cancel_send();
     st_.paths = paths;
-    /* What was found while the files were picked stays. */
-    bool keep = on && looking_;
+    /* What was found while browsing or picking stays. */
+    bool keep = (on && (looking_ || st_.browsing)) || st_.browsing;
     looking_ = false;
     st_.sending = on;
     if (on) d_->log_session(keep ? "files picked" : "sending");
@@ -780,6 +864,39 @@ void Share::set_sending(const std::vector<std::wstring>& paths)
         d_->candidates.clear();
     }
     if (on && st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    d_->changed();
+    d_->update_link();
+}
+
+void Share::send_files_to(const std::string& key, const std::vector<std::wstring>& paths)
+{
+    if (paths.empty() || st_.setup != Setup::Ready) return;
+    if (!d_->device_find(key)) return;
+    if (!d_->send_key.empty()) cancel_send();
+    st_.paths = paths;
+    looking_ = false;
+    st_.sending = true;
+    d_->log_session("sending to device");
+    if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    d_->update_link();
+    send_to(key);
+}
+
+void Share::dismiss_device(const std::string& key)
+{
+    Device* d = d_->device_find(key);
+    if (!d || d->state == DeviceState::Asking || d->state == DeviceState::Sending) return;
+    d->state = DeviceState::Found;
+    d->sent = d->total = 0;
+    d->message.clear();
+    bool any_busy = false;
+    for (const Device& dev : st_.devices) {
+        if (dev.state != DeviceState::Found) any_busy = true;
+    }
+    if (!any_busy) {
+        st_.sending = false;
+        st_.paths.clear();
+    }
     d_->changed();
     d_->update_link();
 }

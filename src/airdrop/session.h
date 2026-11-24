@@ -26,8 +26,11 @@ const char *airdrop_uti(const char *name, gboolean is_directory);
 typedef struct {
     guint id;                /* for airdrop_receiver_answer */
     char *sender;            /* the sender's name: untrusted, escape it for display (SEC-4) */
+    char *sender_model;      /* SenderModelName, e.g. "iPhone17,1" */
+    char *matched_hash;      /* matched contact SHA-256 hash when SenderRecordData matched */
     gboolean links;          /* a link share: `names` holds URLs, never opened unasked */
     GPtrArray *names;        /* the file names, or the URLs */
+    GBytes *file_icon;       /* FileIcon preview bytes from /Ask, bounded */
     guint64 total;           /* the files' sizes as the sender gives them, 0 when unknown */
 } AirdropOffer;
 
@@ -53,6 +56,8 @@ AirdropReceiver *airdrop_receiver_new(const char *address, const char *name, con
                                       gpointer user, GError **error);
 guint16 airdrop_receiver_port(AirdropReceiver *r);
 void airdrop_receiver_answer(AirdropReceiver *r, guint id, gboolean accept);
+/* Updates Contacts Only filtering and allowed contact SHA-256 hex hashes (ID-3). */
+void airdrop_receiver_set_policy(AirdropReceiver *r, gboolean contacts_only, const char *const *contact_hashes);
 /* Stops listening and cuts open connections; no callback runs after it. */
 void airdrop_receiver_free(AirdropReceiver *r);
 

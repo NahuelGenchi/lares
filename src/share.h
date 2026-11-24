@@ -28,6 +28,31 @@ typedef enum {
 } ShareLink;
 
 typedef enum {
+    SHARE_DISCOVER_OFF,
+    SHARE_DISCOVER_CONTACTS,
+    SHARE_DISCOVER_EVERYONE,
+} ShareDiscoverMode;
+
+typedef enum {
+    DEVICE_KIND_PHONE,
+    DEVICE_KIND_TABLET,
+    DEVICE_KIND_LAPTOP,
+    DEVICE_KIND_DESKTOP,
+    DEVICE_KIND_WATCH,
+    DEVICE_KIND_OTHER,
+} ShareDeviceKind;
+
+typedef struct {
+    char *name;
+    char *device;
+    char *email;
+    char *phone;
+    char *photo;
+} ShareContact;
+
+void share_contact_free(ShareContact *c);
+
+typedef enum {
     DEVICE_FOUND,         /* answered /Discover: can be sent to */
     DEVICE_ASKING,        /* waiting for its user to accept */
     DEVICE_SENDING,
@@ -58,9 +83,12 @@ typedef struct {
     guint id;
     IncomingState state;
     char *sender;
+    char *sender_model;
+    char *matched_hash;
     gboolean links;
     GPtrArray *names;     /* file names, or URLs */
     GPtrArray *saved;     /* saved paths, once done */
+    GBytes *file_icon;    /* FileIcon preview bytes from /Ask */
     guint64 done, total;
     char *message;
 } ShareIncoming;
@@ -79,13 +107,17 @@ typedef struct {
     gboolean quiet;       /* the link has been up a while and has heard no Apple device */
     char *name;           /* how others see this PC */
 
-    gboolean receiving;
+    ShareDiscoverMode mode;
+    gboolean receiving;   /* mode != SHARE_DISCOVER_OFF */
     gint64 receive_until; /* monotonic µs */
+    gint64 xfer_start_us; /* monotonic µs when current transfer started */
     ShareIncoming *incoming;
 
+    gboolean browsing;    /* continuously finding nearby devices while Share is visible */
     gboolean sending;     /* looking for devices to send `paths` to */
     GStrv paths;
-    GPtrArray *devices;   /* ShareDevice*, found while sending */
+    GPtrArray *devices;   /* ShareDevice*, found while browsing or sending */
+    GPtrArray *contacts;  /* ShareContact*, saved locally for Contacts Only & photos */
 } ShareState;
 
 typedef struct Share Share;
@@ -101,7 +133,9 @@ void share_refresh(Share *s);
 /* Installs lares-awdl with its two capabilities; asks for the password. */
 void share_allow(Share *s);
 
+void share_set_discover_mode(Share *s, ShareDiscoverMode mode);
 void share_set_receiving(Share *s, gboolean on);
+void share_set_browsing(Share *s, gboolean on);
 void share_answer(Share *s, gboolean accept);
 void share_dismiss_incoming(Share *s);
 
@@ -113,9 +147,22 @@ void share_set_looking(Share *s, gboolean on);
  * they were picked; NULL stops. */
 void share_set_sending(Share *s, const char *const *paths);
 void share_send_to(Share *s, const char *key);
+void share_send_files_to(Share *s, const char *key, const char *const *paths);
+void share_dismiss_device(Share *s, const char *key);
 void share_cancel_send(Share *s);
+/* Saves contacts & profile photos and refreshes Contacts Only hashes live. */
+void share_save_contacts(Share *s, GPtrArray *contacts);
+void share_set_device_photo(Share *s, const char *device_name, const char *photo_path);
 /* Ends the link at once rather than after its minute of waiting for a next use. */
 void share_stop_link(Share *s);
+
+/* Friendly device subtitle, icon kind, monogram initials, and contact matching. */
+ShareDeviceKind share_device_kind(const char *model, const char *name);
+const char *share_model_label(const char *model, const char *name);
+char *share_initials(const char *name);
+char *share_hash_email(const char *email);
+GPtrArray *share_hash_phone_variants(const char *phone);
+const ShareContact *share_find_contact(const ShareState *st, const char *name, const char *matched_hash);
 
 /* Whether this PC has a Wi-Fi card at all, for the sidebar: a cheap check. */
 gboolean share_has_card(void);

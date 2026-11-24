@@ -125,7 +125,7 @@ static char *lookup_str(GVariant *dict, const char *key)
 static GBytes *response_bytes(guint status, GBytes *body, gboolean close)
 {
     const char *reason = status == 100 ? "Continue" : status == 200 ? "OK" : status == 400 ? "Bad Request"
-                       : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
+                       : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
                        : status == 413 ? "Content Too Large" : "Internal Server Error";
     gsize len = body ? g_bytes_get_size(body) : 0;
     GString *s = g_string_new(NULL);
@@ -192,6 +192,8 @@ struct AirdropReceiver {
     GMutex lock;
     GCond cond;
     GHashTable *answers;   /* id -> GINT: 0 waiting, 1 accept, 2 decline */
+    gboolean contacts_only;
+    GHashTable *contact_hashes; /* lowercase 64-char SHA-256 hex -> self */
     guint next_id;
     gboolean closed;       /* main thread only */
 };
@@ -209,6 +211,7 @@ static void receiver_unref(AirdropReceiver *r)
     g_clear_object(&r->cert);
     g_clear_object(&r->cancel);
     g_hash_table_unref(r->answers);
+    if (r->contact_hashes) g_hash_table_unref(r->contact_hashes);
     g_mutex_clear(&r->lock);
     g_cond_clear(&r->cond);
     g_main_context_unref(r->ctx);
@@ -232,7 +235,10 @@ static void note_free(gpointer data)
 {
     Note *n = data;
     g_free(n->offer.sender);
+    g_free(n->offer.sender_model);
+    g_free(n->offer.matched_hash);
     if (n->offer.names) g_ptr_array_unref(n->offer.names);
+    if (n->offer.file_icon) g_bytes_unref(n->offer.file_icon);
     g_free(n->message);
     receiver_unref(n->r);
     g_free(n);
@@ -729,22 +735,62 @@ static GVariant *decode_body(Conn *c)
     return v;
 }
 
+/* Matches SenderRecordData against saved contact hashes (ID-3). Never logs hashes (SEC-5). */
+static char *match_sender_record(Conn *c, GVariant *req, gboolean *contacts_only_out)
+{
+    AirdropReceiver *r = c->r;
+    char *matched = NULL;
+    g_mutex_lock(&r->lock);
+    *contacts_only_out = r->contacts_only;
+    gboolean have = r->contact_hashes && g_hash_table_size(r->contact_hashes) > 0;
+    g_mutex_unlock(&r->lock);
+    if (!have) return NULL;
+    GVariant *rec = lookup(req, "SenderRecordData", G_VARIANT_TYPE_BYTESTRING);
+    if (!rec) return NULL;
+    gsize len = 0;
+    const guint8 *data = g_variant_get_fixed_array(rec, &len, 1);
+    GPtrArray *hashes = airdrop_extract_record_hashes(data, len);
+    g_variant_unref(rec);
+    g_mutex_lock(&r->lock);
+    for (guint i = 0; i < hashes->len && !matched; i++) {
+        const char *h = hashes->pdata[i];
+        if (r->contact_hashes && g_hash_table_contains(r->contact_hashes, h)) matched = g_strdup(h);
+    }
+    g_mutex_unlock(&r->lock);
+    g_ptr_array_unref(hashes);
+    return matched;
+}
+
 static void on_discover(Conn *c)
 {
     /* HTTP-7: once per connection, and only first. */
     if (c->slot_discover || c->accepted || c->slot_upload) return fail(c, 400);
     GVariant *request = decode_body(c);
     if (!request) return fail(c, 400);
-    g_variant_unref(request);
     c->slot_discover = TRUE;
-    /* Everyone mode: every sender may see this receiver (ID-4). */
+    gboolean contacts_only = FALSE;
+    char *matched = match_sender_record(c, request, &contacts_only);
+    g_variant_unref(request);
+    if (contacts_only && !matched) {
+        /* DISC-2 / ID-3: Contacts Only with no match answers 401 and no name. */
+        GVariantBuilder b;
+        g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
+        g_variant_builder_add(&b, "{sv}", "StatusCode", g_variant_new_int64(401));
+        GBytes *body = encode(g_variant_builder_end(&b));
+        if (body) send_response(c, 200, body, FALSE);
+        else fail(c, 500);
+        if (body) g_bytes_unref(body);
+        return;
+    }
+    /* Everyone (100) or matched Contact (200) (ID-3, ID-4). */
     static const char CAPS[] = "{\"Version\":1}"; /* DISC-3: JPEG rather than HEIC */
     GVariantBuilder b;
     g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
-    g_variant_builder_add(&b, "{sv}", "StatusCode", g_variant_new_int64(100));
+    g_variant_builder_add(&b, "{sv}", "StatusCode", g_variant_new_int64(matched ? 200 : 100));
     g_variant_builder_add(&b, "{sv}", "ReceiverComputerName", v_str(c->r->name));
     g_variant_builder_add(&b, "{sv}", "ReceiverModelName", v_str(MODEL));
     g_variant_builder_add(&b, "{sv}", "ReceiverMediaCapabilities", v_data(CAPS, sizeof CAPS - 1));
+    g_free(matched);
     GBytes *body = encode(g_variant_builder_end(&b));
     if (body) send_response(c, 200, body, FALSE);
     else fail(c, 500);
@@ -869,9 +915,31 @@ static void on_ask(Conn *c)
     if (files) g_variant_unref(files);
     if (items) g_variant_unref(items);
     char *sender = lookup_str(req, "SenderComputerName");
+    char *sender_model = lookup_str(req, "SenderModelName");
+    gboolean contacts_only = FALSE;
+    char *matched_hash = match_sender_record(c, req, &contacts_only);
+    GBytes *file_icon = NULL;
+    GVariant *icon = lookup(req, "FileIcon", G_VARIANT_TYPE_BYTESTRING);
+    if (icon) {
+        gsize ilen = 0;
+        const guint8 *idata = g_variant_get_fixed_array(icon, &ilen, 1);
+        if (ilen > 0 && ilen <= 512 * 1024) file_icon = g_bytes_new(idata, ilen);
+        g_variant_unref(icon);
+    }
     g_variant_unref(req);
+    if (contacts_only && !matched_hash) {
+        g_free(sender);
+        g_free(sender_model);
+        if (file_icon) g_bytes_unref(file_icon);
+        n->r = receiver_ref(c->r);
+        note_free(n);
+        return fail(c, 401);
+    }
     if (bad) {
         g_free(sender);
+        g_free(sender_model);
+        g_free(matched_hash);
+        if (file_icon) g_bytes_unref(file_icon);
         n->r = receiver_ref(c->r);
         note_free(n);
         return fail(c, 400);
@@ -884,6 +952,9 @@ static void on_ask(Conn *c)
     g_mutex_unlock(&r->lock);
     n->offer.id = c->id;
     n->offer.sender = sender ? sender : g_strdup("Someone");
+    n->offer.sender_model = sender_model;
+    n->offer.matched_hash = matched_hash;
+    n->offer.file_icon = file_icon;
     n->offer.links = c->links;
     n->offer.total = c->total;
     /* The note is the main thread's once sent: keep what's needed after. */
@@ -1137,6 +1208,7 @@ AirdropReceiver *airdrop_receiver_new(const char *address, const char *name, con
     r->ctx = g_main_context_ref_thread_default();
     r->cancel = g_cancellable_new();
     r->answers = g_hash_table_new(NULL, NULL);
+    r->contact_hashes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     g_mutex_init(&r->lock);
     g_cond_init(&r->cond);
     /* A few connections at once: a sender's /Discover connection can stay
@@ -1176,6 +1248,19 @@ void airdrop_receiver_answer(AirdropReceiver *r, guint id, gboolean accept)
     if (g_hash_table_contains(r->answers, GUINT_TO_POINTER(id)))
         g_hash_table_insert(r->answers, GUINT_TO_POINTER(id), GINT_TO_POINTER(accept ? 1 : 2));
     g_cond_broadcast(&r->cond);
+    g_mutex_unlock(&r->lock);
+}
+
+void airdrop_receiver_set_policy(AirdropReceiver *r, gboolean contacts_only, const char *const *contact_hashes)
+{
+    g_mutex_lock(&r->lock);
+    r->contacts_only = !!contacts_only;
+    g_hash_table_remove_all(r->contact_hashes);
+    if (contact_hashes) {
+        for (const char *const *h = contact_hashes; *h; h++) {
+            if (strlen(*h) == 64) g_hash_table_add(r->contact_hashes, g_ascii_strdown(*h, 64));
+        }
+    }
     g_mutex_unlock(&r->lock);
 }
 

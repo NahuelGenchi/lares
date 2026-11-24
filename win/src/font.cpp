@@ -22,6 +22,11 @@ FontManager::~FontManager()
 void FontManager::shutdown()
 {
     safe_release(typography_);
+    safe_release(fmt_ui_title_);
+    safe_release(fmt_ui_initials_);
+    safe_release(fmt_ui_sub_);
+    safe_release(fmt_ui_semibold_);
+    safe_release(fmt_ui_body_);
     safe_release(fmt_small_);
     safe_release(fmt_title_);
     safe_release(fmt_big_);
@@ -107,6 +112,32 @@ bool FontManager::init(HINSTANCE hinst)
     if (!make_fmt(27.0f, &fmt_big_)) return false;
     if (!make_fmt(36.0f, &fmt_title_)) return false;
     if (!make_fmt(18.0f, &fmt_small_)) return false;
+
+    auto make_ui_fmt = [&](float px, DWRITE_FONT_WEIGHT weight, IDWriteTextFormat** out) -> bool {
+        HRESULT r = factory_->CreateTextFormat(
+            L"Segoe UI Variable Text",
+            nullptr,
+            weight,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            px,
+            L"en-US",
+            out);
+        if (FAILED(r) || !*out) {
+            r = factory_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                                           DWRITE_FONT_STRETCH_NORMAL, px, L"en-US", out);
+        }
+        if (SUCCEEDED(r) && *out) {
+            (*out)->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            return true;
+        }
+        return false;
+    };
+    if (!make_ui_fmt(14.0f, DWRITE_FONT_WEIGHT_REGULAR, &fmt_ui_body_)) return false;
+    if (!make_ui_fmt(13.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, &fmt_ui_semibold_)) return false;
+    if (!make_ui_fmt(12.0f, DWRITE_FONT_WEIGHT_REGULAR, &fmt_ui_sub_)) return false;
+    if (!make_ui_fmt(24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, &fmt_ui_initials_)) return false;
+    if (!make_ui_fmt(18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, &fmt_ui_title_)) return false;
 
     if (SUCCEEDED(factory_->CreateTypography(&typography_)) && typography_) {
         DWRITE_FONT_FEATURE f_liga = { DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES, 0 };

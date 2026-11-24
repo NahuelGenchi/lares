@@ -22,6 +22,12 @@ public:
     IDWriteTextFormat* big() const { return fmt_big_; }       // 27 px
     IDWriteTextFormat* title() const { return fmt_title_; }   // 36 px
     IDWriteTextFormat* caption() const { return fmt_small_; } // 18 px too: muted text differs by colour only
+    /* Clean system sans-serif formats for the macOS-style AirDrop stage. */
+    IDWriteTextFormat* ui_body() const { return fmt_ui_body_; }         // 14 px Regular
+    IDWriteTextFormat* ui_semibold() const { return fmt_ui_semibold_; } // 13.5 px SemiBold
+    IDWriteTextFormat* ui_sub() const { return fmt_ui_sub_; }           // 12 px Regular
+    IDWriteTextFormat* ui_initials() const { return fmt_ui_initials_; } // 24 px SemiBold
+    IDWriteTextFormat* ui_title() const { return fmt_ui_title_; }       // 18 px SemiBold
     IDWriteTypography* no_ligatures() const { return typography_; }
     bool using_monocraft() const { return using_monocraft_; }
 
@@ -33,6 +39,11 @@ private:
     IDWriteTextFormat* fmt_big_ = nullptr;
     IDWriteTextFormat* fmt_title_ = nullptr;
     IDWriteTextFormat* fmt_small_ = nullptr;
+    IDWriteTextFormat* fmt_ui_body_ = nullptr;
+    IDWriteTextFormat* fmt_ui_semibold_ = nullptr;
+    IDWriteTextFormat* fmt_ui_sub_ = nullptr;
+    IDWriteTextFormat* fmt_ui_initials_ = nullptr;
+    IDWriteTextFormat* fmt_ui_title_ = nullptr;
     IDWriteTypography* typography_ = nullptr;
     bool loader_registered_ = false;
     bool using_monocraft_ = false;

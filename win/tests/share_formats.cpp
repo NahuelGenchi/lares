@@ -2816,6 +2816,79 @@ void test_engine_close()
     CHECK(seen.lost.empty());
 }
 
+Bytes wrap_der(uint8_t tag, const Bytes& content)
+{
+    Bytes out;
+    out.push_back(tag);
+    if (content.size() < 128) {
+        out.push_back(static_cast<uint8_t>(content.size()));
+    } else if (content.size() < 256) {
+        out.push_back(0x81);
+        out.push_back(static_cast<uint8_t>(content.size()));
+    } else {
+        out.push_back(0x82);
+        out.push_back(static_cast<uint8_t>((content.size() >> 8) & 0xff));
+        out.push_back(static_cast<uint8_t>(content.size() & 0xff));
+    }
+    out.insert(out.end(), content.begin(), content.end());
+    return out;
+}
+
+void test_record_hashes()
+{
+    const std::string h1 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const std::string h2 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    /* 1. XML plist inside a minimal DER CMS SignedData envelope. */
+    std::string xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<plist version=\"1.0\"><dict>"
+        "<key>ValidatedEmailHashes</key><array><string>" + h1 + "</string><string>not-a-hash</string></array>"
+        "<key>ValidatedPhoneHashes</key><array><string>" + h2 + "</string></array>"
+        "</dict></plist>";
+    Bytes oct = wrap_der(0x04, Bytes(xml.begin(), xml.end()));
+    Bytes ctx0 = wrap_der(0xA0, oct);
+    /* OID 1.2.840.113549.1.7.1 (id-data) */
+    Bytes oid_data = { 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01 };
+    Bytes encap = oid_data;
+    encap.insert(encap.end(), ctx0.begin(), ctx0.end());
+    encap = wrap_der(0x30, encap);
+    Bytes signed_body = { 0x02, 0x01, 0x01, 0x31, 0x00 }; /* version=1, digestAlgs={} */
+    signed_body.insert(signed_body.end(), encap.begin(), encap.end());
+    signed_body.push_back(0x31);
+    signed_body.push_back(0x00); /* signerInfos={} */
+    Bytes signed_seq = wrap_der(0x30, signed_body);
+    Bytes oid_sd = { 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
+    Bytes ci_body = oid_sd;
+    Bytes sd_ctx = wrap_der(0xA0, signed_seq);
+    ci_body.insert(ci_body.end(), sd_ctx.begin(), sd_ctx.end());
+    Bytes cms = wrap_der(0x30, ci_body);
+
+    std::vector<std::string> got;
+    CHECK(airdrop_extract_record_hashes(cms.data(), cms.size(), got));
+    CHECK(got.size() == 2);
+    CHECK(std::find(got.begin(), got.end(), h1) != got.end());
+    CHECK(std::find(got.begin(), got.end(), h2) != got.end());
+
+    /* 2. Binary plist payload. */
+    Value root = Value::dict();
+    Value emails = Value::array();
+    emails.push(Value::string(h1));
+    root.add("ValidatedEmailHashes", std::move(emails));
+    Error err;
+    Bytes bp;
+    CHECK(bplist_encode(root, bp, &err));
+    got.clear();
+    CHECK(airdrop_extract_record_hashes(bp.data(), bp.size(), got));
+    CHECK(got.size() == 1 && got[0] == h1);
+
+    /* 3. Empty and garbage inputs rejected cleanly. */
+    got.clear();
+    CHECK(!airdrop_extract_record_hashes(nullptr, 0, got));
+    const uint8_t junk[] = { 0x01, 0x02, 0x03, 0x04 };
+    CHECK(!airdrop_extract_record_hashes(junk, sizeof(junk), got));
+}
+
 } // namespace
 
 void run_format_tests()
@@ -2827,6 +2900,7 @@ void run_format_tests()
     test_plist_vectors();
     test_plist_malformed();
     test_plist_limits();
+    test_record_hashes();
     test_cpio_vectors();
     test_cpio_after_trailer();
     test_cpio_refused();

@@ -15,7 +15,7 @@ AirDrop is a trademark of Apple Inc. Lares is not affiliated with Apple. Nothing
 | Send to an Apple device set to *Contacts Only* | blocked | Needs an identity Apple issues to signed-in Apple devices (an Apple-signed certificate and validation record). Only extraction from the owner's own Mac gives one, which is not a path for a shipped app. Google's Quick Share has the same limit |
 | Show as a contact on the iPhone | blocked | Same identity |
 | NameDrop, AirDrop codes, finishing over the internet | blocked | Need an Apple account; codes are new in iOS 26.2 and undocumented |
-| Accept only known senders | planned, later | A receiver can still filter senders by the record they send, without an identity of its own |
+| Accept only known senders | implemented (unit and loopback tested; live iPhone check pending) | Receiver checks `SenderRecordData` (`ValidatedEmailHashes` / `ValidatedPhoneHashes` inside the CMS `SignedData` plist) against SHA-256 hashes of locally saved contacts, returning `StatusCode 401` on `/Discover` and HTTP `401` on `/Ask` for unmatched senders |
 
 So the iPhone's owner sets AirDrop to *Everyone for 10 minutes* before sending to Lares or receiving from it. That is the same step Google's Pixel phones ask for. Receiving from the iPhone needs nothing extra on the iPhone beyond that setting.
 
@@ -86,11 +86,13 @@ The mDNS host name is `lares-` and the session's service ID, never the machine's
 
 ### In the window
 
-A **Share** section, shown when a card that can run AWDL is present:
+A **Share** section, shown when a card that can run AWDL is present, mirrors macOS Finder's AirDrop view (issue #111):
 
-- *Receive* turns receiving on for 10 minutes, as the iPhone does, with a countdown. An incoming transfer shows the sender's name and the files, with **Accept** and **Decline**; files go to `~/Downloads`, never overwriting.
-- *Send* lists nearby Apple devices in Everyone mode. Pick files (or drop them on the section) and a device; a progress bar follows the upload.
-- A short note tells the user to set the iPhone to *Everyone for 10 minutes*, and the section says which card it uses and how fast it can be on it.
+- Concentric radar rings radiate from the AirDrop emblem, displaying all nearby discovered Apple devices live while the section is open (auto-browsing when the Wi-Fi card is dedicated; on Linux, a single card carrying the user's Wi-Fi waits for an explicit scan or discovery mode change).
+- Each nearby device shows its display name, device model subtitle (such as *iPhone*, *MacBook Air* or *iPad*), circular profile photo or monogram/device avatar, and a circular progress arc while transferring. Clicking a device opens the file picker, dragging and dropping files onto a device circle sends directly, and right-clicking sets a custom profile photo.
+- An inline **Allow me to be discovered by:** selector switches between **Receiving Off**, **Contacts Only** (matching incoming `SenderRecordData` hashes against local saved contacts in `~/.config/lares/airdrop-contacts.ini`), and **Everyone for 10 Minutes** (with live countdown and automatic revert).
+- Active incoming and outgoing transfers appear in a floating speech-bubble popover anchored over the transferring device with preview thumbnail (`FileIcon` or local image), progress bar, bytes and ETA, cancel button, and Accept / Decline / Show in Folder / Open Link / OK / Send Again actions.
+- Top-right **Contacts** and **Adapter** controls open local contact/avatar management and Wi-Fi card details without cluttering the radar canvas.
 
 ### Lightness
 

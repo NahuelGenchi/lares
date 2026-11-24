@@ -300,7 +300,7 @@ private:
 Bytes response_bytes(unsigned status, const Bytes* body, bool close)
 {
     const char* reason = status == 100 ? "Continue" : status == 200 ? "OK" : status == 400 ? "Bad Request"
-                       : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
+                       : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
                        : status == 413 ? "Content Too Large" : "Internal Server Error";
     size_t len = body ? body->size() : 0;
     char head[256];
@@ -425,6 +425,8 @@ struct Receiver::Impl {
     std::condition_variable cv;
     std::map<unsigned, int> answers;    /* 0 waiting, 1 accept, 2 decline */
     unsigned next_id = 0;
+    bool contacts_only = false;
+    std::set<std::string> contact_hashes;
     std::thread acceptor;
     struct Worker {
         std::thread thread;
@@ -731,6 +733,28 @@ struct Conn {
         return bplist_decode(body.data(), body.size(), v) && v.is(Value::Type::Dict);
     }
 
+    /* Checks SenderRecordData against saved contact hashes (ID-3). Returns the
+     * matched lowercase SHA-256 hex digest, or empty if no contact matched.
+     * Never logs hashes (SEC-5). */
+    std::string match_sender_record(const Value& req, bool& contacts_only_out)
+    {
+        std::set<std::string> allowed;
+        {
+            std::lock_guard<std::mutex> lock(r->mu);
+            contacts_only_out = r->contacts_only;
+            allowed = r->contact_hashes;
+        }
+        if (allowed.empty()) return {};
+        const Value* rec = req.is(Value::Type::Dict) ? req.find("SenderRecordData", Value::Type::Data) : nullptr;
+        if (!rec || rec->get_data().empty()) return {};
+        std::vector<std::string> hashes;
+        if (!airdrop_extract_record_hashes(rec->get_data().data(), rec->get_data().size(), hashes)) return {};
+        for (const std::string& h : hashes) {
+            if (allowed.count(h)) return h;
+        }
+        return {};
+    }
+
     void on_discover()
     {
         /* HTTP-7: once per connection, and only first. */
@@ -738,10 +762,21 @@ struct Conn {
         Value request;
         if (!decode_body(request)) return fail(400);
         slot_discover = true;
-        /* Everyone mode: every sender may see this receiver (ID-4). */
+        bool contacts_only = false;
+        std::string matched = match_sender_record(request, contacts_only);
+        if (contacts_only && matched.empty()) {
+            /* DISC-2 / ID-3: Contacts Only with no match answers 401 and no name. */
+            Value b = Value::dict();
+            b.add("StatusCode", Value::integer(401));
+            Bytes out;
+            if (bplist_encode(b, out)) send_response(200, &out, false);
+            else fail(500);
+            return;
+        }
+        /* Everyone (100) or matched Contact (200) (ID-3, ID-4). */
         static const char kCaps[] = "{\"Version\":1}"; /* DISC-3: JPEG rather than HEIC */
         Value b = Value::dict();
-        b.add("StatusCode", Value::integer(100));
+        b.add("StatusCode", Value::integer(matched.empty() ? 100 : 200));
         b.add("ReceiverComputerName", Value::string(r->name));
         b.add("ReceiverModelName", Value::string(kModel));
         b.add("ReceiverMediaCapabilities", Value::data(kCaps, sizeof kCaps - 1));
@@ -846,6 +881,14 @@ struct Conn {
             else bad = true;
         }
         std::string sender = lookup_str(req, "SenderComputerName");
+        std::string sender_model = lookup_str(req, "SenderModelName");
+        bool contacts_only = false;
+        std::string matched_hash = match_sender_record(req, contacts_only);
+        if (contacts_only && matched_hash.empty()) return fail(401);
+        if (const Value* icon = req.find("FileIcon", Value::Type::Data);
+            icon && !icon->get_data().empty() && icon->get_data().size() <= 512 * 1024) {
+            offer.file_icon = icon->get_data();
+        }
         if (bad) return fail(400);
         links = nitems > 0;
         {
@@ -855,6 +898,8 @@ struct Conn {
         }
         offer.id = id;
         offer.sender = sender.empty() ? "Someone" : sender;
+        offer.sender_model = sender_model;
+        offer.matched_hash = matched_hash;
         offer.links = links;
         offer.total = total;
         Receiver::Impl* rr = r;
@@ -1162,6 +1207,13 @@ void Receiver::answer(unsigned id, bool accept)
     impl_->cv.notify_all();
 }
 
+void Receiver::set_policy(bool contacts_only, std::set<std::string> contact_hashes)
+{
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    impl_->contacts_only = contacts_only;
+    impl_->contact_hashes = std::move(contact_hashes);
+}
+
 // ================================================================== sender
 
 namespace {
@@ -1325,15 +1377,18 @@ template <class F> void post_unless_cancelled(Loop& loop, const std::shared_ptr<
 } // namespace
 
 void discover(Loop& loop, const Address& addr, uint16_t port, std::shared_ptr<Cancel> cancel,
-              std::function<void(std::optional<Peer>, const std::string& err)> done)
+              std::function<void(std::optional<Peer>, const std::string& err)> done,
+              std::vector<uint8_t> sender_record)
 {
-    std::thread([&loop, addr, port, cancel, done] {
+    std::thread([&loop, addr, port, cancel, done, sender_record = std::move(sender_record)] {
         std::optional<Peer> peer;
         std::string err;
         Sock sock(-1, cancel);
         Bytes req;
-        /* An empty dict, as every sender known to work with iOS 18 sends (§6.3). */
-        plist_request("/Discover", Value::dict(), req);
+        /* An empty dict by default, or with SenderRecordData when supplied (§6.3). */
+        Value body = Value::dict();
+        if (!sender_record.empty()) body.add("SenderRecordData", Value::data(sender_record));
+        plist_request("/Discover", body, req);
         std::unique_ptr<tls::Stream> t;
         Response resp;
         if (sock.connect(addr, port, kDiscoverConnectTimeout, err) &&

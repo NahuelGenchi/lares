@@ -1798,6 +1798,103 @@ static void test_upload_vectors(void)
         }
 }
 
+static GByteArray *wrap_der(guint8 tag, const guint8 *data, gsize len)
+{
+    GByteArray *out = g_byte_array_new();
+    g_byte_array_append(out, &tag, 1);
+    if (len < 128) {
+        guint8 l = (guint8)len;
+        g_byte_array_append(out, &l, 1);
+    } else if (len < 256) {
+        guint8 l[2] = { 0x81, (guint8)len };
+        g_byte_array_append(out, l, 2);
+    } else {
+        guint8 l[3] = { 0x82, (guint8)((len >> 8) & 0xff), (guint8)(len & 0xff) };
+        g_byte_array_append(out, l, 3);
+    }
+    if (len) g_byte_array_append(out, data, (guint)len);
+    return out;
+}
+
+static void test_record_hashes(void)
+{
+    const char *h1 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const char *h2 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    char *xml = g_strdup_printf(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>"
+        "<key>ValidatedEmailHashes</key><array><string>%s</string><string>short</string></array>"
+        "<key>ValidatedPhoneHashes</key><array><string>%s</string></array>"
+        "</dict></plist>", h1, h2);
+    GByteArray *oct = wrap_der(0x04, (const guint8 *)xml, strlen(xml));
+    GByteArray *ctx0 = wrap_der(0xA0, oct->data, oct->len);
+    static const guint8 oid_data[] = { 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01 };
+    GByteArray *encap_in = g_byte_array_new();
+    g_byte_array_append(encap_in, oid_data, sizeof oid_data);
+    g_byte_array_append(encap_in, ctx0->data, ctx0->len);
+    GByteArray *encap = wrap_der(0x30, encap_in->data, encap_in->len);
+    static const guint8 sd_hdr[] = { 0x02, 0x01, 0x01, 0x31, 0x00 };
+    static const guint8 sd_tail[] = { 0x31, 0x00 };
+    GByteArray *sd_in = g_byte_array_new();
+    g_byte_array_append(sd_in, sd_hdr, sizeof sd_hdr);
+    g_byte_array_append(sd_in, encap->data, encap->len);
+    g_byte_array_append(sd_in, sd_tail, sizeof sd_tail);
+    GByteArray *sd = wrap_der(0x30, sd_in->data, sd_in->len);
+    GByteArray *sd_ctx = wrap_der(0xA0, sd->data, sd->len);
+    static const guint8 oid_sd[] = { 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
+    GByteArray *ci_in = g_byte_array_new();
+    g_byte_array_append(ci_in, oid_sd, sizeof oid_sd);
+    g_byte_array_append(ci_in, sd_ctx->data, sd_ctx->len);
+    GByteArray *cms = wrap_der(0x30, ci_in->data, ci_in->len);
+
+    GPtrArray *got = airdrop_extract_record_hashes(cms->data, cms->len);
+    g_assert_nonnull(got);
+    g_assert_cmpuint(got->len, ==, 2);
+    g_ptr_array_unref(got);
+
+    /* Binary plist directly */
+    GVariantBuilder ab, db;
+    g_variant_builder_init(&ab, G_VARIANT_TYPE("av"));
+    g_variant_builder_add(&ab, "v", g_variant_new_string(h1));
+    g_variant_builder_init(&db, G_VARIANT_TYPE_VARDICT);
+    g_variant_builder_add(&db, "{sv}", "ValidatedEmailHashes", g_variant_builder_end(&ab));
+    GVariant *root = g_variant_ref_sink(g_variant_builder_end(&db));
+    GError *err = NULL;
+    GBytes *bp = bplist_encode(root, &err);
+    g_assert_no_error(err);
+    gsize blen = 0;
+    const guint8 *bdata = g_bytes_get_data(bp, &blen);
+    got = airdrop_extract_record_hashes(bdata, blen);
+    g_assert_nonnull(got);
+    g_assert_cmpuint(got->len, ==, 1);
+    g_assert_cmpstr(got->pdata[0], ==, h1);
+    g_ptr_array_unref(got);
+    g_bytes_unref(bp);
+    g_variant_unref(root);
+
+    /* Invalid inputs return an empty array */
+    got = airdrop_extract_record_hashes(NULL, 0);
+    g_assert_nonnull(got);
+    g_assert_cmpuint(got->len, ==, 0);
+    g_ptr_array_unref(got);
+    static const guint8 junk[] = { 1, 2, 3, 4 };
+    got = airdrop_extract_record_hashes(junk, sizeof junk);
+    g_assert_nonnull(got);
+    g_assert_cmpuint(got->len, ==, 0);
+    g_ptr_array_unref(got);
+
+    g_byte_array_unref(cms);
+    g_byte_array_unref(ci_in);
+    g_byte_array_unref(sd_ctx);
+    g_byte_array_unref(sd);
+    g_byte_array_unref(sd_in);
+    g_byte_array_unref(encap);
+    g_byte_array_unref(encap_in);
+    g_byte_array_unref(ctx0);
+    g_byte_array_unref(oct);
+    g_free(xml);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1807,6 +1904,7 @@ int main(int argc, char **argv)
     g_test_add_func("/airdrop/plist/vectors", test_plist_vectors);
     g_test_add_func("/airdrop/plist/malformed", test_plist_malformed);
     g_test_add_func("/airdrop/plist/limits", test_plist_limits);
+    g_test_add_func("/airdrop/record/hashes", test_record_hashes);
     g_test_add_func("/airdrop/cpio/vectors", test_cpio_vectors);
     g_test_add_func("/airdrop/cpio/after-trailer", test_cpio_after_trailer);
     g_test_add_func("/airdrop/cpio/refused", test_cpio_refused);

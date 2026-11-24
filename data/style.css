@@ -613,3 +613,256 @@ window.lares entry:focus-within { outline: 2px solid var(--accent); outline-offs
   color: var(--text);
 }
 .step .ok { color: var(--accent); }
+
+/* ----------------------------------------------------- AirDrop (macOS) */
+
+.page.page-wide {
+  padding: 18px 18px 18px 0;
+}
+
+.airdrop-stage {
+  --ad-bg: #ffffff;
+  --ad-border: rgba(0, 0, 0, 0.085);
+  --ad-ring: rgba(0, 0, 0, 0.068);
+  --ad-blue: #007aff;
+  --ad-blue-hover: #0068e3;
+  --ad-blue-tint: rgba(0, 122, 255, 0.10);
+  --ad-text: #1d1d1f;
+  --ad-sub: #86868b;
+  --ad-pill-bg: rgba(0, 0, 0, 0.042);
+  --ad-pill-hover: rgba(0, 0, 0, 0.085);
+  --ad-popover: rgba(245, 246, 248, 0.98);
+  --ad-popover-border: rgba(0, 0, 0, 0.13);
+  --ad-btn-bg: rgba(0, 0, 0, 0.065);
+  --ad-btn-hover: rgba(0, 0, 0, 0.12);
+  --ad-track: rgba(0, 0, 0, 0.11);
+
+  font-family: system-ui, "Inter", "Cantarell", sans-serif;
+  font-size: 14px;
+  background-color: var(--ad-bg);
+  color: var(--ad-text);
+  border: 1px solid var(--ad-border);
+  border-radius: 16px;
+  min-height: 540px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .airdrop-stage {
+    --ad-bg: #1e1e20;
+    --ad-border: rgba(255, 255, 255, 0.09);
+    --ad-ring: rgba(255, 255, 255, 0.075);
+    --ad-blue: #0a84ff;
+    --ad-blue-hover: #2593ff;
+    --ad-blue-tint: rgba(10, 132, 255, 0.18);
+    --ad-text: #f5f5f7;
+    --ad-sub: #9e9ea5;
+    --ad-pill-bg: rgba(255, 255, 255, 0.07);
+    --ad-pill-hover: rgba(255, 255, 255, 0.14);
+    --ad-popover: rgba(43, 43, 47, 0.98);
+    --ad-popover-border: rgba(255, 255, 255, 0.15);
+    --ad-btn-bg: rgba(255, 255, 255, 0.11);
+    --ad-btn-hover: rgba(255, 255, 255, 0.18);
+    --ad-track: rgba(255, 255, 255, 0.15);
+  }
+}
+
+.airdrop-radar {
+  color: var(--ad-ring);
+}
+
+.airdrop-emblem {
+  color: var(--ad-blue);
+}
+
+.airdrop-tagline {
+  font-size: 14px;
+  color: var(--ad-text);
+}
+
+.airdrop-status {
+  font-size: 12px;
+  color: var(--ad-sub);
+}
+
+.airdrop-status.err {
+  color: var(--bad);
+}
+
+.airdrop-discover-btn > button,
+.airdrop-discover-btn > button:hover,
+.airdrop-discover-btn > button:active {
+  background-image: none;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 4px 10px;
+  border-radius: 7px;
+  font-size: 14px;
+  font-weight: normal;
+  color: var(--ad-blue);
+  transition: background-color 140ms ease-out;
+}
+
+.airdrop-discover-btn > button:hover,
+.airdrop-discover-btn > button:checked {
+  background-color: var(--ad-blue-tint);
+}
+
+.airdrop-pill,
+.airdrop-pill > button {
+  background-image: none;
+  background-color: var(--ad-pill-bg);
+  color: var(--ad-text);
+  border: 1px solid var(--ad-border);
+  box-shadow: none;
+  border-radius: 7px;
+  min-height: 26px;
+  padding: 2px 11px;
+  font-size: 12px;
+  font-weight: normal;
+  transition: background-color 140ms ease-out;
+}
+
+.airdrop-pill:hover,
+.airdrop-pill > button:hover {
+  background-color: var(--ad-pill-hover);
+}
+
+.airdrop-staged-pill {
+  background-color: var(--ad-blue-tint);
+  color: var(--ad-blue);
+  border: 1px solid var(--ad-blue);
+  border-radius: 7px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.airdrop-device {
+  padding: 6px;
+  border-radius: 12px;
+  transition: background-color 140ms ease-out;
+}
+
+.airdrop-device:hover {
+  background-color: var(--ad-blue-tint);
+}
+
+.airdrop-device-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ad-text);
+}
+
+.airdrop-device-sub {
+  font-size: 12px;
+  color: var(--ad-sub);
+}
+
+.airdrop-popover {
+  background-color: var(--ad-popover);
+  border: 1px solid var(--ad-popover-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  min-width: 310px;
+}
+
+.airdrop-popover-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ad-text);
+}
+
+.airdrop-popover-sub {
+  font-size: 12px;
+  color: var(--ad-sub);
+}
+
+.airdrop-progress trough {
+  min-height: 6px;
+  border-radius: 3px;
+  background-color: var(--ad-track);
+  border: none;
+}
+
+.airdrop-progress progress {
+  min-height: 6px;
+  border-radius: 3px;
+  background-color: var(--ad-blue);
+  background-image: none;
+  border: none;
+}
+
+button.airdrop-cancel-x,
+button.airdrop-cancel-x:hover {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  border-radius: 9px;
+  border: none;
+  box-shadow: none;
+  background-image: none;
+  background-color: #8e8e93;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+button.airdrop-btn,
+button.airdrop-btn:hover,
+button.airdrop-btn-primary,
+button.airdrop-btn-primary:hover {
+  background-image: none;
+  box-shadow: none;
+  min-height: 26px;
+  padding: 2px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+button.airdrop-btn {
+  background-color: var(--ad-btn-bg);
+  color: var(--ad-text);
+  border: 1px solid var(--ad-popover-border);
+}
+
+button.airdrop-btn:hover {
+  background-color: var(--ad-btn-hover);
+}
+
+button.airdrop-btn-primary {
+  background-color: var(--ad-blue);
+  color: #ffffff;
+  border: none;
+}
+
+button.airdrop-btn-primary:hover {
+  background-color: var(--ad-blue-hover);
+}
+
+.airdrop-menu-item,
+.airdrop-menu-item:hover {
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+  min-height: 0;
+  font-family: system-ui, "Inter", "Cantarell", sans-serif;
+  font-size: 13.5px;
+  font-weight: normal;
+  background-color: transparent;
+}
+
+.airdrop-menu-item:hover {
+  background-color: #007aff;
+  color: #ffffff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .airdrop-discover-btn > button, .airdrop-pill, .airdrop-pill > button, .airdrop-device {
+    transition: none;
+  }
+}
