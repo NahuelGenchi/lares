@@ -759,6 +759,78 @@ static void test_share()
     airdrop_wake_data(tag, wake);
     const uint8_t want[kAirdropWakeBytes] = { 0x05, 0x12, 0x40, 0xAA, 0xBB, 0xCC, 0, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     CHECK(std::memcmp(wake, want, sizeof(want)) == 0);
+
+    /* Discoverability modes, live browsing, incoming model/thumb/contact, and direct send-to. */
+    std::vector<std::string> contacts_block = {
+        "state setup=ready link=up mode=contacts receiving=1 left=0 browsing=1 sending=0 wake=1 quiet=0",
+        "name Studio PC",
+        "incoming id=7 state=asking done=0 total=4096 links=0",
+        "incoming-sender Susuin",
+        "incoming-model iPhone17,1",
+        "incoming-thumb C:\\Temp\\thumb.png",
+        "incoming-contact " + share_sha256_hex("susuin@example.com"),
+        "incoming-name photo.png",
+    };
+    CHECK(share_parse_block(contacts_block, s));
+    CHECK(s.mode == ShareDiscoverMode::ContactsOnly && s.receiving && s.browsing && !s.idle());
+    CHECK(s.has_incoming && s.incoming.sender_model == "iPhone17,1");
+    CHECK(s.incoming.thumb_path == "C:\\Temp\\thumb.png");
+    CHECK(s.incoming.matched_hash == share_sha256_hex("susuin@example.com"));
+
+    std::vector<std::wstring> direct_names;
+    CHECK(share_send_to_line("k1", { L"C:\\a\\photo.png" }, &direct_names) == "send-to\tk1\tC:\\a\\photo.png");
+    CHECK(direct_names.size() == 1 && direct_names[0] == L"photo.png");
+    CHECK(share_send_to_line("bad\tkey", { L"C:\\a\\photo.png" }, nullptr).empty());
+
+    /* Device labels, kinds, initials, and ETA formatting. */
+    CHECK(share_model_label("iPhone17,1", "Susuin") == "iPhone");
+    CHECK(share_model_label("MacBookAir10,1", "Alex") == "MacBook Air");
+    CHECK(share_model_label("MacBookPro18,3", "Work") == "MacBook Pro");
+    CHECK(share_model_label("iPad14,5", "Maya") == "iPad");
+    CHECK(share_model_label("", "Alex's MacBook Air") == "MacBook Air");
+    CHECK(share_device_kind("iPhone17,1", "Susuin") == ShareDeviceKind::Phone);
+    CHECK(share_device_kind("MacBookAir10,1", "Alex") == ShareDeviceKind::Laptop);
+    CHECK(share_device_kind("iPad14,5", "Maya") == ShareDeviceKind::Tablet);
+    CHECK(share_device_kind("iMac21,1", "Desk") == ShareDeviceKind::Desktop);
+    CHECK(share_device_kind("Watch7,1", "Wrist") == ShareDeviceKind::Watch);
+    CHECK(share_initials("Susuin") == "S");
+    CHECK(share_initials("Alex Rivera") == "AR");
+    CHECK(share_initials("Maya's iPad") == "M");
+    CHECK(share_format_eta(1000, 1000, 1000) == "Less than 5 seconds");
+    CHECK(share_format_eta(500, 1000, 5000) == "About 5 seconds");
+    CHECK(share_format_eta(0, 1000, 5000).empty());
+
+    /* NIST SHA-256 test vectors, contact hashing, and INI round-trip. */
+    CHECK(share_sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(share_sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(share_hash_email("  Alice@Example.COM ") == share_sha256_hex("alice@example.com"));
+    auto ph = share_hash_phone_variants("+1 (555) 123-4567");
+    CHECK(ph.size() == 2);
+    CHECK(ph[0] == share_sha256_hex("+15551234567") && ph[1] == share_sha256_hex("15551234567"));
+
+    std::vector<ShareContact> clist = {
+        { "Susuin", "Susuin", "susuin@example.com", "+1 555-0100", "C:\\Pics\\cat.png" },
+    };
+    std::string cini = serialize_contacts_ini(clist);
+    auto cback = parse_contacts_ini("\xEF\xBB\xBF" + cini);
+    CHECK(cback.size() == 1 && cback[0].name == "Susuin" && cback[0].email == "susuin@example.com" &&
+          cback[0].phone == "+1 555-0100" && cback[0].photo == "C:\\Pics\\cat.png");
+    CHECK(share_contact_hashes(cback).size() == 3);
+    CHECK(share_find_contact(cback, "Unknown", share_sha256_hex("susuin@example.com")) != nullptr);
+    CHECK(share_find_contact(cback, "susuin") != nullptr);
+    CHECK(share_find_contact(cback, "Nobody") == nullptr);
+
+    /* iOS curly apostrophe (U+2019) and possessive owner-prefix matching. */
+    std::vector<ShareContact> apost = {
+        { "Alex", "Alex's iPhone", "alex@example.com", "", "C:\\Pics\\alex.png" },
+        { "Maya", "", "", "", "C:\\Pics\\maya.png" },
+    };
+    const ShareContact* hit_alex = share_find_contact(apost, "Alex\xE2\x80\x99s iPhone");
+    CHECK(hit_alex != nullptr && hit_alex->name == "Alex");
+    const ShareContact* hit_maya = share_find_contact(apost, "Maya\xE2\x80\x99s iPad");
+    CHECK(hit_maya != nullptr && hit_maya->name == "Maya");
+    const ShareContact* hit_alex_mac = share_find_contact(apost, "Alex\xE2\x80\x99s MacBook Air");
+    CHECK(hit_alex_mac != nullptr && hit_alex_mac->name == "Alex");
 }
 
 int main()

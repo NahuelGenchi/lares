@@ -20,6 +20,9 @@
 #include <vector>
 #include <windows.h>
 
+struct IDropTarget;
+struct IWICImagingFactory;
+
 namespace lares {
 
 inline constexpr wchar_t kWindowClass[] = L"LaresWindowClass";
@@ -93,23 +96,47 @@ private:
 
     enum class ShareActionKind {
         Setup,
-        ToggleReceive,
-        ChooseOrStop,
+        OpenDiscoverMenu,
+        PickDiscoverMode,
+        CloseOverlays,
+        DeviceClick,
+        DeviceAddContact,
+        DeviceSetPhoto,
         Accept,
         Decline,
         Dismiss,
         OpenLink,
         ShowFolder,
-        SendTo,
+        SendAgain,
         CancelSend,
+        DismissDevice,
+        ClearStagedFiles,
+        ToggleContacts,
+        ToggleAdapter,
         GiveBack,
         OpenBluetoothSettings,
+        ContactFocusField,
+        ContactPickPhoto,
+        ContactAdd,
+        ContactEdit,
+        ContactCancelEdit,
+        ContactRemove,
+        ContactChangePhoto,
     };
 
     struct ShareHit {
         D2D1_RECT_F rect;
         ShareActionKind kind;
         std::string value;
+    };
+
+    struct ShareDeviceCircle {
+        std::string key;
+        std::string raw_name;
+        std::string name;
+        bool has_device = false;
+        float cx = 0.0f, cy = 0.0f, r = 34.0f;
+        D2D1_RECT_F hit_rect = {};
     };
 
     enum class DeviceActionKind {
@@ -194,11 +221,29 @@ private:
     void draw_overview_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_hardware_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_remote_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
-    void draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
-    std::vector<std::wstring> pick_files_to_send();
+    void draw_share_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, float h);
+    std::vector<std::wstring> pick_files_to_send(const wchar_t* title = L"Choose files to send");
+    std::wstring pick_photo_file();
     bool share_click(float lx, float ly);
+    bool share_right_click(float lx, float ly);
+    bool share_key_down(WPARAM vk);
+    bool share_char(wchar_t ch);
+    void share_drag_update(bool active, float lx, float ly);
+    void share_drop_files(float lx, float ly, const std::vector<std::wstring>& paths);
+    ID2D1Bitmap* load_share_bitmap(const std::wstring& path);
+    void release_share_bitmaps();
     void on_share_updated();
     void sync_share_tick();
+    void sync_share_browsing();
+
+public:
+    /* Called by the window's OLE IDropTarget implementation. */
+    bool is_share_section_active() const;
+    float layout_scale() const { return scale_; }
+    void on_ole_drag(bool active, POINT screen_pt);
+    void on_ole_drop(POINT screen_pt, const std::vector<std::wstring>& paths);
+
+private:
     void draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, DevKind kind);
     void draw_controller_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w);
     void draw_pad_picture(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w,
@@ -206,7 +251,7 @@ private:
     void draw_pixel_art(ID2D1RenderTarget* rt, const char* const* art, float x, float y, float scale,
                         const Rgba& solid, const Rgba& faint);
     bool point_over_interactive(float lx, float ly) const;
-    bool interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const;
+    bool interactive_rect_at(float lx, float ly, D2D1_RECT_F* out, bool for_cursor = false) const;
     bool hovered(const D2D1_RECT_F& rc) const;
     float nav_item_h() const { return lh_ + 18.0f; }   // nav button.nav-item { padding: 9px 18px }
     float text_width(const wchar_t* text, IDWriteTextFormat* fmt);
@@ -330,7 +375,33 @@ private:
     ShareView share_view_;
     BleWake ble_;
     std::vector<ShareHit> share_hits_;
+    std::vector<ShareDeviceCircle> share_circles_;
     bool share_tick_ = false;
+    bool share_browsing_sent_ = false;
+    bool share_mode_menu_open_ = false;
+    int share_mode_menu_focus_ = -1;
+    bool share_adapter_open_ = false;
+    bool share_contacts_open_ = false;
+    bool share_ctx_open_ = false;
+    float share_ctx_x_ = 0.0f;
+    float share_ctx_y_ = 0.0f;
+    std::string share_ctx_key_;
+    std::string share_ctx_raw_name_;
+    std::string share_ctx_display_name_;
+    bool share_ctx_has_device_ = false;
+    int share_editing_contact_ = -1; // -1 = adding new, >=0 = editing contact index
+    int share_contact_field_ = -1;   // 0=name, 1=email, 2=phone, 3=device
+    std::string share_draft_name_;
+    std::string share_draft_email_;
+    std::string share_draft_phone_;
+    std::string share_draft_device_;
+    std::wstring share_draft_photo_;
+    bool share_drag_active_ = false;
+    std::string share_drag_key_;
+    IDropTarget* drop_target_ = nullptr;
+    IWICImagingFactory* wic_factory_ = nullptr;
+    std::map<std::wstring, ID2D1Bitmap*> share_bitmaps_;
+    ID2D1StrokeStyle* share_round_cap_ = nullptr;
 
     DevicesManager devices_;
     std::vector<DeviceEntry> dev_list_;

@@ -23,8 +23,10 @@ namespace lares {
 // ------------------------------------------------- plain data, for the tests
 
 enum class ShareLink { Off, Starting, Up, Stopping, Failed };
+enum class ShareDiscoverMode { Off, ContactsOnly, Everyone };
 enum class ShareDeviceState { Found, Asking, Sending, Sent, Declined, Failed };
 enum class ShareIncomingState { Asking, Receiving, Done, Failed };
+enum class ShareDeviceKind { Phone, Tablet, Laptop, Desktop, Watch, Other };
 
 struct ShareDevice {
     std::string key, name, model, message;
@@ -36,18 +38,30 @@ struct ShareIncoming {
     unsigned id = 0;
     ShareIncomingState state = ShareIncomingState::Asking;
     bool links = false;
-    std::string sender, message;
+    std::string sender, sender_model, thumb_path, matched_hash, message;
     std::vector<std::string> names;   // file names, or URLs
     std::vector<std::string> saved;   // where they were saved (UTF-8), once done
     uint64_t done = 0, total = 0;
+};
+
+/* A saved AirDrop contact: matches incoming SenderRecordData hashes in
+ * Contacts Only mode, and supplies a display name and profile photo. */
+struct ShareContact {
+    std::string name;
+    std::string device;               // optional device name match (e.g. "Susuin")
+    std::string email;                // optional email for SHA-256 Contacts Only match
+    std::string phone;                // optional phone for SHA-256 Contacts Only match
+    std::string photo;                // optional UTF-8 local image path for avatar
 };
 
 /* One block of what lares-share writes. */
 struct ShareSession {
     bool ready = false;
     ShareLink link = ShareLink::Off;
+    ShareDiscoverMode mode = ShareDiscoverMode::Off;
     bool receiving = false;
-    int left = 0;            // seconds of receiving left
+    int left = 0;            // seconds of Everyone for 10 Minutes left
+    bool browsing = false;   // actively discovering nearby AirDrop devices
     bool sending = false;
     bool wake = false;       // the Bluetooth wake-up is wanted
     bool quiet = false;      // the link is up and has heard no Apple device
@@ -57,7 +71,7 @@ struct ShareSession {
     std::vector<ShareDevice> devices;
 
     /* Nothing uses the session: it can end, and the adapter go back. */
-    bool idle() const { return !receiving && !sending && !wake && !has_incoming && link == ShareLink::Off; }
+    bool idle() const { return !receiving && !browsing && !sending && !wake && !has_incoming && link == ShareLink::Off; }
 };
 
 /* The lines of a block up to, not including, its "end"; false if it has
@@ -68,13 +82,35 @@ bool share_parse_block(const std::vector<std::string>& lines, ShareSession& out)
  * names it sends in `names`; a path with a tab or a line break in it can't
  * travel in a line and is left out. Empty if none is left. */
 std::string share_send_line(const std::vector<std::wstring>& paths, std::vector<std::wstring>* names);
+/* Direct send to a specific discovered device key on the radar. */
+std::string share_send_to_line(const std::string& key, const std::vector<std::wstring>& paths,
+                               std::vector<std::wstring>* names);
 
 /* "IMG_0412.HEIC and 1 more": what a sender offers, briefly. */
 std::string share_offer_text(const ShareIncoming& in);
 /* "1.2 MB", as GLib's g_format_size writes it on Linux. */
 std::string share_format_size(uint64_t bytes);
+/* "About 5 seconds" / "About 2 minutes" from transfer progress, or empty. */
+std::string share_format_eta(uint64_t done, uint64_t total, uint64_t elapsed_ms);
 /* Whether a received link may be opened: http and https only. */
 bool share_link_opens(const std::string& url);
+
+/* Friendly device subtitle ("iPhone", "MacBook Air", "iPad") and icon family
+ * derived from ReceiverModelName / SenderModelName (and name fallback). */
+ShareDeviceKind share_device_kind(const std::string& model, const std::string& name);
+std::string share_model_label(const std::string& model, const std::string& name);
+/* One or two uppercase initials for a person's monogram avatar. */
+std::string share_initials(const std::string& name);
+
+/* SHA-256 contact hashing (SPEC §7) and contacts INI persistence. Never logged (SEC-5). */
+std::string share_sha256_hex(const std::string& input);
+std::string share_hash_email(const std::string& email);
+std::vector<std::string> share_hash_phone_variants(const std::string& phone);
+std::vector<std::string> share_contact_hashes(const std::vector<ShareContact>& contacts);
+std::vector<ShareContact> parse_contacts_ini(const std::string& text);
+std::string serialize_contacts_ini(const std::vector<ShareContact>& contacts);
+const ShareContact* share_find_contact(const std::vector<ShareContact>& contacts, const std::string& name,
+                                       const std::string& matched_hash = {});
 
 /* The Apple manufacturer data that wakes AirDrop receivers: the type, the
  * length, and src/airdrop/ble.c's payload around `tag`. */
@@ -102,9 +138,16 @@ struct ShareView {
     bool running = false;          // a session is on
     ShareSession s;
     ULONGLONG left_at_ms = 0;      // when `s.left` was said, for the countdown
-    std::vector<std::wstring> files;   // what's being sent
+    ULONGLONG xfer_start_ms = 0;   // when the active transfer began, for ETA
+    std::vector<std::wstring> files;       // what's being sent (basenames)
+    std::vector<std::wstring> file_paths;  // full local paths for thumbnail preview
+    std::vector<ShareContact> contacts;    // saved AirDrop contacts and profile photos
     std::string error;             // why a session ended by itself, or files couldn't be sent
 };
+
+std::wstring share_contacts_path(bool dry_run);
+bool load_share_contacts(const std::wstring& path, std::vector<ShareContact>& out);
+bool save_share_contacts(const std::wstring& path, const std::vector<ShareContact>& contacts);
 
 /* Whether the adapter is plugged in: a cheap check, for the sidebar. */
 bool share_adapter_present();
@@ -127,20 +170,28 @@ public:
     /* Gives it back to Windows' own driver, the same way. */
     void give_back();
 
+    void set_discover_mode(ShareDiscoverMode mode);
     void set_receiving(bool on);
+    void set_browsing(bool on);
     void answer(bool accept);
     void dismiss_incoming();
     void set_looking(bool on);
     void send(const std::vector<std::wstring>& paths);
+    void send_files_to(const std::string& key, const std::vector<std::wstring>& paths);
     void stop_sending();
     void send_to(const std::string& key);
+    void dismiss_device(const std::string& key);
     void cancel_send();
+    /* Saves contacts & profile photos and syncs their SHA-256 hashes to lares-share.exe. */
+    void save_contacts(const std::vector<ShareContact>& contacts);
+    void set_device_photo(const std::string& device_name, const std::wstring& photo_path);
     /* For the window, on kMsgShareUpdated: starts the session that was
      * asked for while the one before was ending. */
     void resume();
 
 private:
     void command(const std::string& line);
+    std::string contacts_command_locked() const;
     bool start_session();
     void read_loop(HANDLE from, HANDLE proc);
     void end_session();
@@ -149,10 +200,12 @@ private:
     void dry_command(const std::string& line);
 
     bool dry_run_ = false;
+    std::wstring contacts_path_;
     std::atomic<HWND> notify_hwnd_{ nullptr };
 
     mutable std::mutex mu_;
     ShareView view_;
+    ShareDiscoverMode dry_prev_mode_ = ShareDiscoverMode::Off;
     std::vector<std::string> pending_;   // commands for the session that follows one that's ending
     bool armed_ = false;                 // the session has been used: it may end once idle
     bool quitting_ = false;              // the session was told to end

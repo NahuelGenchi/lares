@@ -20,6 +20,7 @@ namespace lares {
 
 enum class Setup { NoCard, NeedsSetup, Ready };
 enum class LinkState { Off, Starting, Up, Stopping, Failed };
+enum class DiscoverMode { Off, ContactsOnly, Everyone };
 enum class DeviceState { Found, Asking, Sending, Sent, Declined, Failed };
 enum class IncomingState { Asking, Receiving, Done, Failed };
 
@@ -38,6 +39,9 @@ struct Incoming {
     unsigned id = 0;
     IncomingState state = IncomingState::Asking;
     std::string sender;
+    std::string sender_model;
+    std::string thumb_path;            /* UTF-8 path to FileIcon preview, if any */
+    std::string matched_hash;          /* matched contact SHA-256 hash, if any */
     bool links = false;
     std::vector<std::string> names;    /* file names, or URLs */
     std::vector<std::string> saved;    /* saved paths, once done */
@@ -52,9 +56,11 @@ struct ShareState {
     std::string link_error;
     bool quiet = false;         /* up a while, and no Apple device heard */
     std::string name;           /* how others see this PC */
-    bool receiving = false;
+    DiscoverMode mode = DiscoverMode::Off;
+    bool receiving = false;     /* mode != DiscoverMode::Off */
     Loop::Clock::time_point receive_until{};
     std::unique_ptr<Incoming> incoming;
+    bool browsing = false;      /* continuously finding nearby devices while page is open */
     bool sending = false;
     std::vector<std::wstring> paths;
     std::vector<Device> devices;
@@ -70,12 +76,17 @@ public:
     bool looking() const { return looking_; }
 
     void refresh();
+    void set_mode(DiscoverMode mode);
     void set_receiving(bool on);
+    void set_contact_hashes(std::set<std::string> hashes);
+    void set_browsing(bool on);
     void answer(bool accept);
     void dismiss_incoming();
     void set_looking(bool on);
     void set_sending(const std::vector<std::wstring>& paths);
     void send_to(const std::string& key);
+    void send_files_to(const std::string& key, const std::vector<std::wstring>& paths);
+    void dismiss_device(const std::string& key);
     void cancel_send();
     /* Ends the link now, rather than after its minute. */
     void stop_link();

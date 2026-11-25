@@ -139,6 +139,11 @@ bool bplist_decode(const uint8_t *data, size_t len, Value &out, Error *error = n
  * GVariant can't hold one on Linux. */
 bool bplist_encode(const Value &value, Bytes &out, Error *error = nullptr);
 
+/* Extracts lowercase SHA-256 hex hashes from ValidatedEmailHashes and
+ * ValidatedPhoneHashes inside a SenderRecordData / ReceiverRecordData CMS
+ * SignedData envelope (or raw XML/binary validation plist). SPEC §7, ID-2. */
+bool airdrop_extract_record_hashes(const uint8_t *data, size_t len, std::vector<std::string> &out_hashes);
+
 /* ---- CPIO archives, UP-2 ----
  *
  * The writer emits odc (magic 070707); the reader accepts odc and newc

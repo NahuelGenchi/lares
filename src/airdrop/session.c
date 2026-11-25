@@ -19,6 +19,7 @@
 
 #define MODEL "Linux"                        /* Receiver/SenderModelName, as owly sends */
 #define IO_TIMEOUT 30                        /* s: a peer that stops reading or writing (SEC-10) */
+#define DISCOVER_IDLE_TIMEOUT 10             /* s: idle keep-alive /Discover slot releases sooner */
 #define CONNECT_TIMEOUT 10                   /* s */
 /* A /Discover that isn't answered soon is tried again on a new connection
  * rather than waited for: over a fixed radio a phone is there about once a
@@ -31,7 +32,7 @@
 #define SENDER_ASK_TIMEOUT 45                /* s, longer than a receiver's 15 s (ASK-2a) */
 #define UPLOAD_RESPONSE_TIMEOUT 60           /* s */
 #define DRAIN_TIMEOUT 2                      /* s, reading what follows a complete archive (UP-11) */
-#define MAX_MESSAGE (1024 * 1024)            /* a /Discover or /Ask body, and a response */
+#define MAX_MESSAGE (4 * 1024 * 1024)        /* a /Discover or /Ask body (multi-photo icons), and a response */
 #define MAX_PENDING (1024 * 1024)            /* bytes buffered while a prompt is up */
 #define MAX_UPLOAD (16ULL << 30)             /* an upload, unpacked (SEC-3) */
 #define PROGRESS_EVERY (250 * G_TIME_SPAN_MILLISECOND)
@@ -125,7 +126,7 @@ static char *lookup_str(GVariant *dict, const char *key)
 static GBytes *response_bytes(guint status, GBytes *body, gboolean close)
 {
     const char *reason = status == 100 ? "Continue" : status == 200 ? "OK" : status == 400 ? "Bad Request"
-                       : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
+                       : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
                        : status == 413 ? "Content Too Large" : "Internal Server Error";
     gsize len = body ? g_bytes_get_size(body) : 0;
     GString *s = g_string_new(NULL);
@@ -192,6 +193,8 @@ struct AirdropReceiver {
     GMutex lock;
     GCond cond;
     GHashTable *answers;   /* id -> GINT: 0 waiting, 1 accept, 2 decline */
+    gboolean contacts_only;
+    GHashTable *contact_hashes; /* lowercase 64-char SHA-256 hex -> self */
     guint next_id;
     gboolean closed;       /* main thread only */
 };
@@ -209,6 +212,7 @@ static void receiver_unref(AirdropReceiver *r)
     g_clear_object(&r->cert);
     g_clear_object(&r->cancel);
     g_hash_table_unref(r->answers);
+    if (r->contact_hashes) g_hash_table_unref(r->contact_hashes);
     g_mutex_clear(&r->lock);
     g_cond_clear(&r->cond);
     g_main_context_unref(r->ctx);
@@ -232,7 +236,10 @@ static void note_free(gpointer data)
 {
     Note *n = data;
     g_free(n->offer.sender);
+    g_free(n->offer.sender_model);
+    g_free(n->offer.matched_hash);
     if (n->offer.names) g_ptr_array_unref(n->offer.names);
+    if (n->offer.file_icon) g_bytes_unref(n->offer.file_icon);
     g_free(n->message);
     receiver_unref(n->r);
     g_free(n);
@@ -729,25 +736,73 @@ static GVariant *decode_body(Conn *c)
     return v;
 }
 
+/* Matches SenderRecordData against saved contact hashes (ID-3). Never logs hashes (SEC-5). */
+static char *match_sender_record(Conn *c, GVariant *req, gboolean *contacts_only_out)
+{
+    AirdropReceiver *r = c->r;
+    char *matched = NULL;
+    g_mutex_lock(&r->lock);
+    *contacts_only_out = r->contacts_only;
+    gboolean have = r->contact_hashes && g_hash_table_size(r->contact_hashes) > 0;
+    g_mutex_unlock(&r->lock);
+    if (!have) return NULL;
+    GVariant *rec = lookup(req, "SenderRecordData", G_VARIANT_TYPE_BYTESTRING);
+    if (!rec) return NULL;
+    gsize len = 0;
+    const guint8 *data = g_variant_get_fixed_array(rec, &len, 1);
+    GPtrArray *hashes = airdrop_extract_record_hashes(data, len);
+    g_variant_unref(rec);
+    g_mutex_lock(&r->lock);
+    for (guint i = 0; i < hashes->len && !matched; i++) {
+        const char *h = hashes->pdata[i];
+        if (r->contact_hashes && g_hash_table_contains(r->contact_hashes, h)) matched = g_strdup(h);
+    }
+    g_mutex_unlock(&r->lock);
+    g_ptr_array_unref(hashes);
+    return matched;
+}
+
 static void on_discover(Conn *c)
 {
     /* HTTP-7: once per connection, and only first. */
     if (c->slot_discover || c->accepted || c->slot_upload) return fail(c, 400);
     GVariant *request = decode_body(c);
     if (!request) return fail(c, 400);
-    g_variant_unref(request);
     c->slot_discover = TRUE;
-    /* Everyone mode: every sender may see this receiver (ID-4). */
+    gboolean contacts_only = FALSE;
+    char *matched = match_sender_record(c, request, &contacts_only);
+    g_variant_unref(request);
+    if (contacts_only && !matched) {
+        /* DISC-2 / ID-3: Contacts Only with no match answers 401 and no name. */
+        GVariantBuilder b;
+        g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
+        g_variant_builder_add(&b, "{sv}", "StatusCode", g_variant_new_int64(401));
+        GBytes *body = encode(g_variant_builder_end(&b));
+        if (body) {
+            send_response(c, 200, body, FALSE);
+            set_timeout(c->conn, DISCOVER_IDLE_TIMEOUT);
+        } else {
+            fail(c, 500);
+        }
+        if (body) g_bytes_unref(body);
+        return;
+    }
+    /* Everyone (100) or matched Contact (200) (ID-3, ID-4). */
     static const char CAPS[] = "{\"Version\":1}"; /* DISC-3: JPEG rather than HEIC */
     GVariantBuilder b;
     g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
-    g_variant_builder_add(&b, "{sv}", "StatusCode", g_variant_new_int64(100));
+    g_variant_builder_add(&b, "{sv}", "StatusCode", g_variant_new_int64(matched ? 200 : 100));
     g_variant_builder_add(&b, "{sv}", "ReceiverComputerName", v_str(c->r->name));
     g_variant_builder_add(&b, "{sv}", "ReceiverModelName", v_str(MODEL));
     g_variant_builder_add(&b, "{sv}", "ReceiverMediaCapabilities", v_data(CAPS, sizeof CAPS - 1));
+    g_free(matched);
     GBytes *body = encode(g_variant_builder_end(&b));
-    if (body) send_response(c, 200, body, FALSE);
-    else fail(c, 500);
+    if (body) {
+        send_response(c, 200, body, FALSE);
+        set_timeout(c->conn, DISCOVER_IDLE_TIMEOUT);
+    } else {
+        fail(c, 500);
+    }
     if (body) g_bytes_unref(body);
 }
 
@@ -806,9 +861,18 @@ static int wait_answer(Conn *c)
         gboolean gone = (cond & (G_IO_HUP | G_IO_ERR)) != 0;
         if (!gone && (cond & G_IO_IN)) {
             guint8 buf[4096];
-            gssize n = g_input_stream_read(c->in, buf, sizeof buf, r->cancel, NULL);
-            if (n <= 0 || c->input->len + n > MAX_PENDING) gone = TRUE;
-            else g_byte_array_append(c->input, buf, n);
+            GError *re = NULL;
+            gssize n = G_IS_POLLABLE_INPUT_STREAM(c->in)
+                           ? g_pollable_input_stream_read_nonblocking(G_POLLABLE_INPUT_STREAM(c->in), buf, sizeof buf,
+                                                                      r->cancel, &re)
+                           : g_input_stream_read(c->in, buf, sizeof buf, r->cancel, &re);
+            if (g_error_matches(re, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {
+                g_clear_error(&re);
+            } else {
+                g_clear_error(&re);
+                if (n <= 0 || c->input->len + (gsize)n > MAX_PENDING) gone = TRUE;
+                else g_byte_array_append(c->input, buf, (guint)n);
+            }
         }
         g_mutex_lock(&r->lock);
         if (gone) {
@@ -823,6 +887,7 @@ static int wait_answer(Conn *c)
 
 static void on_ask(Conn *c)
 {
+    set_timeout(c->conn, IO_TIMEOUT);
     c->slot_discover = FALSE; /* HTTP-7 */
     if (c->accepted || c->slot_upload) return fail(c, 400);
     GVariant *req = decode_body(c);
@@ -869,9 +934,33 @@ static void on_ask(Conn *c)
     if (files) g_variant_unref(files);
     if (items) g_variant_unref(items);
     char *sender = lookup_str(req, "SenderComputerName");
+    char *sender_model = lookup_str(req, "SenderModelName");
+    gboolean contacts_only = FALSE;
+    char *matched_hash = match_sender_record(c, req, &contacts_only);
+    GBytes *file_icon = NULL;
+    GVariant *icon = lookup(req, "FileIcon", G_VARIANT_TYPE_BYTESTRING);
+    if (icon) {
+        gsize ilen = 0;
+        const guint8 *idata = g_variant_get_fixed_array(icon, &ilen, 1);
+        if (ilen > 0 && ilen <= 512 * 1024) file_icon = g_bytes_new(idata, ilen);
+        g_variant_unref(icon);
+    }
     g_variant_unref(req);
-    if (bad) {
+    if (contacts_only && !matched_hash) {
+        trace(c, "receiver: /Ask rejected (401, contacts only)");
         g_free(sender);
+        g_free(sender_model);
+        if (file_icon) g_bytes_unref(file_icon);
+        n->r = receiver_ref(c->r);
+        note_free(n);
+        return fail(c, 401);
+    }
+    if (bad) {
+        trace(c, "receiver: /Ask rejected (400, %" G_GSIZE_FORMAT " files, %" G_GSIZE_FORMAT " items)", nfiles, nitems);
+        g_free(sender);
+        g_free(sender_model);
+        g_free(matched_hash);
+        if (file_icon) g_bytes_unref(file_icon);
         n->r = receiver_ref(c->r);
         note_free(n);
         return fail(c, 400);
@@ -884,6 +973,9 @@ static void on_ask(Conn *c)
     g_mutex_unlock(&r->lock);
     n->offer.id = c->id;
     n->offer.sender = sender ? sender : g_strdup("Someone");
+    n->offer.sender_model = sender_model;
+    n->offer.matched_hash = matched_hash;
+    n->offer.file_icon = file_icon;
     n->offer.links = c->links;
     n->offer.total = c->total;
     /* The note is the main thread's once sent: keep what's needed after. */
@@ -892,6 +984,7 @@ static void on_ask(Conn *c)
 
     int answer = wait_answer(c);
     if (answer != 1) {
+        trace(c, "receiver: offer %s", answer == 2 ? "declined" : answer == 0 ? "timed out" : "withdrawn by sender");
         Note *w = g_new0(Note, 1);
         w->kind = NOTE_WITHDRAWN;
         w->offer.id = c->id;
@@ -922,6 +1015,7 @@ static void on_ask(Conn *c)
 
 static gboolean upload_start(Conn *c, GHashTable *headers)
 {
+    set_timeout(c->conn, IO_TIMEOUT);
     /* UP-6: only after an accepted /Ask on this connection, once. */
     if (!c->accepted || c->links || c->slot_upload) {
         c->fail = 400;
@@ -1011,7 +1105,10 @@ static const HttpCallbacks SERVER_HTTP = { http_head, http_body, http_done };
 /* A whole message has been read: answer it. */
 static void dispatch(Conn *c)
 {
-    if (c->too_big) return fail(c, 413);
+    if (c->too_big) {
+        trace(c, "receiver: request body too large (413)");
+        return fail(c, 413);
+    }
     switch (c->route) {
     case ROUTE_DISCOVER: return on_discover(c);
     case ROUTE_ASK: return on_ask(c);
@@ -1039,6 +1136,7 @@ static void serve(Conn *c)
     GIOStream *tls = tls_server(G_IO_STREAM(c->conn), r->cert, NULL);
     if (!tls) return;
     if (!g_tls_connection_handshake(G_TLS_CONNECTION(tls), r->cancel, NULL)) {
+        trace(c, "receiver: TLS handshake failed");
         g_object_unref(tls);
         return;
     }
@@ -1137,11 +1235,11 @@ AirdropReceiver *airdrop_receiver_new(const char *address, const char *name, con
     r->ctx = g_main_context_ref_thread_default();
     r->cancel = g_cancellable_new();
     r->answers = g_hash_table_new(NULL, NULL);
+    r->contact_hashes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     g_mutex_init(&r->lock);
     g_cond_init(&r->cond);
-    /* A few connections at once: a sender's /Discover connection can stay
-     * open beside its /Ask (HTTP-1). */
-    r->service = g_threaded_socket_service_new(6);
+    /* Room for parallel /Discover keep-alive sockets alongside /Ask and /Upload (HTTP-1). */
+    r->service = g_threaded_socket_service_new(16);
     gboolean ok = FALSE;
     for (int i = 0; i <= AIRDROP_PORTS && !ok; i++) {
         GSocketAddress *a = g_inet_socket_address_new_from_string(address, i < AIRDROP_PORTS ? AIRDROP_PORT + i : 0);
@@ -1176,6 +1274,19 @@ void airdrop_receiver_answer(AirdropReceiver *r, guint id, gboolean accept)
     if (g_hash_table_contains(r->answers, GUINT_TO_POINTER(id)))
         g_hash_table_insert(r->answers, GUINT_TO_POINTER(id), GINT_TO_POINTER(accept ? 1 : 2));
     g_cond_broadcast(&r->cond);
+    g_mutex_unlock(&r->lock);
+}
+
+void airdrop_receiver_set_policy(AirdropReceiver *r, gboolean contacts_only, const char *const *contact_hashes)
+{
+    g_mutex_lock(&r->lock);
+    r->contacts_only = !!contacts_only;
+    g_hash_table_remove_all(r->contact_hashes);
+    if (contact_hashes) {
+        for (const char *const *h = contact_hashes; *h; h++) {
+            if (strlen(*h) == 64) g_hash_table_add(r->contact_hashes, g_ascii_strdown(*h, 64));
+        }
+    }
     g_mutex_unlock(&r->lock);
 }
 
@@ -1635,8 +1746,17 @@ static void send_thread(GTask *task, gpointer src, gpointer data, GCancellable *
         || !write_bytes(l.out, ask, cancel, &e))
         goto out;
     set_timeout(l.conn, SENDER_ASK_TIMEOUT);
-    if (!read_response(&l, &resp, cancel, &e) || resp.status != 200) {
+    if (!read_response(&l, &resp, cancel, &e)) {
         g_clear_error(&e);
+        g_set_error_literal(&e, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED, "Declined, or not answered."); /* ASK-1 */
+        goto out;
+    }
+    if (resp.status == 401) {
+        g_set_error_literal(&e, G_IO_ERROR, G_IO_ERROR_FAILED,
+                            "Set AirDrop on that device to Everyone for 10 Minutes.");
+        goto out;
+    }
+    if (resp.status != 200) {
         g_set_error_literal(&e, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED, "Declined, or not answered."); /* ASK-1 */
         goto out;
     }

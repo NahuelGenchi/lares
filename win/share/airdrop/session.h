@@ -50,8 +50,11 @@ private:
 struct Offer {
     unsigned id = 0;
     std::string sender;                     /* untrusted: shown escaped (SEC-4) */
+    std::string sender_model;               /* SenderModelName, e.g. "iPhone17,1" */
+    std::string matched_hash;               /* matched contact SHA-256 hash when SenderRecordData matched */
     bool links = false;                     /* `names` holds URLs, never opened unasked */
     std::vector<std::string> names;
+    std::vector<uint8_t> file_icon;         /* FileIcon preview bytes from /Ask, bounded */
     uint64_t total = 0;
 };
 
@@ -78,6 +81,8 @@ public:
     ~Receiver();   /* stops listening, cuts connections; no callback after */
     uint16_t port() const;
     void answer(unsigned id, bool accept);
+    /* Updates Contacts Only filtering and allowed contact SHA-256 hashes live (ID-3). */
+    void set_policy(bool contacts_only, std::set<std::string> contact_hashes);
 
     struct Impl;
 
@@ -95,9 +100,10 @@ struct Peer {
 /* POST /Discover on a connection of its own (§6.3). `done` runs on `loop`
  * with the receiver's name and model when it lists us (DISC-1), nothing
  * when it doesn't, and an error message when it failed; never once
- * cancelled. */
+ * cancelled. `sender_record`, if non-empty, is sent as SenderRecordData. */
 void discover(Loop& loop, const Address& addr, uint16_t port, std::shared_ptr<Cancel> cancel,
-              std::function<void(std::optional<Peer>, const std::string& err)> done);
+              std::function<void(std::optional<Peer>, const std::string& err)> done,
+              std::vector<uint8_t> sender_record = {});
 
 struct SendRequest {
     Address addr;

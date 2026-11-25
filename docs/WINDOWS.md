@@ -95,7 +95,9 @@ AirDrop's link, AWDL, is made of raw 802.11 frames sent and heard in monitor mod
 
 That copy was this branch with PR #108's AWDL timing fix merged in.
 
-**Not checked:** Give back to Windows on the real adapter.
+**Not checked:** Give back to Windows on the real adapter, and live iPhone Contacts Only matching against Apple's CMS `SenderRecordData` (verified locally with unit tests and Schannel TLS loopback).
+
+**macOS-style Share UI (issue #111):** `win/src/ui_share.cpp` renders concentric radar rings, the AirDrop vector emblem, live nearby device circles with WIC-decoded circular profile photos (or monogram/device avatars) and progress arcs, floating speech-bubble transfer popovers with `FileIcon` thumbnails and ETA, inline **Allow me to be discovered by:** (**Receiving Off**, **Contacts Only**, **Everyone for 10 Minutes**), native OLE `IDropTarget` drag-and-drop onto device circles, and an inline Contacts & Avatars sheet. Measured 17.0 to 22.0 MB private memory across light and dark dry-run scenes at 900×720.
 
 **Limits.** One adapter model, on 2.4 GHz, where an iPhone gives AirDrop little air time. A radio Windows can't advertise with at all, Bluetooth on, leaves the page saying to open AirDrop on the other device first. The ported driver is GPL-2.0-only, so `lares-share.exe` as a whole is GPL-2.0-only; Lares' own files stay GPL-2.0-or-later.
 ## Hardware probes on the Windows 11 development PC
@@ -135,8 +137,9 @@ The Linux build (`Makefile` and Ubuntu 26.04 `make check`) stays completely inta
 
 - `%APPDATA%\lares\lares.ini` — Remote mode, saved screen/service choices and setup readiness (same INI layout as `~/.config/lares/lares.ini`; dry run uses `lares-dry.ini`).
 - `%APPDATA%\lares\pad.ini` — Controller alerts, notices, keep-awake, idle disconnect, tray icon preferences, G715 live lighting, background toggle and nicknames (same INI layout as `~/.config/lares/pad.ini`), and the window's Size as `[window] size=<percent>`, written only when it isn't 100 (Windows only; Linux ignores the group).
+- `%APPDATA%\lares\airdrop-contacts.ini` — Saved AirDrop contacts and profile photo paths for Contacts Only hash matching and radar avatars (dry run uses `airdrop-contacts-dry.ini`). Emails, phone numbers and SHA-256 hashes are never logged.
 - `%LOCALAPPDATA%\lares\share.log` and `lares-awdl.log`: when each step of AirDrop happened and what the link counted, started afresh each session, with no names or addresses, on this PC only.
-- For AirDrop: in a dry run `LARES_DRY_SHARE=<scene>` shows a scene (`setup`, `setup-failed`, `noadapter`, `receiving`, `quiet`, `incoming`, `incoming-receiving`, `incoming-done`, `looking`, `sending`) and `LARES_DRY_FILES=<path>;<path>` stands in for the file picker.
+- For AirDrop: in a dry run `LARES_DRY_SHARE=<scene>` shows a scene (`default`, `off`, `contacts`, `setup`, `setup-failed`, `noadapter`, `receiving`, `quiet`, `incoming`, `incoming-receiving`, `incoming-done`, `incoming-failed`, `looking`, `sending`), `LARES_DRY_FILES=<path>;<path>` stands in for the file picker, and `LARES_DRY_THUMB=<path>` supplies a dry-run preview thumbnail.
 - Environment flags matching Linux: `LARES_DRY_RUN=1`, `LARES_DRY_STREAM=1`, `LARES_COLOR_SCHEME=dark|light`, `LARES_SECTION=<id>`.
 
 ### Permissions on Windows

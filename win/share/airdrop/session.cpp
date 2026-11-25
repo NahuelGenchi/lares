@@ -34,6 +34,7 @@ namespace {
 
 constexpr char kModel[] = "Windows";            /* Receiver/SenderModelName */
 constexpr unsigned kIoTimeout = 30;             /* s: a peer that stops reading or writing (SEC-10) */
+constexpr unsigned kDiscoverIdleTimeout = 10;   /* s: idle keep-alive /Discover slot releases sooner */
 constexpr unsigned kConnectTimeout = 10;        /* s */
 /* A /Discover that isn't answered soon is tried again on a new connection
  * rather than waited for: over a fixed radio a phone is there about once a
@@ -45,13 +46,13 @@ constexpr auto kPromptSlice = std::chrono::milliseconds(500);
 constexpr unsigned kSenderAskTimeout = 45;      /* s, longer than a receiver's 15 s (ASK-2a) */
 constexpr unsigned kUploadResponseTimeout = 60; /* s */
 constexpr unsigned kDrainTimeout = 2;           /* s, reading what follows a complete archive (UP-11) */
-constexpr size_t kMaxMessage = 1024 * 1024;     /* a /Discover or /Ask body, and a response */
+constexpr size_t kMaxMessage = 4 * 1024 * 1024; /* a /Discover or /Ask body (multi-photo icons), and a response */
 constexpr size_t kMaxPending = 1024 * 1024;     /* bytes buffered while a prompt is up */
 constexpr uint64_t kMaxUpload = 16ull << 30;    /* an upload, unpacked (SEC-3) */
 constexpr auto kProgressEvery = std::chrono::milliseconds(250);
 constexpr size_t kReadChunk = 64 * 1024;
 constexpr int kSliceMs = 250;                   /* how often a blocked socket looks at its Cancel */
-constexpr int kMaxConnections = 6;
+constexpr int kMaxConnections = 16;
 
 using Clock = std::chrono::steady_clock;
 
@@ -222,7 +223,7 @@ public:
                 socklen_t len = sizeof soerr;
                 lwip_getsockopt(fd_, SOL_SOCKET, SO_ERROR, &soerr, &len);
                 if (soerr) {
-                    err = soerr == ECONNREFUSED ? "The connection was refused." : "The connection failed.";
+                    err = (soerr == ECONNREFUSED || soerr == ECONNRESET) ? "The connection was refused." : "The connection failed.";
                     return false;
                 }
                 r = 0;
@@ -264,6 +265,15 @@ public:
         return true;
     }
 
+    /* Non-blocking read: >0 bytes, 0 at the end, -1 on error, -2 would block. */
+    int recv_nonblocking(uint8_t* buf, size_t len)
+    {
+        int n = lwip_recv(fd_, buf, len, MSG_DONTWAIT);
+        if (n >= 0) return n;
+        if (errno == EWOULDBLOCK || errno == EAGAIN) return -2;
+        return -1;
+    }
+
     /* Whether something (bytes or the end) waits to be read. */
     bool readable()
     {
@@ -276,6 +286,9 @@ public:
         tls::Transport t;
         t.ctx = this;
         t.recv = [](void* ctx, uint8_t* b, size_t n) { return static_cast<Sock*>(ctx)->recv(b, n); };
+        t.recv_nonblocking = [](void* ctx, uint8_t* b, size_t n) {
+            return static_cast<Sock*>(ctx)->recv_nonblocking(b, n);
+        };
         t.send = [](void* ctx, const uint8_t* b, size_t n) { return static_cast<Sock*>(ctx)->send_all(b, n) ? 0 : -1; };
         return t;
     }
@@ -300,7 +313,7 @@ private:
 Bytes response_bytes(unsigned status, const Bytes* body, bool close)
 {
     const char* reason = status == 100 ? "Continue" : status == 200 ? "OK" : status == 400 ? "Bad Request"
-                       : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
+                       : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" : status == 406 ? "Not Acceptable"
                        : status == 413 ? "Content Too Large" : "Internal Server Error";
     size_t len = body ? body->size() : 0;
     char head[256];
@@ -425,6 +438,8 @@ struct Receiver::Impl {
     std::condition_variable cv;
     std::map<unsigned, int> answers;    /* 0 waiting, 1 accept, 2 decline */
     unsigned next_id = 0;
+    bool contacts_only = false;
+    std::set<std::string> contact_hashes;
     std::thread acceptor;
     struct Worker {
         std::thread thread;
@@ -731,6 +746,28 @@ struct Conn {
         return bplist_decode(body.data(), body.size(), v) && v.is(Value::Type::Dict);
     }
 
+    /* Checks SenderRecordData against saved contact hashes (ID-3). Returns the
+     * matched lowercase SHA-256 hex digest, or empty if no contact matched.
+     * Never logs hashes (SEC-5). */
+    std::string match_sender_record(const Value& req, bool& contacts_only_out)
+    {
+        std::set<std::string> allowed;
+        {
+            std::lock_guard<std::mutex> lock(r->mu);
+            contacts_only_out = r->contacts_only;
+            allowed = r->contact_hashes;
+        }
+        if (allowed.empty()) return {};
+        const Value* rec = req.is(Value::Type::Dict) ? req.find("SenderRecordData", Value::Type::Data) : nullptr;
+        if (!rec || rec->get_data().empty()) return {};
+        std::vector<std::string> hashes;
+        if (!airdrop_extract_record_hashes(rec->get_data().data(), rec->get_data().size(), hashes)) return {};
+        for (const std::string& h : hashes) {
+            if (allowed.count(h)) return h;
+        }
+        return {};
+    }
+
     void on_discover()
     {
         /* HTTP-7: once per connection, and only first. */
@@ -738,16 +775,35 @@ struct Conn {
         Value request;
         if (!decode_body(request)) return fail(400);
         slot_discover = true;
-        /* Everyone mode: every sender may see this receiver (ID-4). */
+        bool contacts_only = false;
+        std::string matched = match_sender_record(request, contacts_only);
+        if (contacts_only && matched.empty()) {
+            /* DISC-2 / ID-3: Contacts Only with no match answers 401 and no name. */
+            Value b = Value::dict();
+            b.add("StatusCode", Value::integer(401));
+            Bytes out;
+            if (bplist_encode(b, out)) {
+                send_response(200, &out, false);
+                sock->set_timeout(kDiscoverIdleTimeout);
+            } else {
+                fail(500);
+            }
+            return;
+        }
+        /* Everyone (100) or matched Contact (200) (ID-3, ID-4). */
         static const char kCaps[] = "{\"Version\":1}"; /* DISC-3: JPEG rather than HEIC */
         Value b = Value::dict();
-        b.add("StatusCode", Value::integer(100));
+        b.add("StatusCode", Value::integer(matched.empty() ? 100 : 200));
         b.add("ReceiverComputerName", Value::string(r->name));
         b.add("ReceiverModelName", Value::string(kModel));
         b.add("ReceiverMediaCapabilities", Value::data(kCaps, sizeof kCaps - 1));
         Bytes out;
-        if (bplist_encode(b, out)) send_response(200, &out, false);
-        else fail(500);
+        if (bplist_encode(b, out)) {
+            send_response(200, &out, false);
+            sock->set_timeout(kDiscoverIdleTimeout);
+        } else {
+            fail(500);
+        }
     }
 
     /* ASK-5: a file's FileBomPath is "./<FileName>", or "./<folder>/<FileName>"
@@ -781,6 +837,9 @@ struct Conn {
     {
         auto end = Clock::now() + kPromptTimeout;
         int answer = 0;
+        /* Cap any mid-flight TLS 1.3 post-handshake renegotiation read so the
+         * prompt loop never stalls for kIoTimeout (30 s). */
+        sock->set_timeout(2);
         std::unique_lock<std::mutex> lock(r->mu);
         for (;;) {
             answer = r->answers[id];
@@ -794,9 +853,14 @@ struct Conn {
             bool gone = false;
             if (sock->readable()) {
                 uint8_t buf[4096];
-                int n = tls->read(buf, sizeof buf);
-                if (n <= 0 || input.size() + static_cast<size_t>(n) > kMaxPending) gone = true;
-                else input.insert(input.end(), buf, buf + n);
+                int n = tls->try_read(buf, sizeof buf);
+                if (n == -2) {
+                    /* TLS 1.3 post-handshake record or partial record; peer is still waiting. */
+                } else if (n <= 0 || input.size() + static_cast<size_t>(n) > kMaxPending) {
+                    gone = true;
+                } else {
+                    input.insert(input.end(), buf, buf + n);
+                }
             }
             lock.lock();
             if (gone) {
@@ -805,11 +869,14 @@ struct Conn {
             }
         }
         r->answers.erase(id);
+        lock.unlock();
+        sock->set_timeout(kIoTimeout);
         return answer;
     }
 
     void on_ask()
     {
+        sock->set_timeout(kIoTimeout);
         slot_discover = false; /* HTTP-7 */
         if (accepted || slot_upload) return fail(400);
         Value req;
@@ -846,7 +913,21 @@ struct Conn {
             else bad = true;
         }
         std::string sender = lookup_str(req, "SenderComputerName");
-        if (bad) return fail(400);
+        std::string sender_model = lookup_str(req, "SenderModelName");
+        bool contacts_only = false;
+        std::string matched_hash = match_sender_record(req, contacts_only);
+        if (contacts_only && matched_hash.empty()) {
+            trace("receiver: /Ask rejected (401, contacts only)");
+            return fail(401);
+        }
+        if (const Value* icon = req.find("FileIcon", Value::Type::Data);
+            icon && !icon->get_data().empty() && icon->get_data().size() <= 512 * 1024) {
+            offer.file_icon = icon->get_data();
+        }
+        if (bad) {
+            trace("receiver: /Ask rejected (400, %zu files, %zu items)", nfiles, nitems);
+            return fail(400);
+        }
         links = nitems > 0;
         {
             std::lock_guard<std::mutex> lock(r->mu);
@@ -855,6 +936,8 @@ struct Conn {
         }
         offer.id = id;
         offer.sender = sender.empty() ? "Someone" : sender;
+        offer.sender_model = sender_model;
+        offer.matched_hash = matched_hash;
         offer.links = links;
         offer.total = total;
         Receiver::Impl* rr = r;
@@ -864,6 +947,7 @@ struct Conn {
 
         int answer = wait_answer();
         if (answer != 1) {
+            trace("receiver: offer %s", answer == 2 ? "declined" : answer == 0 ? "timed out" : "withdrawn by sender");
             unsigned i = id;
             r->note([rr, i] {
                 if (rr->cb.withdrawn) rr->cb.withdrawn(i);
@@ -890,6 +974,7 @@ struct Conn {
 
     bool upload_start(const HttpHeaders& headers)
     {
+        sock->set_timeout(kIoTimeout);
         /* UP-6: only after an accepted /Ask on this connection, once. */
         if (!accepted || links || slot_upload) {
             fail_status = 400;
@@ -986,7 +1071,10 @@ struct Conn {
     /* A whole message has been read: answer it. */
     void dispatch()
     {
-        if (too_big) return fail(413);
+        if (too_big) {
+            trace("receiver: request body too large (413)");
+            return fail(413);
+        }
         switch (route) {
         case Route::Discover: return on_discover();
         case Route::Ask: return on_ask();
@@ -1010,7 +1098,10 @@ struct Conn {
     {
         std::string err;
         tls = tls::Stream::server(sock->transport(), r->id, err);
-        if (!tls) return;
+        if (!tls) {
+            trace("receiver: TLS handshake failed: %s", err.c_str());
+            return;
+        }
         http = std::make_unique<HttpParser>(HttpKind::Request, callbacks());
         std::vector<uint8_t> buf(kReadChunk);
         while (!closing && !r->cancel->cancelled()) {
@@ -1080,6 +1171,11 @@ void Receiver::Impl::accept_loop()
         }
         if (fd < 0) continue;   /* a quarter second passed: look at the cancel */
         if (cancel->cancelled() || workers.size() >= static_cast<size_t>(kMaxConnections)) {
+            if (!cancel->cancelled()) {
+                note([this] {
+                    if (cb.trace) cb.trace(0, "receiver: connection limit reached, closing incoming socket");
+                });
+            }
             lwip_close(fd);
             continue;
         }
@@ -1116,7 +1212,7 @@ std::unique_ptr<Receiver> Receiver::start(Loop& loop, const Address& addr, const
         int on = 1;
         lwip_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
         sockaddr_in6 sa = socket_address(addr, i < kPorts ? static_cast<uint16_t>(kPort + i) : 0);
-        if (lwip_bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == 0 && lwip_listen(fd, 8) == 0) {
+        if (lwip_bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == 0 && lwip_listen(fd, 16) == 0) {
             sockaddr_in6 bound{};
             socklen_t len = sizeof bound;
             lwip_getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &len);
@@ -1160,6 +1256,13 @@ void Receiver::answer(unsigned id, bool accept)
     auto it = impl_->answers.find(id);
     if (it != impl_->answers.end()) it->second = accept ? 1 : 2;
     impl_->cv.notify_all();
+}
+
+void Receiver::set_policy(bool contacts_only, std::set<std::string> contact_hashes)
+{
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    impl_->contacts_only = contacts_only;
+    impl_->contact_hashes = std::move(contact_hashes);
 }
 
 // ================================================================== sender
@@ -1325,15 +1428,18 @@ template <class F> void post_unless_cancelled(Loop& loop, const std::shared_ptr<
 } // namespace
 
 void discover(Loop& loop, const Address& addr, uint16_t port, std::shared_ptr<Cancel> cancel,
-              std::function<void(std::optional<Peer>, const std::string& err)> done)
+              std::function<void(std::optional<Peer>, const std::string& err)> done,
+              std::vector<uint8_t> sender_record)
 {
-    std::thread([&loop, addr, port, cancel, done] {
+    std::thread([&loop, addr, port, cancel, done, sender_record = std::move(sender_record)] {
         std::optional<Peer> peer;
         std::string err;
         Sock sock(-1, cancel);
         Bytes req;
-        /* An empty dict, as every sender known to work with iOS 18 sends (§6.3). */
-        plist_request("/Discover", Value::dict(), req);
+        /* An empty dict by default, or with SenderRecordData when supplied (§6.3). */
+        Value body = Value::dict();
+        if (!sender_record.empty()) body.add("SenderRecordData", Value::data(sender_record));
+        plist_request("/Discover", body, req);
         std::unique_ptr<tls::Stream> t;
         Response resp;
         if (sock.connect(addr, port, kDiscoverConnectTimeout, err) &&
@@ -1471,7 +1577,16 @@ void send(Loop& loop, const SendRequest& request, std::shared_ptr<Cancel> cancel
         sock.set_timeout(kSenderAskTimeout);
         Response resp;
         std::string why;
-        if (!read_response(*t, resp, why) || resp.status != 200) {
+        if (!read_response(*t, resp, why)) {
+            err = "Declined, or not answered."; /* ASK-1 */
+            declined = true;
+            return finish();
+        }
+        if (resp.status == 401) {
+            err = "Set AirDrop on that device to Everyone for 10 Minutes.";
+            return finish();
+        }
+        if (resp.status != 200) {
             err = "Declined, or not answered."; /* ASK-1 */
             declined = true;
             return finish();

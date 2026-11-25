@@ -66,14 +66,20 @@ static void on_page_scrolled(GtkAdjustment *adj, LaresClamp *clamp)
     lares_clamp_release(clamp, (int)(gtk_adjustment_get_value(adj) + gtk_adjustment_get_page_size(adj)));
 }
 
-static GtkWidget *wrap_page(GtkWidget *page)
+static GtkWidget *wrap_page(GtkWidget *page, gboolean wide)
 {
     gtk_widget_add_css_class(page, "page");
-    gtk_widget_set_valign(page, GTK_ALIGN_START);
+    if (wide) {
+        gtk_widget_add_css_class(page, "page-wide");
+        gtk_widget_set_valign(page, GTK_ALIGN_FILL);
+        gtk_widget_set_vexpand(page, TRUE);
+    } else {
+        gtk_widget_set_valign(page, GTK_ALIGN_START);
+    }
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_EXTERNAL);
     GtkWidget *viewport = gtk_viewport_new(NULL, NULL);
-    GtkWidget *clamp = lares_clamp_new(page, CONTENT_WIDTH, CONTENT_LEAD);
+    GtkWidget *clamp = lares_clamp_new(page, wide ? 1200 : CONTENT_WIDTH, CONTENT_LEAD);
     gtk_viewport_set_child(GTK_VIEWPORT(viewport), clamp);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), viewport);
     g_signal_connect(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll)), "value-changed",
@@ -109,7 +115,7 @@ void lares_show(Lares *app, const char *id)
     /* Out of sight, the page it leaves needn't keep a click's hold. */
     if (app->current && app->current->page) lares_clamp_release(page_clamp(app->current->page), -1);
     if (!s->page) {
-        s->page = wrap_page(s->build(app, s));
+        s->page = wrap_page(s->build(app, s), s->build == share_build);
         gtk_stack_add_named(GTK_STACK(app->stack), s->page, s->id);
     }
     gboolean first = app->current == NULL;

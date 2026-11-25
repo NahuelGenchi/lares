@@ -12,11 +12,117 @@ extern "C" {
 #include <cstring>
 #include <dbt.h>
 #include <dwmapi.h>
+#include <ole2.h>
 #include <uxtheme.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
 namespace lares {
+
+namespace {
+
+/* Native OLE IDropTarget so dragging files from Explorer highlights the
+ * exact AirDrop device circle under the pointer and sends on drop. */
+class ShareDropTarget final : public IDropTarget {
+public:
+    explicit ShareDropTarget(MainWindow* win) : win_(win) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override
+    {
+        if (!ppv) return E_POINTER;
+        if (riid == IID_IUnknown || riid == IID_IDropTarget) {
+            *ppv = static_cast<IDropTarget*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&refs_)); }
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        ULONG r = static_cast<ULONG>(InterlockedDecrement(&refs_));
+        if (r == 0) delete this;
+        return r;
+    }
+
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINTL pt, DWORD* effect) override
+    {
+        has_files_ = data && has_hdrop(data);
+        if (effect) *effect = (has_files_ && win_ && win_->is_share_section_active()) ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        if (has_files_ && win_ && win_->is_share_section_active()) win_->on_ole_drag(true, POINT{ pt.x, pt.y });
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL pt, DWORD* effect) override
+    {
+        bool ok = has_files_ && win_ && win_->is_share_section_active();
+        if (effect) *effect = ok ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        if (ok) win_->on_ole_drag(true, POINT{ pt.x, pt.y });
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE DragLeave() override
+    {
+        has_files_ = false;
+        if (win_) win_->on_ole_drag(false, POINT{ 0, 0 });
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL pt, DWORD* effect) override
+    {
+        bool ok = has_files_ && data && win_ && win_->is_share_section_active();
+        has_files_ = false;
+        if (effect) *effect = ok ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        if (ok) {
+            std::vector<std::wstring> paths = extract_hdrop(data);
+            if (!paths.empty()) win_->on_ole_drop(POINT{ pt.x, pt.y }, paths);
+            else win_->on_ole_drag(false, POINT{ 0, 0 });
+        } else if (win_) {
+            win_->on_ole_drag(false, POINT{ 0, 0 });
+        }
+        return S_OK;
+    }
+
+    void detach() { win_ = nullptr; }
+
+private:
+    static bool has_hdrop(IDataObject* data)
+    {
+        FORMATETC fmt = { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        return data->QueryGetData(&fmt) == S_OK;
+    }
+
+    static std::vector<std::wstring> extract_hdrop(IDataObject* data)
+    {
+        std::vector<std::wstring> out;
+        FORMATETC fmt = { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        STGMEDIUM med = {};
+        if (FAILED(data->GetData(&fmt, &med))) return out;
+        if (med.tymed == TYMED_HGLOBAL && med.hGlobal) {
+            HDROP drop = static_cast<HDROP>(GlobalLock(med.hGlobal));
+            if (drop) {
+                UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+                for (UINT i = 0; i < count; ++i) {
+                    UINT len = DragQueryFileW(drop, i, nullptr, 0);
+                    if (len == 0) continue;
+                    std::wstring p(len, L'\0');
+                    DragQueryFileW(drop, i, p.data(), len + 1);
+                    out.push_back(std::move(p));
+                }
+                GlobalUnlock(med.hGlobal);
+            }
+        }
+        ReleaseStgMedium(&med);
+        return out;
+    }
+
+    volatile LONG refs_ = 1;
+    MainWindow* win_ = nullptr;
+    bool has_files_ = false;
+};
+
+} // namespace
 
 static constexpr UINT_PTR kAnimTimerId = 1;
 static constexpr UINT_PTR kDevicesSettleTimerId = 2;
@@ -81,7 +187,9 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
 
 MainWindow::~MainWindow()
 {
+    release_share_bitmaps();
     release_backbuffer();
+    if (share_round_cap_) { share_round_cap_->Release(); share_round_cap_ = nullptr; }
     if (brush_) { brush_->Release(); brush_ = nullptr; }
     if (dc_rt_) { dc_rt_->Release(); dc_rt_ = nullptr; }
     if (d2d_factory_) { d2d_factory_->Release(); d2d_factory_ = nullptr; }
@@ -144,6 +252,9 @@ bool MainWindow::init_d2d()
     if (FAILED(hr) || !dc_rt_) return false;
 
     dc_rt_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+    D2D1_STROKE_STYLE_PROPERTIES cap_props = D2D1::StrokeStyleProperties(
+        D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND);
+    d2d_factory_->CreateStrokeStyle(cap_props, nullptr, 0, &share_round_cap_);
     hr = dc_rt_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush_);
     return SUCCEEDED(hr) && brush_ != nullptr;
 }
@@ -237,6 +348,13 @@ bool MainWindow::create()
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     filter.dbcc_classguid = kHidInterfaceGuid;
     dev_notify_ = RegisterDeviceNotificationW(hwnd_, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    auto* dt = new ShareDropTarget(this);
+    if (SUCCEEDED(RegisterDragDrop(hwnd_, dt))) {
+        drop_target_ = dt;
+    } else {
+        dt->detach();
+        dt->Release();
+    }
     /* The first look for devices may have ended before there was a window
      * to tell: take what it found, so their sections show whichever
      * section Lares opens on. */
@@ -273,6 +391,7 @@ void MainWindow::update_sampling_state()
         remote_.set_wanted(false);
         devices_.set_wanted(false, false, false);
         pads_.set_wanted(false, false);
+        sync_share_browsing();
         return;
     }
     const char* id = sections_[current_sec_].id;
@@ -287,6 +406,7 @@ void MainWindow::update_sampling_state()
     remote_.set_wanted(is_ov || is_rem);
     devices_.set_wanted(is_ov || is_hp || is_kbd || is_mse, is_mse, is_kbd);
     pads_.set_wanted(is_ov || is_pad, is_pad);
+    sync_share_browsing();
 }
 
 int MainWindow::visible_index_of(int sec_idx) const
@@ -318,6 +438,13 @@ void MainWindow::select_section(const std::string& id, bool animate)
             device_hits_.clear();
             pad_hits_.clear();
             share_hits_.clear();
+            share_circles_.clear();
+            share_mode_menu_open_ = false;
+            share_adapter_open_ = false;
+            share_contacts_open_ = false;
+            share_ctx_open_ = false;
+            share_editing_contact_ = -1;
+            share_contact_field_ = -1;
             int vis = visible_index_of(i);
             nav_pill_target_y_ = kNavPadTop + vis * (nav_item_h() + kHalf);
             if (!animate || !nav_pill_init_) {
@@ -327,12 +454,12 @@ void MainWindow::select_section(const std::string& id, bool animate)
             } else {
                 start_anim_timer();
             }
-            update_sampling_state();
             if (id == "share") {
                 /* What's set up may have changed since it was last shown. */
                 share_.refresh();
                 share_view_ = share_.view();
             }
+            update_sampling_state();
             sync_share_tick();
             if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
             return;
@@ -543,7 +670,7 @@ void MainWindow::pick_dropdown(int index)
     if (pick) pick(value);
 }
 
-bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
+bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out, bool for_cursor) const
 {
     auto found = [&](const D2D1_RECT_F& r) {
         if (out) *out = r;
@@ -575,16 +702,22 @@ bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out) const
     for (const auto& h : toggle_hits_) { if (h.enabled && point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& d : drops_)       { if (d.enabled && point_in_rect(lx, ly, d.button)) return found(d.button); }
     for (const auto& h : card_hits_)  { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (auto it = share_hits_.rbegin(); it != share_hits_.rend(); ++it) {
+        if (!point_in_rect(lx, ly, it->rect)) continue;
+        if (it->kind == ShareActionKind::CloseOverlays) {
+            return for_cursor ? false : found(it->rect);
+        }
+        return found(it->rect);
+    }
     for (const auto& h : remote_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : device_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (const auto& h : pad_hits_)    { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
-    for (const auto& h : share_hits_)  { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     return false;
 }
 
 bool MainWindow::point_over_interactive(float lx, float ly) const
 {
-    return interactive_rect_at(lx, ly, nullptr);
+    return interactive_rect_at(lx, ly, nullptr, true);
 }
 
 /* Nothing under an open list looks pressable: a press there only closes it. */
@@ -1055,7 +1188,13 @@ void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float clie
     else if (std::strcmp(id, "hardware") == 0) draw_hardware_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "controller") == 0) draw_controller_page(rt, pal, col_x, col_y, col_w);
     else if (std::strcmp(id, "remote") == 0) draw_remote_page(rt, pal, col_x, col_y, col_w);
-    else if (std::strcmp(id, "share") == 0) draw_share_page(rt, pal, col_x, col_y, col_w);
+    else if (std::strcmp(id, "share") == 0) {
+        float sx = kSidebarWidth + kContentLead;
+        float sy = kPagePadTop - scroll_y_;
+        float sw = std::max(440.0f, client_w - sx - kPagePadLeft);
+        float sh = std::max(520.0f, client_h - kPagePadTop * 2.0f);
+        draw_share_page(rt, pal, sx, sy, sw, sh);
+    }
     else if (std::strcmp(id, "headphones") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Audio);
     else if (std::strcmp(id, "keyboard") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Keyboard);
     else if (std::strcmp(id, "mouse") == 0) draw_devices_page(rt, pal, col_x, col_y, col_w, DevKind::Mouse);
@@ -1526,6 +1665,8 @@ void MainWindow::on_key_down(WPARAM vk)
         return;
     }
 
+    if (share_key_down(vk)) return;
+
     if (vk == VK_PRIOR || vk == VK_NEXT) {
         on_mouse_wheel(vk == VK_PRIOR ? 360 : -360);
         return;
@@ -1546,6 +1687,7 @@ void MainWindow::on_key_down(WPARAM vk)
 
 void MainWindow::on_char(wchar_t ch)
 {
+    if (share_char(ch)) return;
     if (editing_pad_path_.empty()) return;
     if (ch < 32 || ch == 127) return;
     if (editing_nickname_.size() >= kPadNicknameLength * 2) return;
@@ -1637,6 +1779,10 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         on_mouse_release(static_cast<float>(GET_X_LPARAM(lp)) / scale_,
                          static_cast<float>(GET_Y_LPARAM(lp)) / scale_);
         return 0;
+    case WM_RBUTTONUP:
+        share_right_click(static_cast<float>(GET_X_LPARAM(lp)) / scale_,
+                          static_cast<float>(GET_Y_LPARAM(lp)) / scale_);
+        return 0;
     case WM_CAPTURECHANGED:
         pressed_ = false;
         return 0;
@@ -1650,7 +1796,15 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
     case WM_ACTIVATE:
         /* Back from Settings, say: what Windows paints may have changed. */
         if (LOWORD(wp) != WA_INACTIVE) InvalidateRect(hwnd_, nullptr, FALSE);
-        else close_dropdown();
+        else {
+            close_dropdown();
+            if (share_mode_menu_open_ || share_adapter_open_ || share_ctx_open_) {
+                share_mode_menu_open_ = false;
+                share_adapter_open_ = false;
+                share_ctx_open_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+        }
         return DefWindowProcW(hwnd_, msg, wp, lp);
     case WM_MOUSEWHEEL:
         on_mouse_wheel(GET_WHEEL_DELTA_WPARAM(wp));
@@ -1796,6 +1950,12 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_DESTROY:
+        if (drop_target_) {
+            RevokeDragDrop(hwnd_);
+            static_cast<ShareDropTarget*>(drop_target_)->detach();
+            drop_target_->Release();
+            drop_target_ = nullptr;
+        }
         if (dev_notify_) {
             UnregisterDeviceNotification(dev_notify_);
             dev_notify_ = nullptr;
@@ -1808,6 +1968,7 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         devices_.set_notify_hwnd(nullptr);
         pads_.set_wanted(false, false);
         pads_.set_notify_hwnd(nullptr);
+        share_.set_browsing(false);
         share_.set_notify_hwnd(nullptr);
         ble_.set_active(false);
         if (share_tick_) {

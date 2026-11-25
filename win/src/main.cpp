@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <objbase.h>
+#include <ole2.h>
 #include <shellapi.h>
 #include <string>
 #include <vector>
@@ -124,7 +125,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
         return 0;
     }
 
-    HRESULT hr_com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    HRESULT hr_ole = OleInitialize(nullptr);
     int exit_code = 1;
     {
         lares::MainWindow win(hinst, opts);
@@ -139,7 +140,7 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
         }
     }
 
-    if (SUCCEEDED(hr_com)) CoUninitialize();
+    if (SUCCEEDED(hr_ole)) OleUninitialize();
     if (mutex) CloseHandle(mutex);
     return exit_code;
 }

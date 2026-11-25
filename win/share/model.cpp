@@ -29,9 +29,13 @@ namespace lares {
 
 namespace {
 
-constexpr unsigned kReceiveSeconds = 600;   /* as an iPhone's Everyone for 10 minutes */
-constexpr unsigned kDiscoverRetryMs = 1000; /* DISC-5: a phone is there about once a second */
-constexpr unsigned kLingerSeconds = 60;     /* the link waits this long for a next use */
+constexpr unsigned kReceiveSeconds = 600;     /* as an iPhone's Everyone for 10 minutes */
+constexpr unsigned kDiscoverRetryMs = 1000;   /* DISC-5: initial probes when a peer appears */
+constexpr unsigned kDiscoverSlowMs = 3000;    /* backoff after repeated failures so channel 6 isn't flooded */
+constexpr unsigned kDiscoverIdleMs = 5000;    /* steady-state poll for peers in sender-only or Contacts Only mode */
+constexpr unsigned kDiscoverRecheckMs = 5000; /* re-verify listed devices when peer switches to Contacts Only or Off */
+constexpr unsigned kDiscoverMissMs = 2000;    /* retry interval after a missed re-check */
+constexpr unsigned kLingerSeconds = 60;       /* the link waits this long for a next use */
 constexpr unsigned kQuietSeconds = 20;      /* no Apple device heard in this long: say so */
 constexpr uint8_t kChannel = 6;             /* the adapter is 2.4 GHz only */
 constexpr int kFirmwareResource = 101;      /* firmware.rc */
@@ -113,6 +117,8 @@ struct Candidate {
     uint16_t port = 0;
     unsigned flags = 0;
     bool trying = false, listed = false;
+    unsigned missed = 0, fail_streak = 0;
+    Loop::Clock::time_point next_probe{};
 };
 
 } // namespace
@@ -136,6 +142,9 @@ struct Share::Impl {
     std::shared_ptr<tls::Identity> cert;
     std::unique_ptr<airdrop::MdnsIo> mdns;
     std::unique_ptr<airdrop::Receiver> receiver;
+    std::set<std::string> contact_hashes;
+    DiscoverMode prev_mode = DiscoverMode::Off;
+    std::wstring thumb_file;
     unsigned receive_timer = 0, retry = 0, quiet_timer = 0, linger = 0;
 
     std::map<std::string, Candidate> candidates;
@@ -155,7 +164,38 @@ struct Share::Impl {
     {
         if (s.fn_) s.fn_();
     }
-    bool finding() { return st().sending || s.looking_; }
+    bool finding() { return st().browsing || st().sending || s.looking_; }
+
+    void clear_thumb()
+    {
+        if (!thumb_file.empty()) {
+            DeleteFileW(thumb_file.c_str());
+            thumb_file.clear();
+        }
+    }
+
+    std::string write_thumb(unsigned id, const std::vector<uint8_t>& bytes)
+    {
+        clear_thumb();
+        if (bytes.empty()) return {};
+        wchar_t tmp[MAX_PATH];
+        DWORD n = GetTempPathW(MAX_PATH, tmp);
+        if (!n || n >= MAX_PATH - 48) return {};
+        wchar_t leaf[48];
+        swprintf(leaf, 48, L"lares-airdrop-thumb-%lu-%u.img", static_cast<unsigned long>(GetCurrentProcessId()), id);
+        std::wstring path = std::wstring(tmp) + leaf;
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return {};
+        DWORD wrote = 0;
+        BOOL ok = WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr);
+        CloseHandle(f);
+        if (!ok || wrote != bytes.size()) {
+            DeleteFileW(path.c_str());
+            return {};
+        }
+        thumb_file = path;
+        return utf8(path);
+    }
 
     // ------------------------------------------------------------ the log
 
@@ -242,13 +282,78 @@ struct Share::Impl {
         return nullptr;
     }
 
+    bool transfer_active()
+    {
+        if (!send_key.empty()) return true;
+        const Incoming* in = st().incoming.get();
+        return in && (in->state == IncomingState::Asking || in->state == IncomingState::Receiving);
+    }
+
+    bool address_trying(const std::string& peer_addr) const
+    {
+        for (const auto& [k, cand] : candidates)
+            if (cand.trying && !cand.address.empty() && _stricmp(cand.address.c_str(), peer_addr.c_str()) == 0)
+                return true;
+        return false;
+    }
+
+    void unmark_address(const std::string& peer_addr, Loop::Clock::time_point next)
+    {
+        if (peer_addr.empty()) return;
+        for (auto& [k, cand] : candidates) {
+            if (_stricmp(cand.address.c_str(), peer_addr.c_str()) == 0) {
+                cand.listed = false;
+                cand.missed = 0;
+                cand.fail_streak = 0;
+                cand.next_probe = next;
+            }
+        }
+    }
+
+    void wake_candidates()
+    {
+        for (auto& [k, cand] : candidates) {
+            if (!cand.listed) {
+                cand.fail_streak = 0;
+                cand.next_probe = {};
+            }
+        }
+    }
+
+    bool remove_idle_device_by(const std::string& key, const std::string& peer_addr)
+    {
+        bool removed = false;
+        for (auto it = st().devices.begin(); it != st().devices.end();) {
+            bool match = (!key.empty() && it->key == key) ||
+                         (!peer_addr.empty() && !it->address.empty() && _stricmp(it->address.c_str(), peer_addr.c_str()) == 0);
+            if (match && it->state == DeviceState::Found) {
+                it = st().devices.erase(it);
+                removed = true;
+            } else {
+                ++it;
+            }
+        }
+        return removed;
+    }
+
     void try_discover(Candidate& c)
     {
-        if (c.trying || c.listed || !discover_cancel) return;
+        if (c.trying || !discover_cancel) return;
+        if (transfer_active()) return; /* keep AWDL channel 6 free for active incoming/outgoing transfers */
+        auto now = Loop::Clock::now();
+        if (c.next_probe != Loop::Clock::time_point{} && now < c.next_probe) return;
+        if (address_trying(c.address)) return;
+        if (c.listed) {
+            /* When both mDNS and AWDL candidates share one device, only the primary key re-probes. */
+            if (Device* d = device_at(c.address); d && d->key != c.key) {
+                if (auto it = candidates.find(d->key); it != candidates.end() && it->second.listed) return;
+            }
+        }
         airdrop::Address a;
         if (!airdrop::parse_address(c.address, net_iface_index(iface), a)) return;
         c.trying = true;
-        share_log("asking a %s", c.key.compare(0, 5, "awdl:") == 0 ? "nearby AWDL device directly" : "service found over mDNS");
+        if (!c.listed && (c.fail_streak < 3 || c.fail_streak % 5 == 0))
+            share_log("asking a %s", c.key.compare(0, 5, "awdl:") == 0 ? "nearby AWDL device directly" : "service found over mDNS");
         std::string key = c.key;
         auto cancel = discover_cancel;
         airdrop::discover(loop(), a, c.port, cancel,
@@ -265,17 +370,59 @@ struct Share::Impl {
         if (it == candidates.end()) return;
         Candidate& c = it->second;
         c.trying = false;
+        auto now = Loop::Clock::now();
         if (!peer) {
-            share_log("not listed yet: %s", err.empty() ? "it didn't list us" : err.c_str());
+            bool explicit_refusal = err.empty(); /* peer answered /Discover without ReceiverComputerName (e.g. Contacts Only) */
+            if (c.listed || device_at(c.address)) {
+                if (explicit_refusal) {
+                    share_log("device is no longer discoverable");
+                    std::string peer_addr = c.address;
+                    unmark_address(peer_addr, now + std::chrono::milliseconds(kDiscoverMissMs));
+                    if (remove_idle_device_by(key, peer_addr)) changed();
+                    return;
+                }
+                c.missed++;
+                bool refused = err == "The connection was refused.";
+                unsigned limit = refused ? 2u : 3u;
+                if (c.missed >= limit) {
+                    share_log("device stopped answering: %s", err.c_str());
+                    std::string peer_addr = c.address;
+                    unmark_address(peer_addr, now + std::chrono::milliseconds(kDiscoverMissMs));
+                    if (remove_idle_device_by(key, peer_addr)) changed();
+                } else {
+                    c.next_probe = now + std::chrono::milliseconds(refused ? kDiscoverRetryMs : kDiscoverMissMs);
+                }
+                return;
+            }
+            c.fail_streak++;
+            unsigned wait_ms = c.fail_streak < 5 ? (explicit_refusal ? kDiscoverMissMs : kDiscoverRetryMs)
+                             : c.fail_streak < 10 ? kDiscoverSlowMs
+                                                  : kDiscoverIdleMs;
+            c.next_probe = now + std::chrono::milliseconds(wait_ms);
+            if (c.fail_streak <= 3 || c.fail_streak % 5 == 0)
+                share_log("not listed yet: %s", err.empty() ? "it didn't list us" : err.c_str());
             return;
         }
-        share_log("listed a device");
+        bool was_listed = c.listed;
+        auto next = now + std::chrono::milliseconds(kDiscoverRecheckMs);
         c.listed = true;
+        c.missed = 0;
+        c.fail_streak = 0;
+        c.next_probe = next;
+        for (auto& [k2, sib] : candidates) {
+            if (_stricmp(sib.address.c_str(), c.address.c_str()) == 0) {
+                sib.listed = true;
+                sib.missed = 0;
+                sib.fail_streak = 0;
+                sib.next_probe = next;
+            }
+        }
         Device* d = device_find(key);
         Device* same = device_at(c.address);
+        bool dirty = false;
         if (!d && same) {
             d = same;   /* found both over mDNS and on AWDL alone: one device */
-            if (c.flags) d->flags = c.flags;
+            if (c.flags && d->flags != c.flags) { d->flags = c.flags; dirty = true; }
         }
         if (!d) {
             Device nd;
@@ -285,14 +432,19 @@ struct Share::Impl {
             nd.flags = c.flags;
             st().devices.push_back(std::move(nd));
             d = &st().devices.back();
+            dirty = true;
         }
-        d->name = peer->name;
-        d->model = peer->model;
-        changed();
+        if (d->name != peer->name || d->model != peer->model) {
+            d->name = peer->name;
+            d->model = peer->model;
+            dirty = true;
+        }
+        if (!was_listed) share_log("listed a device");
+        if (dirty) changed();
     }
 
     /* Receivers refuse until a Bluetooth advert has woken them: keep asking
-     * while looking (DISC-5). */
+     * while looking (DISC-5), and re-verify listed devices periodically. */
     void retry_discover()
     {
         retry = loop().after(kDiscoverRetryMs, [this] { retry_discover(); });
@@ -303,10 +455,17 @@ struct Share::Impl {
     {
         Candidate& c = candidates[key];
         c.key = key;
+        bool fresh_mdns = key.compare(0, 5, "awdl:") != 0;
         if (c.address.empty() || c.address != where || c.port != port) {
             c.address = where;
             c.port = port;
             c.listed = false;
+            c.missed = 0;
+            c.fail_streak = 0;
+            c.next_probe = {};
+        } else if (fresh_mdns && !c.listed) {
+            c.fail_streak = 0;
+            c.next_probe = {};
         }
         if (flags) c.flags = flags;
         if (Device* d = device_find(key); d && flags) d->flags = flags;
@@ -322,15 +481,16 @@ struct Share::Impl {
 
     void drop_device(const std::string& key)
     {
-        candidates.erase(key);
-        for (auto it = st().devices.begin(); it != st().devices.end(); ++it) {
-            if (it->key != key) continue;
-            if (it->state != DeviceState::Asking && it->state != DeviceState::Sending) {
-                st().devices.erase(it);
-                changed();
-            }
-            return;
+        std::string peer_addr;
+        if (auto it = candidates.find(key); it != candidates.end()) {
+            peer_addr = it->second.address;
+            candidates.erase(it);
         }
+        if (peer_addr.empty()) {
+            if (Device* d = device_find(key)) peer_addr = d->address;
+        }
+        unmark_address(peer_addr, Loop::Clock::now() + std::chrono::milliseconds(kDiscoverMissMs));
+        if (remove_idle_device_by(key, peer_addr)) changed();
     }
 
     // ------------------------------------------------------------ receiver
@@ -354,6 +514,9 @@ struct Share::Impl {
             auto in = std::make_unique<Incoming>();
             in->id = o.id;
             in->sender = o.sender;
+            in->sender_model = o.sender_model;
+            in->matched_hash = o.matched_hash;
+            in->thumb_path = write_thumb(o.id, o.file_icon);
             in->links = o.links;
             in->names = o.names;
             in->total = o.total;
@@ -363,6 +526,8 @@ struct Share::Impl {
         cb.withdrawn = [this](unsigned id) {
             Incoming* in = incoming_for(id);
             if (!in || in->state != IncomingState::Asking) return;
+            share_log("offer withdrawn");
+            clear_thumb();
             st().incoming.reset();
             changed();
             update_link();
@@ -426,7 +591,10 @@ struct Share::Impl {
                 receiver = airdrop::Receiver::start(loop(), a, st().name, download_folder(), cert, receiver_callbacks(), err);
             else
                 err = "Bad address " + address;
-            if (!receiver) st().link_error = err;
+            if (receiver) receiver->set_policy(st().mode == DiscoverMode::ContactsOnly, contact_hashes);
+            else st().link_error = err;
+        } else if (receiver && (st().receiving || incoming_on)) {
+            receiver->set_policy(st().mode == DiscoverMode::ContactsOnly, contact_hashes);
         } else if (!st().receiving && !incoming_on && receiver) {
             receiver.reset();
         }
@@ -617,7 +785,9 @@ struct Share::Impl {
         if (failed) {
             if (st().link_error.empty()) st().link_error = why.empty() ? "The AirDrop link stopped." : why;
             /* Nothing can work without the link: turn receiving off. */
+            st().mode = DiscoverMode::Off;
             st().receiving = false;
+            st().browsing = false;
             loop().cancel(receive_timer);
         }
         changed();
@@ -698,6 +868,7 @@ Share::Share(Loop& loop) : loop_(loop), d_(std::make_unique<Impl>(*this))
 
 Share::~Share()
 {
+    d_->clear_thumb();
     d_->parts_stop();
     if (d_->link) d_->link_end(false, {});
     if (d_->stopper.joinable()) d_->stopper.join();
@@ -712,19 +883,69 @@ void Share::refresh()
     d_->changed();
 }
 
-void Share::set_receiving(bool on)
+void Share::set_mode(DiscoverMode mode)
 {
-    if (on && st_.setup != Setup::Ready) return;
-    st_.receiving = on;
+    if (mode != DiscoverMode::Off && st_.setup != Setup::Ready) return;
+    DiscoverMode old_mode = st_.mode;
+    if (mode == DiscoverMode::Everyone && st_.mode != DiscoverMode::Everyone) d_->prev_mode = st_.mode;
+    st_.mode = mode;
+    st_.receiving = mode != DiscoverMode::Off;
+    /* Rotate our mDNS service instance and host label when discoverability
+     * changes while the link is up so Apple senders don't reuse a cached 401
+     * from Contacts Only, and the old service's goodbye doesn't flush the new
+     * host's AAAA record. */
+    if (mode != old_mode && mode != DiscoverMode::Off && st_.link == LinkState::Up) {
+        d_->service_id = random_id();
+        d_->label = "lares-" + d_->service_id;
+    }
     loop_.cancel(d_->receive_timer);
-    if (on) {
-        d_->log_session("receiving on");
+    if (mode == DiscoverMode::Everyone) {
+        d_->log_session("discoverable: everyone for 10 minutes");
         st_.receive_until = Loop::Clock::now() + std::chrono::seconds(kReceiveSeconds);
         d_->receive_timer = loop_.after(kReceiveSeconds * 1000, [this] {
             d_->receive_timer = 0;
-            set_receiving(false);
+            set_mode(d_->prev_mode);
         });
         if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    } else if (mode == DiscoverMode::ContactsOnly) {
+        d_->log_session("discoverable: contacts only");
+        st_.receive_until = {};
+        if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    } else {
+        st_.receive_until = {};
+    }
+    if (d_->receiver) d_->receiver->set_policy(mode == DiscoverMode::ContactsOnly, d_->contact_hashes);
+    d_->changed();
+    d_->update_link();
+}
+
+void Share::set_receiving(bool on)
+{
+    set_mode(on ? DiscoverMode::Everyone : DiscoverMode::Off);
+}
+
+void Share::set_contact_hashes(std::set<std::string> hashes)
+{
+    bool diff = (hashes != d_->contact_hashes);
+    d_->contact_hashes = std::move(hashes);
+    if (d_->receiver) d_->receiver->set_policy(st_.mode == DiscoverMode::ContactsOnly, d_->contact_hashes);
+    if (diff && st_.mode == DiscoverMode::ContactsOnly && st_.link == LinkState::Up) {
+        d_->service_id = random_id();
+        d_->label = "lares-" + d_->service_id;
+        d_->parts_apply();
+    }
+}
+
+void Share::set_browsing(bool on)
+{
+    if (on == st_.browsing || (on && st_.setup != Setup::Ready)) return;
+    st_.browsing = on;
+    if (on) {
+        d_->log_session("browsing nearby devices");
+        if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    } else if (!st_.sending && !looking_) {
+        st_.devices.clear();
+        d_->candidates.clear();
     }
     d_->changed();
     d_->update_link();
@@ -735,8 +956,12 @@ void Share::answer(bool accept)
     Incoming* in = st_.incoming.get();
     if (!in || in->state != IncomingState::Asking) return;
     if (d_->receiver) d_->receiver->answer(in->id, accept);
-    if (accept) in->state = IncomingState::Receiving;
-    else st_.incoming.reset();
+    if (accept) {
+        in->state = IncomingState::Receiving;
+    } else {
+        d_->clear_thumb();
+        st_.incoming.reset();
+    }
     d_->changed();
     d_->update_link();
 }
@@ -745,6 +970,7 @@ void Share::dismiss_incoming()
 {
     Incoming* in = st_.incoming.get();
     if (!in || in->state == IncomingState::Asking || in->state == IncomingState::Receiving) return;
+    d_->clear_thumb();
     st_.incoming.reset();
     d_->changed();
 }
@@ -755,8 +981,9 @@ void Share::set_looking(bool on)
     looking_ = on;
     if (on) {
         d_->log_session("looking while files are picked");
+        d_->wake_candidates();
         if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
-    } else if (!st_.sending) {
+    } else if (!st_.sending && !st_.browsing) {
         st_.devices.clear();
         d_->candidates.clear();
     }
@@ -770,16 +997,61 @@ void Share::set_sending(const std::vector<std::wstring>& paths)
     if (on && st_.setup != Setup::Ready) return;
     if (!on) cancel_send();
     st_.paths = paths;
-    /* What was found while the files were picked stays. */
-    bool keep = on && looking_;
+    /* What was found while browsing or picking stays. */
+    bool keep = (on && (looking_ || st_.browsing)) || st_.browsing;
     looking_ = false;
     st_.sending = on;
-    if (on) d_->log_session(keep ? "files picked" : "sending");
+    if (on) {
+        d_->log_session(keep ? "files picked" : "sending");
+        d_->wake_candidates();
+    }
     if (!keep) {
         st_.devices.clear();
         d_->candidates.clear();
     }
     if (on && st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    d_->changed();
+    d_->update_link();
+}
+
+void Share::send_files_to(const std::string& key, const std::vector<std::wstring>& paths)
+{
+    if (paths.empty() || st_.setup != Setup::Ready) return;
+    if (!d_->device_find(key)) return;
+    if (!d_->send_key.empty()) cancel_send();
+    st_.paths = paths;
+    looking_ = false;
+    st_.sending = true;
+    d_->log_session("sending to device");
+    if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    d_->update_link();
+    send_to(key);
+}
+
+void Share::dismiss_device(const std::string& key)
+{
+    Device* d = d_->device_find(key);
+    if (!d || d->state == DeviceState::Asking || d->state == DeviceState::Sending) return;
+    std::string addr = d->address;
+    d->state = DeviceState::Found;
+    d->sent = d->total = 0;
+    d->message.clear();
+    bool still_listed = false;
+    for (const auto& [ck, cand] : d_->candidates) {
+        if (cand.listed && !addr.empty() && _stricmp(cand.address.c_str(), addr.c_str()) == 0) {
+            still_listed = true;
+            break;
+        }
+    }
+    if (!still_listed && !addr.empty()) d_->remove_idle_device_by(key, addr);
+    bool any_busy = false;
+    for (const Device& dev : st_.devices) {
+        if (dev.state != DeviceState::Found) any_busy = true;
+    }
+    if (!any_busy) {
+        st_.sending = false;
+        st_.paths.clear();
+    }
     d_->changed();
     d_->update_link();
 }
@@ -823,6 +1095,11 @@ void Share::send_to(const std::string& key)
             if (dev) {
                 dev->state = ok ? DeviceState::Sent : declined ? DeviceState::Declined : DeviceState::Failed;
                 dev->message = err;
+                if (!ok && !dev->address.empty()) {
+                    for (auto& [ck, cand] : impl->candidates) {
+                        if (_stricmp(cand.address.c_str(), dev->address.c_str()) == 0) cand.next_probe = {};
+                    }
+                }
             }
             if (impl->send_cancel == cancel) {
                 impl->send_cancel.reset();

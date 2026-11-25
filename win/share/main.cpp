@@ -52,6 +52,7 @@ extern "C" {
 namespace {
 
 using lares::DeviceState;
+using lares::DiscoverMode;
 using lares::IncomingState;
 using lares::LinkState;
 using lares::Setup;
@@ -99,6 +100,15 @@ const char* link_name(LinkState l)
     }
 }
 
+const char* mode_name(DiscoverMode m)
+{
+    switch (m) {
+    case DiscoverMode::ContactsOnly: return "contacts";
+    case DiscoverMode::Everyone: return "everyone";
+    default: return "off";
+    }
+}
+
 const char* device_name(DeviceState d)
 {
     switch (d) {
@@ -130,14 +140,16 @@ struct Session {
     {
         const lares::ShareState& st = share.state();
         long long left = 0;
-        if (st.receiving) {
+        if (st.mode == DiscoverMode::Everyone) {
             auto d = std::chrono::duration_cast<std::chrono::seconds>(st.receive_until - lares::Loop::Clock::now());
             left = d.count() > 0 ? d.count() : 0;
         }
-        char head[256];
-        std::snprintf(head, sizeof head, "state setup=%s link=%s receiving=%d left=%lld sending=%d wake=%d quiet=%d\n",
-                      setup_name(st.setup), link_name(st.link), st.receiving ? 1 : 0, left, st.sending ? 1 : 0,
-                      st.sending || share.looking() ? 1 : 0, st.quiet ? 1 : 0);
+        char head[320];
+        std::snprintf(head, sizeof head,
+                      "state setup=%s link=%s mode=%s receiving=%d left=%lld browsing=%d sending=%d wake=%d quiet=%d\n",
+                      setup_name(st.setup), link_name(st.link), mode_name(st.mode), st.receiving ? 1 : 0, left,
+                      st.browsing ? 1 : 0, st.sending ? 1 : 0,
+                      st.browsing || st.sending || share.looking() ? 1 : 0, st.quiet ? 1 : 0);
         std::string out = head;
         put(out, "name", st.name);
         put(out, "card", st.card_text);
@@ -150,6 +162,9 @@ struct Session {
                           static_cast<unsigned long long>(in.total), in.links ? 1 : 0);
             out += line;
             put(out, "incoming-sender", in.sender);
+            put(out, "incoming-model", in.sender_model);
+            put(out, "incoming-thumb", in.thumb_path);
+            put(out, "incoming-contact", in.matched_hash);
             for (const std::string& n : in.names) put(out, "incoming-name", n);
             for (const std::string& n : in.saved) put(out, "incoming-saved", n);
             put(out, "incoming-message", in.message);
@@ -180,9 +195,18 @@ struct Session {
             at = tab + 1;
         }
         const std::string& c = a[0];
-        if (c == "receive on") share.set_receiving(true);
+        if (c == "mode off") share.set_mode(DiscoverMode::Off);
+        else if (c == "mode contacts") share.set_mode(DiscoverMode::ContactsOnly);
+        else if (c == "mode everyone") share.set_mode(DiscoverMode::Everyone);
+        else if (c == "receive on") share.set_receiving(true);
         else if (c == "receive off") share.set_receiving(false);
-        else if (c == "accept") share.answer(true);
+        else if (c == "browse on" || c == "browse off") share.set_browsing(c == "browse on");
+        else if (c == "contacts") {
+            std::set<std::string> hashes;
+            for (size_t i = 1; i < a.size(); i++)
+                if (a[i].size() == 64) hashes.insert(a[i]);
+            share.set_contact_hashes(std::move(hashes));
+        } else if (c == "accept") share.answer(true);
         else if (c == "decline") share.answer(false);
         else if (c == "dismiss") share.dismiss_incoming();
         else if (c == "look on" || c == "look off") share.set_looking(c == "look on");
@@ -191,8 +215,14 @@ struct Session {
             for (size_t i = 1; i < a.size(); i++)
                 if (!a[i].empty()) paths.push_back(wide(a[i]));
             share.set_sending(paths);
+        } else if (c == "send-to" && a.size() > 2) {
+            std::vector<std::wstring> paths;
+            for (size_t i = 2; i < a.size(); i++)
+                if (!a[i].empty()) paths.push_back(wide(a[i]));
+            share.send_files_to(a[1], paths);
         } else if (c == "send-stop") share.set_sending({});
         else if (c == "to" && a.size() > 1) share.send_to(a[1]);
+        else if (c == "device-dismiss" && a.size() > 1) share.dismiss_device(a[1]);
         else if (c == "cancel") share.cancel_send();
         else if (c == "refresh") share.refresh();
         else if (c == "quit") loop.quit();
@@ -236,9 +266,10 @@ struct Session {
         loop.run();
 
         /* Stop what uses the link and wait for it to power the adapter down. */
+        share.set_browsing(false);
         share.set_sending({});
         share.set_looking(false);
-        share.set_receiving(false);
+        share.set_mode(DiscoverMode::Off);
         share.stop_link();
         for (int i = 0; i < 250 && share.state().link != LinkState::Off && share.state().link != LinkState::Failed; i++) {
             loop.run_pending();

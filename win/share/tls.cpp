@@ -122,6 +122,19 @@ struct Stream::Impl {
         return in.size() <= 4 * kMaxRecord;
     }
 
+    /* Non-blocking ciphertext read: 1 read, 0 EOF, -1 error, -2 would block. */
+    int fill_nb()
+    {
+        if (!t.recv_nonblocking) return -2;
+        uint8_t buf[8192];
+        int n = t.recv_nonblocking(t.ctx, buf, sizeof buf);
+        if (n == -2) return -2;
+        if (n == 0) return 0;
+        if (n < 0) return -1;
+        in.insert(in.end(), buf, buf + n);
+        return in.size() <= 4 * kMaxRecord ? 1 : -1;
+    }
+
     SECURITY_STATUS step(SecBufferDesc* indesc, SecBufferDesc* outdesc, bool first)
     {
         ULONG attrs = 0;
@@ -324,6 +337,32 @@ int Stream::read(uint8_t* buf, size_t len)
         }
         if (r == -2) return -1;
         if (!d->fill()) return d->in.empty() ? 0 : -1;
+    }
+    size_t n = d->plain.size() - d->plain_at;
+    if (n > len) n = len;
+    std::memcpy(buf, d->plain.data() + d->plain_at, n);
+    d->plain_at += n;
+    return static_cast<int>(n);
+}
+
+int Stream::try_read(uint8_t* buf, size_t len)
+{
+    Impl* d = impl_;
+    while (d->plain_at >= d->plain.size()) {
+        d->plain.clear();
+        d->plain_at = 0;
+        if (d->closed) return 0;
+        int r = d->decrypt();
+        if (r == 1) continue;
+        if (r == -1) {
+            d->closed = true;
+            return 0;
+        }
+        if (r == -2) return -1;
+        int f = d->fill_nb();
+        if (f == -2) return -2;
+        if (f == 0) return d->in.empty() ? 0 : -1;
+        if (f < 0) return -1;
     }
     size_t n = d->plain.size() - d->plain_at;
     if (n > len) n = len;

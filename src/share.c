@@ -18,10 +18,16 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
-/* s between /Discover tries while looking (DISC-5): a phone is reachable
- * about once a second over a fixed radio, and refuses until its Bluetooth
- * advert has woken it, so a slower retry only adds to the wait. */
+/* s between /Discover tries while looking (DISC-5): initial probes go fast,
+ * then back off for peers in sender-only or Contacts Only mode so the radio
+ * isn't flooded while receiving. */
 #define DISCOVER_RETRY 1
+#define DISCOVER_SLOW 3
+#define DISCOVER_IDLE 5
+/* s between /Discover re-checks on already-listed devices so peers switched
+ * to Contacts Only or Receiving Off disappear instead of staying stale. */
+#define DISCOVER_RECHECK 5
+#define DISCOVER_MISS_RETRY 2
 /* s the link stays up after the last use, so the next send or receive
  * doesn't wait the 2.7 s lares-awdl takes to set the card up. */
 #define LINK_LINGER 60
@@ -34,6 +40,8 @@ typedef struct {
     guint16 port;
     guint flags;
     gboolean trying, listed;
+    guint missed, fail_streak;
+    gint64 next_probe;
 } Candidate;
 
 struct Share {
@@ -56,6 +64,7 @@ struct Share {
     AirdropMdns *mdns;
     AirdropBle *ble;
     AirdropReceiver *receiver;
+    ShareDiscoverMode prev_mode;
     guint receive_timer;
 
     GHashTable *candidates;   /* key -> Candidate */
@@ -83,10 +92,10 @@ static void changed(Share *s)
     if (s->fn) s->fn(s->user);
 }
 
-/* Looking for devices to send to: files picked, or being picked. */
+/* Looking for devices to send to: browsing on screen, files picked, or being picked. */
 static gboolean finding(Share *s)
 {
-    return s->st.sending || s->looking;
+    return s->st.browsing || s->st.sending || s->looking;
 }
 
 /* s the link waits, while receiving or looking, before saying it has heard
@@ -180,14 +189,306 @@ static void device_free(gpointer data)
     g_free(d);
 }
 
+void share_contact_free(ShareContact *c)
+{
+    if (!c) return;
+    g_free(c->name);
+    g_free(c->device);
+    g_free(c->email);
+    g_free(c->phone);
+    g_free(c->photo);
+    g_free(c);
+}
+
 static void incoming_free(ShareIncoming *in)
 {
     if (!in) return;
     g_free(in->sender);
+    g_free(in->sender_model);
+    g_free(in->matched_hash);
     if (in->names) g_ptr_array_unref(in->names);
     if (in->saved) g_ptr_array_unref(in->saved);
+    if (in->file_icon) g_bytes_unref(in->file_icon);
     g_free(in->message);
     g_free(in);
+}
+
+/* ----------------------------------------------------- device & contacts */
+
+static gboolean contains_ci(const char *hay, const char *needle)
+{
+    if (!hay || !*hay) return FALSE;
+    char *lo = g_ascii_strdown(hay, -1);
+    gboolean ok = strstr(lo, needle) != NULL;
+    g_free(lo);
+    return ok;
+}
+
+static ShareDeviceKind kind_from_str(const char *s)
+{
+    if (!s || !*s) return DEVICE_KIND_OTHER;
+    if (contains_ci(s, "iphone") || contains_ci(s, "ipod")) return DEVICE_KIND_PHONE;
+    if (contains_ci(s, "ipad")) return DEVICE_KIND_TABLET;
+    if (contains_ci(s, "macbook")) return DEVICE_KIND_LAPTOP;
+    if (contains_ci(s, "watch")) return DEVICE_KIND_WATCH;
+    if (contains_ci(s, "imac") || contains_ci(s, "macmini") || contains_ci(s, "mac mini")
+        || contains_ci(s, "macstudio") || contains_ci(s, "mac studio")
+        || contains_ci(s, "macpro") || contains_ci(s, "mac pro")
+        || contains_ci(s, "windows") || contains_ci(s, "linux"))
+        return DEVICE_KIND_DESKTOP;
+    if (g_ascii_strncasecmp(s, "mac", 3) == 0) return DEVICE_KIND_LAPTOP;
+    return DEVICE_KIND_OTHER;
+}
+
+ShareDeviceKind share_device_kind(const char *model, const char *name)
+{
+    ShareDeviceKind k = kind_from_str(model);
+    return k != DEVICE_KIND_OTHER ? k : kind_from_str(name);
+}
+
+static const char *label_from_str(const char *s)
+{
+    if (!s || !*s) return NULL;
+    if (contains_ci(s, "iphone")) return "iPhone";
+    if (contains_ci(s, "ipad")) return "iPad";
+    if (contains_ci(s, "macbookair") || contains_ci(s, "macbook air")) return "MacBook Air";
+    if (contains_ci(s, "macbookpro") || contains_ci(s, "macbook pro")) return "MacBook Pro";
+    if (contains_ci(s, "macbook")) return "MacBook";
+    if (contains_ci(s, "imac")) return "iMac";
+    if (contains_ci(s, "macmini") || contains_ci(s, "mac mini")) return "Mac mini";
+    if (contains_ci(s, "macstudio") || contains_ci(s, "mac studio")) return "Mac Studio";
+    if (contains_ci(s, "macpro") || contains_ci(s, "mac pro")) return "Mac Pro";
+    if (contains_ci(s, "watch")) return "Apple Watch";
+    if (contains_ci(s, "realitydevice") || contains_ci(s, "vision")) return "Apple Vision Pro";
+    if (contains_ci(s, "windows")) return "Windows";
+    if (contains_ci(s, "linux")) return "Linux";
+    if (g_ascii_strncasecmp(s, "mac", 3) == 0) return "Mac";
+    return NULL;
+}
+
+const char *share_model_label(const char *model, const char *name)
+{
+    const char *l = label_from_str(model);
+    if (l) return l;
+    l = label_from_str(name);
+    return l ? l : "Apple Device";
+}
+
+char *share_initials(const char *name)
+{
+    if (!name || !*name) return g_strdup("");
+    const char *cut = strstr(name, "'s ");
+    if (!cut) cut = strstr(name, "\xE2\x80\x99s ");
+    char *base = cut && cut > name ? g_strndup(name, (gsize)(cut - name)) : g_strdup(name);
+    if (contains_ci(base, "iphone") || contains_ci(base, "ipad") || contains_ci(base, "macbook")
+        || contains_ci(base, "imac") || contains_ci(base, "apple device")) {
+        g_free(base);
+        return g_strdup("");
+    }
+    char out[3] = { 0 };
+    int n = 0;
+    gboolean in_word = FALSE;
+    for (const char *p = base; *p && n < 2; p++) {
+        if (g_ascii_isalnum(*p)) {
+            if (!in_word) {
+                out[n++] = g_ascii_toupper(*p);
+                in_word = TRUE;
+            }
+        } else if (*p == ' ' || *p == '-' || *p == '_') {
+            in_word = FALSE;
+        }
+    }
+    g_free(base);
+    return g_strdup(out);
+}
+
+char *share_hash_email(const char *email)
+{
+    if (!email) return NULL;
+    char *copy = g_strstrip(g_strdup(email));
+    char *lo = g_ascii_strdown(copy, -1);
+    g_free(copy);
+    if (!*lo || !strchr(lo, '@')) {
+        g_free(lo);
+        return NULL;
+    }
+    char *hex = g_compute_checksum_for_string(G_CHECKSUM_SHA256, lo, -1);
+    g_free(lo);
+    return hex;
+}
+
+GPtrArray *share_hash_phone_variants(const char *phone)
+{
+    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+    if (!phone) return out;
+    GString *digits = g_string_new(NULL);
+    for (const char *p = phone; *p; p++)
+        if (g_ascii_isdigit(*p)) g_string_append_c(digits, *p);
+    if (digits->len >= 4) {
+        char *plus = g_strconcat("+", digits->str, NULL);
+        g_ptr_array_add(out, g_compute_checksum_for_string(G_CHECKSUM_SHA256, plus, -1));
+        g_ptr_array_add(out, g_compute_checksum_for_string(G_CHECKSUM_SHA256, digits->str, -1));
+        g_free(plus);
+    }
+    g_string_free(digits, TRUE);
+    return out;
+}
+
+static char *contacts_path(gboolean dry)
+{
+    char *dir = g_build_filename(g_get_user_config_dir(), "lares", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    char *p = g_build_filename(dir, dry ? "airdrop-contacts-dry.ini" : "airdrop-contacts.ini", NULL);
+    g_free(dir);
+    return p;
+}
+
+static void load_contacts(Share *s)
+{
+    g_ptr_array_set_size(s->st.contacts, 0);
+    char *path = contacts_path(s->dry);
+    GKeyFile *kf = g_key_file_new();
+    if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
+        gsize n = 0;
+        char **groups = g_key_file_get_groups(kf, &n);
+        for (gsize i = 0; i < n; i++) {
+            ShareContact *c = g_new0(ShareContact, 1);
+            c->name = g_key_file_get_string(kf, groups[i], "name", NULL);
+            c->device = g_key_file_get_string(kf, groups[i], "device", NULL);
+            c->email = g_key_file_get_string(kf, groups[i], "email", NULL);
+            c->phone = g_key_file_get_string(kf, groups[i], "phone", NULL);
+            c->photo = g_key_file_get_string(kf, groups[i], "photo", NULL);
+            if ((c->name && *c->name) || (c->device && *c->device) || (c->email && *c->email) || (c->phone && *c->phone))
+                g_ptr_array_add(s->st.contacts, c);
+            else
+                share_contact_free(c);
+        }
+        g_strfreev(groups);
+    }
+    g_key_file_unref(kf);
+    g_free(path);
+}
+
+static char **build_contact_hash_strv(GPtrArray *contacts)
+{
+    GPtrArray *arr = g_ptr_array_new_with_free_func(g_free);
+    for (guint i = 0; contacts && i < contacts->len; i++) {
+        ShareContact *c = contacts->pdata[i];
+        char *eh = share_hash_email(c->email);
+        if (eh) g_ptr_array_add(arr, eh);
+        GPtrArray *ph = share_hash_phone_variants(c->phone);
+        for (guint j = 0; j < ph->len; j++) g_ptr_array_add(arr, g_strdup(ph->pdata[j]));
+        g_ptr_array_unref(ph);
+    }
+    g_ptr_array_add(arr, NULL);
+    return (char **)g_ptr_array_free(arr, FALSE);
+}
+
+static void sync_receiver_policy(Share *s)
+{
+    if (!s->receiver) return;
+    char **hashes = build_contact_hash_strv(s->st.contacts);
+    airdrop_receiver_set_policy(s->receiver, s->st.mode == SHARE_DISCOVER_CONTACTS, (const char *const *)hashes);
+    g_strfreev(hashes);
+}
+
+static char *normalize_contact_name(const char *s)
+{
+    if (!s || !*s) return g_strdup("");
+    GString *out = g_string_sized_new(strlen(s));
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        /* Normalize UTF-8 curly apostrophes (U+2018 / U+2019) to ASCII '\''. */
+        if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] == 0x98 || p[2] == 0x99)) {
+            g_string_append_c(out, '\'');
+            p += 2;
+            continue;
+        }
+        g_string_append_c(out, g_ascii_tolower((char)*p));
+    }
+    char *res = g_string_free(out, FALSE);
+    return g_strstrip(res);
+}
+
+static char *owner_prefix_norm(const char *norm)
+{
+    if (!norm) return NULL;
+    const char *p = strstr(norm, "'s ");
+    if (p && (size_t)(p - norm) >= 2) {
+        char *sub = g_strndup(norm, (gsize)(p - norm));
+        return g_strstrip(sub);
+    }
+    return NULL;
+}
+
+static gboolean contact_matches_exact(const ShareContact *c, const char *norm_name)
+{
+    if (!c || !norm_name || !*norm_name) return FALSE;
+    if (c->device && *c->device) {
+        char *cd = normalize_contact_name(c->device);
+        gboolean ok = g_str_equal(cd, norm_name);
+        g_free(cd);
+        if (ok) return TRUE;
+    }
+    if (c->name && *c->name) {
+        char *cn = normalize_contact_name(c->name);
+        gboolean ok = g_str_equal(cn, norm_name);
+        g_free(cn);
+        if (ok) return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean contact_matches_owner(const ShareContact *c, const char *owner)
+{
+    if (!c || !owner || !*owner || !c->name || !*c->name) return FALSE;
+    char *cn = normalize_contact_name(c->name);
+    gboolean ok = g_str_equal(cn, owner);
+    g_free(cn);
+    return ok;
+}
+
+const ShareContact *share_find_contact(const ShareState *st, const char *name, const char *matched_hash)
+{
+    if (!st || !st->contacts) return NULL;
+    if (matched_hash && *matched_hash) {
+        for (guint i = 0; i < st->contacts->len; i++) {
+            ShareContact *c = st->contacts->pdata[i];
+            char *eh = share_hash_email(c->email);
+            gboolean ok = eh && g_ascii_strcasecmp(eh, matched_hash) == 0;
+            g_free(eh);
+            if (ok) return c;
+            GPtrArray *ph = share_hash_phone_variants(c->phone);
+            for (guint j = 0; j < ph->len && !ok; j++)
+                if (g_ascii_strcasecmp(ph->pdata[j], matched_hash) == 0) ok = TRUE;
+            g_ptr_array_unref(ph);
+            if (ok) return c;
+        }
+    }
+    if (!name || !*name) return NULL;
+    char *norm = normalize_contact_name(name);
+    const ShareContact *found = NULL;
+    for (guint i = 0; i < st->contacts->len; i++) {
+        ShareContact *c = st->contacts->pdata[i];
+        if (contact_matches_exact(c, norm)) {
+            found = c;
+            break;
+        }
+    }
+    if (!found) {
+        char *owner = owner_prefix_norm(norm);
+        if (owner && *owner) {
+            for (guint i = 0; i < st->contacts->len; i++) {
+                ShareContact *c = st->contacts->pdata[i];
+                if (contact_matches_owner(c, owner)) {
+                    found = c;
+                    break;
+                }
+            }
+        }
+        g_free(owner);
+    }
+    g_free(norm);
+    return found;
 }
 
 static void candidate_free(gpointer data)
@@ -596,8 +897,11 @@ static void receiver_offer(const AirdropOffer *o, gpointer user)
     in->id = o->id;
     in->state = INCOMING_ASKING;
     in->sender = g_strdup(o->sender);
+    in->sender_model = g_strdup(o->sender_model);
+    in->matched_hash = g_strdup(o->matched_hash);
     in->links = o->links;
     in->names = g_ptr_array_ref(o->names);
+    if (o->file_icon) in->file_icon = g_bytes_ref(o->file_icon);
     in->total = o->total;
     s->st.incoming = in;
     changed(s);
@@ -613,6 +917,7 @@ static void receiver_withdrawn(guint id, gpointer user)
     Share *s = user;
     ShareIncoming *in = incoming_for(s, id);
     if (!in || in->state != INCOMING_ASKING) return;
+    share_log(s, "offer withdrawn");
     incoming_free(in);
     s->st.incoming = NULL;
     changed(s);
@@ -667,11 +972,88 @@ static const AirdropReceiverCallbacks RECEIVER = {
 
 static void discovered(GObject *src, GAsyncResult *res, gpointer data);
 
+static gboolean transfer_active(Share *s)
+{
+    if (s->send_key) return TRUE;
+    return s->st.incoming && (s->st.incoming->state == INCOMING_ASKING || s->st.incoming->state == INCOMING_RECEIVING);
+}
+
+static gboolean address_trying(Share *s, const char *address)
+{
+    if (!address || !*address) return FALSE;
+    GHashTableIter it;
+    gpointer v;
+    g_hash_table_iter_init(&it, s->candidates);
+    while (g_hash_table_iter_next(&it, NULL, &v)) {
+        Candidate *cand = v;
+        if (cand->trying && cand->address && g_ascii_strcasecmp(cand->address, address) == 0) return TRUE;
+    }
+    return FALSE;
+}
+
+static void unmark_address(Share *s, const char *address, gint64 next_probe)
+{
+    if (!address || !*address) return;
+    GHashTableIter it;
+    gpointer v;
+    g_hash_table_iter_init(&it, s->candidates);
+    while (g_hash_table_iter_next(&it, NULL, &v)) {
+        Candidate *cand = v;
+        if (cand->address && g_ascii_strcasecmp(cand->address, address) == 0) {
+            cand->listed = FALSE;
+            cand->missed = 0;
+            cand->fail_streak = 0;
+            cand->next_probe = next_probe;
+        }
+    }
+}
+
+static void wake_candidates(Share *s)
+{
+    GHashTableIter it;
+    gpointer v;
+    g_hash_table_iter_init(&it, s->candidates);
+    while (g_hash_table_iter_next(&it, NULL, &v)) {
+        Candidate *cand = v;
+        if (!cand->listed) {
+            cand->fail_streak = 0;
+            cand->next_probe = 0;
+        }
+    }
+}
+
+static gboolean remove_idle_device_by(Share *s, const char *key, const char *address)
+{
+    gboolean removed = FALSE;
+    for (guint i = s->st.devices->len; i > 0; i--) {
+        ShareDevice *d = s->st.devices->pdata[i - 1];
+        gboolean match = (key && *key && g_str_equal(d->key, key))
+                         || (address && *address && d->address && g_ascii_strcasecmp(d->address, address) == 0);
+        if (match && d->state == DEVICE_FOUND) {
+            g_ptr_array_remove_index(s->st.devices, i - 1);
+            removed = TRUE;
+        }
+    }
+    return removed;
+}
+
 static void try_discover(Share *s, Candidate *c)
 {
-    if (c->trying || c->listed || !s->discover_cancel) return;
+    if (c->trying || !s->discover_cancel) return;
+    if (transfer_active(s)) return; /* keep AWDL link free for active incoming/outgoing transfers */
+    gint64 now = g_get_monotonic_time();
+    if (c->next_probe && now < c->next_probe) return;
+    if (address_trying(s, c->address)) return;
+    if (c->listed) {
+        ShareDevice *d = device_at(s, c->address);
+        if (d && !g_str_equal(d->key, c->key)) {
+            Candidate *primary = g_hash_table_lookup(s->candidates, d->key);
+            if (primary && primary->listed) return;
+        }
+    }
     c->trying = TRUE;
-    share_log(s, "asking a %s", g_str_has_prefix(c->key, "awdl:") ? "nearby AWDL device directly" : "service found over mDNS");
+    if (!c->listed && (c->fail_streak < 3 || c->fail_streak % 5 == 0))
+        share_log(s, "asking a %s", g_str_has_prefix(c->key, "awdl:") ? "nearby AWDL device directly" : "service found over mDNS");
     g_object_set_data_full(G_OBJECT(s->discover_cancel), "share", s, NULL);
     airdrop_discover_async(c->address, c->port, s->discover_cancel, discovered, g_strdup(c->key));
 }
@@ -687,15 +1069,64 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
     Candidate *c = s ? g_hash_table_lookup(s->candidates, key) : NULL;
     if (c) {
         c->trying = FALSE;
-        if (!peer) share_log(s, "not listed yet: %s", e ? e->message : "it didn't list us");
-        if (peer) {
-            share_log(s, "listed a device");
+        gint64 now = g_get_monotonic_time();
+        if (!peer) {
+            gboolean explicit_refusal = (e == NULL);
+            if (c->listed || device_at(s, c->address)) {
+                if (explicit_refusal) {
+                    share_log(s, "device is no longer discoverable");
+                    char *addr = g_strdup(c->address);
+                    unmark_address(s, addr, now + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC);
+                    if (remove_idle_device_by(s, key, addr)) changed(s);
+                    g_free(addr);
+                } else {
+                    c->missed++;
+                    gboolean refused = g_error_matches(e, G_IO_ERROR, G_IO_ERROR_CONNECTION_REFUSED);
+                    guint limit = refused ? 2 : 3;
+                    if (c->missed >= limit) {
+                        share_log(s, "device stopped answering: %s", e->message);
+                        char *addr = g_strdup(c->address);
+                        unmark_address(s, addr, now + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC);
+                        if (remove_idle_device_by(s, key, addr)) changed(s);
+                        g_free(addr);
+                    } else {
+                        c->next_probe = now + (gint64)(refused ? DISCOVER_RETRY : DISCOVER_MISS_RETRY) * G_USEC_PER_SEC;
+                    }
+                }
+            } else {
+                c->fail_streak++;
+                guint wait_s = c->fail_streak < 5 ? (explicit_refusal ? DISCOVER_MISS_RETRY : DISCOVER_RETRY)
+                             : c->fail_streak < 10 ? DISCOVER_SLOW
+                                                   : DISCOVER_IDLE;
+                c->next_probe = now + (gint64)wait_s * G_USEC_PER_SEC;
+                if (c->fail_streak <= 3 || c->fail_streak % 5 == 0)
+                    share_log(s, "not listed yet: %s", e ? e->message : "it didn't list us");
+            }
+        } else {
+            gboolean was_listed = c->listed;
+            gint64 next = now + (gint64)DISCOVER_RECHECK * G_USEC_PER_SEC;
             c->listed = TRUE;
+            c->missed = 0;
+            c->fail_streak = 0;
+            c->next_probe = next;
+            GHashTableIter it;
+            gpointer v;
+            g_hash_table_iter_init(&it, s->candidates);
+            while (g_hash_table_iter_next(&it, NULL, &v)) {
+                Candidate *sib = v;
+                if (sib->address && c->address && g_ascii_strcasecmp(sib->address, c->address) == 0) {
+                    sib->listed = TRUE;
+                    sib->missed = 0;
+                    sib->fail_streak = 0;
+                    sib->next_probe = next;
+                }
+            }
             ShareDevice *d = device_find(s, key);
             ShareDevice *same = device_at(s, c->address);
+            gboolean dirty = FALSE;
             if (!d && same) {
                 d = same; /* found both over mDNS and on AWDL alone: one device */
-                if (c->flags) d->flags = c->flags;
+                if (c->flags && d->flags != c->flags) { d->flags = c->flags; dirty = TRUE; }
             }
             if (!d) {
                 d = g_new0(ShareDevice, 1);
@@ -705,12 +1136,17 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
                 d->flags = c->flags;
                 d->state = DEVICE_FOUND;
                 g_ptr_array_add(s->st.devices, d);
+                dirty = TRUE;
             }
-            g_free(d->name);
-            g_free(d->model);
-            d->name = g_strdup(peer->name);
-            d->model = g_strdup(peer->model);
-            changed(s);
+            if (g_strcmp0(d->name, peer->name) != 0 || g_strcmp0(d->model, peer->model) != 0) {
+                g_free(d->name);
+                g_free(d->model);
+                d->name = g_strdup(peer->name);
+                d->model = g_strdup(peer->model);
+                dirty = TRUE;
+            }
+            if (!was_listed) share_log(s, "listed a device");
+            if (dirty) changed(s);
         }
     }
     airdrop_peer_free(peer);
@@ -719,7 +1155,7 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
 }
 
 /* Receivers refuse until a Bluetooth advert has woken them, which can take
- * many seconds: keep asking while looking (DISC-5). */
+ * many seconds: keep asking while looking (DISC-5), and re-verify listed devices. */
 static gboolean retry_discover(gpointer data)
 {
     Share *s = data;
@@ -738,11 +1174,18 @@ static void add_candidate(Share *s, const char *key, const char *address, guint1
         c->key = g_strdup(key);
         g_hash_table_insert(s->candidates, c->key, c);
     }
+    gboolean fresh_mdns = !g_str_has_prefix(key, "awdl:");
     if (!c->address || g_strcmp0(c->address, address) || c->port != port) {
         g_free(c->address);
         c->address = g_strdup(address);
         c->port = port;
         c->listed = FALSE;
+        c->missed = 0;
+        c->fail_streak = 0;
+        c->next_probe = 0;
+    } else if (fresh_mdns && !c->listed) {
+        c->fail_streak = 0;
+        c->next_probe = 0;
     }
     if (flags) c->flags = flags;
     ShareDevice *d = device_find(s, key);
@@ -762,12 +1205,16 @@ static void ask_peer(Share *s, const char *mac)
 
 static void drop_device(Share *s, const char *key)
 {
+    Candidate *c = g_hash_table_lookup(s->candidates, key);
+    char *addr = c && c->address ? g_strdup(c->address) : NULL;
     g_hash_table_remove(s->candidates, key);
-    ShareDevice *d = device_find(s, key);
-    if (d && d->state != DEVICE_ASKING && d->state != DEVICE_SENDING) {
-        g_ptr_array_remove(s->st.devices, d);
-        changed(s);
+    if (!addr) {
+        ShareDevice *d = device_find(s, key);
+        if (d && d->address) addr = g_strdup(d->address);
     }
+    unmark_address(s, addr, g_get_monotonic_time() + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC);
+    if (remove_idle_device_by(s, key, addr)) changed(s);
+    g_free(addr);
 }
 
 static void mdns_found(const AirdropService *svc, gpointer user)
@@ -815,7 +1262,11 @@ static void parts_apply(Share *s)
             g_free(s->st.link_error);
             s->st.link_error = g_strdup(e->message);
             g_error_free(e);
+        } else {
+            sync_receiver_policy(s);
         }
+    } else if ((s->st.receiving || incoming_on) && s->receiver) {
+        sync_receiver_policy(s);
     } else if (!s->st.receiving && !incoming_on && s->receiver) {
         g_clear_pointer(&s->receiver, airdrop_receiver_free);
     }
@@ -969,7 +1420,9 @@ static void on_link_exit(GObject *src, GAsyncResult *res, gpointer data)
         s->st.link_error = g_strdup(status == 3 ? "The Wi-Fi card can't run AirDrop." : "The AirDrop link stopped.");
     if (s->st.link == LINK_FAILED) {
         /* Nothing can work without the link: turn both off. */
+        s->st.mode = SHARE_DISCOVER_OFF;
         s->st.receiving = FALSE;
+        s->st.browsing = FALSE;
         g_clear_handle_id(&s->receive_timer, g_source_remove);
     }
     g_object_unref(p);
@@ -1134,19 +1587,35 @@ static gboolean pretend_link(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+static void add_dry_device(Share *s, const char *key, const char *name, const char *model, DeviceState state,
+                           guint64 sent, guint64 total)
+{
+    ShareDevice *d = g_new0(ShareDevice, 1);
+    d->key = g_strdup(key);
+    d->name = g_strdup(name);
+    d->model = g_strdup(model);
+    d->state = state;
+    d->sent = sent;
+    d->total = total;
+    g_ptr_array_add(s->st.devices, d);
+}
+
+static void add_sample_dry_devices(Share *s)
+{
+    g_ptr_array_set_size(s->st.devices, 0);
+    add_dry_device(s, "susuin", "Susuin", "iPhone17,1", DEVICE_FOUND, 0, 0);
+    add_dry_device(s, "ana", "Ana's iPhone", "iPhone16,2", DEVICE_FOUND, 0, 0);
+    add_dry_device(s, "bruno", "Bruno's MacBook Air", "MacBookAir10,1", DEVICE_FOUND, 0, 0);
+}
+
 static gboolean pretend_device(gpointer data)
 {
     Share *s = data;
     s->dry_timer = 0;
-    if (!finding(s) || device_find(s, "dry") || g_getenv("LARES_DRY_QUIET")) return G_SOURCE_REMOVE;
+    if (!finding(s) || s->st.devices->len > 0 || g_getenv("LARES_DRY_QUIET")) return G_SOURCE_REMOVE;
     s->heard = TRUE;
     quiet_watch(s);
-    ShareDevice *d = g_new0(ShareDevice, 1);
-    d->key = g_strdup("dry");
-    d->name = g_strdup("iPhone");
-    d->model = g_strdup("iPhone");
-    d->state = DEVICE_FOUND;
-    g_ptr_array_add(s->st.devices, d);
+    add_sample_dry_devices(s);
     changed(s);
     return G_SOURCE_REMOVE;
 }
@@ -1160,7 +1629,8 @@ static gboolean pretend_offer(gpointer data)
     ShareIncoming *in = g_new0(ShareIncoming, 1);
     in->id = 1;
     in->state = INCOMING_ASKING;
-    in->sender = g_strdup("iPhone");
+    in->sender = g_strdup("Susuin");
+    in->sender_model = g_strdup("iPhone17,1");
     in->names = g_ptr_array_new_with_free_func(g_free);
     for (gsize i = 0; i < G_N_ELEMENTS(DRY_FILES); i++) g_ptr_array_add(in->names, g_strdup(DRY_FILES[i]));
     in->total = 4200000;
@@ -1178,6 +1648,7 @@ static gboolean pretend_progress(gpointer data)
         if (d->state == DEVICE_ASKING) {
             d->state = DEVICE_SENDING;
             d->total = 3000000;
+            s->st.xfer_start_us = g_get_monotonic_time();
             more = TRUE;
         } else if (d->state == DEVICE_SENDING) {
             d->sent = MIN(d->total, d->sent + 600000);
@@ -1216,6 +1687,89 @@ static gboolean pretend_accept(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+static void init_dry_scene(Share *s)
+{
+    const char *want = g_getenv("LARES_DRY_SHARE");
+    if (!want) want = "";
+    s->st.setup = SHARE_READY;
+    if (g_str_equal(want, "setup")) {
+        s->st.setup = SHARE_NEEDS_ALLOW;
+        return;
+    }
+    if (g_str_equal(want, "off")) {
+        s->st.link = LINK_UP;
+        s->st.mode = SHARE_DISCOVER_OFF;
+        s->st.browsing = TRUE;
+        add_sample_dry_devices(s);
+        return;
+    }
+    if (g_str_equal(want, "contacts")) {
+        s->st.link = LINK_UP;
+        s->st.mode = SHARE_DISCOVER_CONTACTS;
+        s->st.receiving = TRUE;
+        s->st.browsing = TRUE;
+        add_sample_dry_devices(s);
+        return;
+    }
+    if (g_str_equal(want, "incoming") || g_str_equal(want, "incoming-receiving")
+        || g_str_equal(want, "incoming-done") || g_str_equal(want, "incoming-failed")) {
+        s->st.link = LINK_UP;
+        s->st.mode = SHARE_DISCOVER_EVERYONE;
+        s->st.receiving = TRUE;
+        s->st.browsing = TRUE;
+        s->st.receive_until = g_get_monotonic_time() + 540 * G_USEC_PER_SEC;
+        s->st.xfer_start_us = g_get_monotonic_time() - 12 * G_USEC_PER_SEC;
+        ShareIncoming *in = g_new0(ShareIncoming, 1);
+        in->id = 1;
+        in->sender = g_strdup("Susuin");
+        in->sender_model = g_strdup("iPhone17,1");
+        in->names = g_ptr_array_new_with_free_func(g_free);
+        g_ptr_array_add(in->names, g_strdup("61541ab060fa3.PNG"));
+        in->total = 13200000;
+        if (g_str_equal(want, "incoming")) {
+            in->state = INCOMING_ASKING;
+        } else if (g_str_equal(want, "incoming-receiving")) {
+            in->state = INCOMING_RECEIVING;
+            in->done = 9900000;
+        } else if (g_str_equal(want, "incoming-done")) {
+            in->state = INCOMING_DONE;
+            in->done = in->total;
+            in->saved = g_ptr_array_new_with_free_func(g_free);
+            char *folder = download_folder();
+            g_ptr_array_add(in->saved, g_build_filename(folder, "61541ab060fa3.PNG", NULL));
+            g_free(folder);
+        } else {
+            in->state = INCOMING_FAILED;
+            in->message = g_strdup("Susuin canceled the copy.");
+        }
+        s->st.incoming = in;
+        add_dry_device(s, "susuin", "Susuin", "iPhone17,1", DEVICE_FOUND, 0, 0);
+        return;
+    }
+    if (g_str_equal(want, "sending")) {
+        s->st.link = LINK_UP;
+        s->st.mode = SHARE_DISCOVER_EVERYONE;
+        s->st.receiving = TRUE;
+        s->st.browsing = TRUE;
+        s->st.sending = TRUE;
+        s->st.receive_until = g_get_monotonic_time() + 540 * G_USEC_PER_SEC;
+        s->st.xfer_start_us = g_get_monotonic_time() - 8 * G_USEC_PER_SEC;
+        const char *paths[] = { "Holiday.mov", "Notes.pdf", NULL };
+        s->st.paths = g_strdupv((char **)paths);
+        add_dry_device(s, "a", "Ana's iPhone", "iPhone16,2", DEVICE_SENDING, 41000000, 96000000);
+        add_dry_device(s, "b", "Living room iPad", "iPad14,5", DEVICE_FOUND, 0, 0);
+        add_dry_device(s, "c", "Bruno's MacBook Air", "MacBookAir10,1", DEVICE_DECLINED, 0, 0);
+        return;
+    }
+    s->st.link = LINK_UP;
+    s->st.mode = SHARE_DISCOVER_EVERYONE;
+    s->st.receiving = TRUE;
+    s->st.browsing = TRUE;
+    s->st.receive_until = g_get_monotonic_time() + 540 * G_USEC_PER_SEC;
+    if (!g_getenv("LARES_DRY_QUIET")) add_sample_dry_devices(s);
+    else s->st.quiet = TRUE;
+}
+
 /* ------------------------------------------------------------------ API */
 
 Share *share_new(void)
@@ -1223,6 +1777,7 @@ Share *share_new(void)
     Share *s = g_new0(Share, 1);
     s->dry = g_getenv("LARES_DRY_RUN") != NULL;
     s->st.devices = g_ptr_array_new_with_free_func(device_free);
+    s->st.contacts = g_ptr_array_new_with_free_func((GDestroyNotify)share_contact_free);
     s->candidates = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, candidate_free);
     s->awdl_peers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     s->st.name = computer_name();
@@ -1231,9 +1786,11 @@ Share *share_new(void)
      * avahi, which also answers for it, could rename the machine over the
      * clash. As owly does, a label from the session's service ID. */
     s->label = g_strconcat("lares-", s->service_id, NULL);
+    load_contacts(s);
     find_card(s);
     check_setup(s);
     read_bands(s);
+    if (s->dry) init_dry_scene(s);
     return s;
 }
 
@@ -1259,21 +1816,62 @@ static gboolean receive_over(gpointer data)
 {
     Share *s = data;
     s->receive_timer = 0;
-    share_set_receiving(s, FALSE);
+    share_set_discover_mode(s, s->prev_mode);
     return G_SOURCE_REMOVE;
+}
+
+void share_set_discover_mode(Share *s, ShareDiscoverMode mode)
+{
+    if (mode != SHARE_DISCOVER_OFF && s->st.setup != SHARE_READY) return;
+    ShareDiscoverMode old_mode = s->st.mode;
+    if (mode == SHARE_DISCOVER_EVERYONE && s->st.mode != SHARE_DISCOVER_EVERYONE) s->prev_mode = s->st.mode;
+    s->st.mode = mode;
+    s->st.receiving = mode != SHARE_DISCOVER_OFF;
+    /* Rotate our mDNS service instance and host label when discoverability
+     * changes while the link is up so Apple senders don't reuse a cached 401
+     * from Contacts Only, and the old service's goodbye doesn't flush the new
+     * host's AAAA record. */
+    if (mode != old_mode && mode != SHARE_DISCOVER_OFF && s->st.link == LINK_UP) {
+        g_free(s->service_id);
+        g_free(s->label);
+        s->service_id = random_id();
+        s->label = g_strconcat("lares-", s->service_id, NULL);
+    }
+    g_clear_handle_id(&s->receive_timer, g_source_remove);
+    if (mode == SHARE_DISCOVER_EVERYONE) {
+        log_session(s, "discoverable: everyone for 10 minutes");
+        s->st.receive_until = g_get_monotonic_time() + SHARE_RECEIVE_SECONDS * G_USEC_PER_SEC;
+        s->receive_timer = g_timeout_add_seconds(SHARE_RECEIVE_SECONDS, receive_over, s);
+        if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
+        if (s->dry && !s->st.incoming) g_timeout_add(4000, pretend_offer, s);
+    } else if (mode == SHARE_DISCOVER_CONTACTS) {
+        log_session(s, "discoverable: contacts only");
+        s->st.receive_until = 0;
+        if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
+    } else {
+        s->st.receive_until = 0;
+    }
+    sync_receiver_policy(s);
+    changed(s);
+    update_link(s);
 }
 
 void share_set_receiving(Share *s, gboolean on)
 {
-    if (on && s->st.setup != SHARE_READY) return;
-    s->st.receiving = on;
-    g_clear_handle_id(&s->receive_timer, g_source_remove);
+    share_set_discover_mode(s, on ? SHARE_DISCOVER_EVERYONE : SHARE_DISCOVER_OFF);
+}
+
+void share_set_browsing(Share *s, gboolean on)
+{
+    if (on == s->st.browsing || (on && s->st.setup != SHARE_READY)) return;
+    s->st.browsing = on;
     if (on) {
-        log_session(s, "receiving on");
-        s->st.receive_until = g_get_monotonic_time() + SHARE_RECEIVE_SECONDS * G_USEC_PER_SEC;
-        s->receive_timer = g_timeout_add_seconds(SHARE_RECEIVE_SECONDS, receive_over, s);
+        log_session(s, "browsing nearby devices");
         if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
-        if (s->dry) g_timeout_add(4000, pretend_offer, s);
+        if (s->dry && !s->st.devices->len && !s->dry_timer) s->dry_timer = g_timeout_add(1200, pretend_device, s);
+    } else if (!s->st.sending && !s->looking) {
+        g_ptr_array_set_size(s->st.devices, 0);
+        g_hash_table_remove_all(s->candidates);
     }
     changed(s);
     update_link(s);
@@ -1286,6 +1884,7 @@ void share_answer(Share *s, gboolean accept)
     if (s->receiver) airdrop_receiver_answer(s->receiver, in->id, accept);
     if (accept) {
         in->state = INCOMING_RECEIVING;
+        s->st.xfer_start_us = g_get_monotonic_time();
         if (s->dry) pretend_tick(s);
     } else {
         incoming_free(in);
@@ -1310,9 +1909,10 @@ void share_set_looking(Share *s, gboolean on)
     s->looking = on;
     if (on) {
         log_session(s, "looking while files are picked");
+        wake_candidates(s);
         if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
         if (s->dry && !s->dry_timer) s->dry_timer = g_timeout_add(1500, pretend_device, s);
-    } else if (!s->st.sending) {
+    } else if (!s->st.sending && !s->st.browsing) {
         g_ptr_array_set_size(s->st.devices, 0);
         g_hash_table_remove_all(s->candidates);
     }
@@ -1327,19 +1927,161 @@ void share_set_sending(Share *s, const char *const *paths)
     if (!on) share_cancel_send(s);
     g_strfreev(s->st.paths);
     s->st.paths = on ? g_strdupv((char **)paths) : NULL;
-    /* What was found while the files were picked stays. */
-    gboolean keep = on && s->looking;
+    /* What was found while browsing or picking stays. */
+    gboolean keep = (on && (s->looking || s->st.browsing)) || s->st.browsing;
     s->looking = FALSE;
     s->st.sending = on;
-    if (on) log_session(s, keep ? "files picked" : "sending");
+    if (on) {
+        log_session(s, keep ? "files picked" : "sending");
+        wake_candidates(s);
+    }
     if (!keep) {
         g_ptr_array_set_size(s->st.devices, 0);
         g_hash_table_remove_all(s->candidates);
     }
     if (on && s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
-    if (on && s->dry && !s->dry_timer) s->dry_timer = g_timeout_add(1500, pretend_device, s);
+    if (on && s->dry && !s->st.devices->len && !s->dry_timer) s->dry_timer = g_timeout_add(1500, pretend_device, s);
     changed(s);
     update_link(s);
+}
+
+void share_send_files_to(Share *s, const char *key, const char *const *paths)
+{
+    if (!paths || !paths[0] || s->st.setup != SHARE_READY || !device_find(s, key)) return;
+    if (s->send_key) share_cancel_send(s);
+    g_strfreev(s->st.paths);
+    s->st.paths = g_strdupv((char **)paths);
+    s->looking = FALSE;
+    s->st.sending = TRUE;
+    log_session(s, "sending to device");
+    if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
+    update_link(s);
+    share_send_to(s, key);
+}
+
+void share_dismiss_device(Share *s, const char *key)
+{
+    ShareDevice *d = device_find(s, key);
+    if (!d || d->state == DEVICE_ASKING || d->state == DEVICE_SENDING) return;
+    char *addr = g_strdup(d->address);
+    d->state = DEVICE_FOUND;
+    d->sent = d->total = 0;
+    g_clear_pointer(&d->message, g_free);
+    if (!s->dry && addr && *addr) {
+        gboolean still_listed = FALSE;
+        GHashTableIter it;
+        gpointer v;
+        g_hash_table_iter_init(&it, s->candidates);
+        while (g_hash_table_iter_next(&it, NULL, &v)) {
+            Candidate *cand = v;
+            if (cand->listed && cand->address && g_ascii_strcasecmp(cand->address, addr) == 0) {
+                still_listed = TRUE;
+                break;
+            }
+        }
+        if (!still_listed) remove_idle_device_by(s, key, addr);
+    }
+    g_free(addr);
+    gboolean any = FALSE;
+    for (guint i = 0; i < s->st.devices->len; i++) {
+        ShareDevice *x = s->st.devices->pdata[i];
+        if (x->state != DEVICE_FOUND) any = TRUE;
+    }
+    if (!any) {
+        s->st.sending = FALSE;
+        g_clear_pointer(&s->st.paths, g_strfreev);
+    }
+    changed(s);
+    update_link(s);
+}
+
+void share_save_contacts(Share *s, GPtrArray *contacts)
+{
+    GKeyFile *kf = g_key_file_new();
+    g_ptr_array_set_size(s->st.contacts, 0);
+    for (guint i = 0; contacts && i < contacts->len; i++) {
+        ShareContact *src = contacts->pdata[i];
+        ShareContact *c = g_new0(ShareContact, 1);
+        c->name = g_strdup(src->name);
+        c->device = g_strdup(src->device);
+        c->email = g_strdup(src->email);
+        c->phone = g_strdup(src->phone);
+        c->photo = g_strdup(src->photo);
+        g_ptr_array_add(s->st.contacts, c);
+        char *grp = g_strdup_printf("contact-%u", i + 1);
+        if (c->name && *c->name) g_key_file_set_string(kf, grp, "name", c->name);
+        if (c->device && *c->device) g_key_file_set_string(kf, grp, "device", c->device);
+        if (c->email && *c->email) g_key_file_set_string(kf, grp, "email", c->email);
+        if (c->phone && *c->phone) g_key_file_set_string(kf, grp, "phone", c->phone);
+        if (c->photo && *c->photo) g_key_file_set_string(kf, grp, "photo", c->photo);
+        g_free(grp);
+    }
+    char *path = contacts_path(s->dry);
+    g_key_file_save_to_file(kf, path, NULL);
+    g_free(path);
+    g_key_file_unref(kf);
+    sync_receiver_policy(s);
+    if (s->st.mode == SHARE_DISCOVER_CONTACTS && s->st.link == LINK_UP) {
+        g_free(s->service_id);
+        g_free(s->label);
+        s->service_id = random_id();
+        s->label = g_strconcat("lares-", s->service_id, NULL);
+        parts_apply(s);
+    }
+    changed(s);
+}
+
+void share_set_device_photo(Share *s, const char *device_name, const char *photo_path)
+{
+    if (!device_name || !*device_name) return;
+    char *norm = normalize_contact_name(device_name);
+    char *owner = owner_prefix_norm(norm);
+    int match = -1;
+    for (guint i = 0; i < s->st.contacts->len; i++) {
+        if (contact_matches_exact(s->st.contacts->pdata[i], norm)) {
+            match = (int)i;
+            break;
+        }
+    }
+    if (match < 0 && owner && *owner) {
+        for (guint i = 0; i < s->st.contacts->len; i++) {
+            if (contact_matches_owner(s->st.contacts->pdata[i], owner)) {
+                match = (int)i;
+                break;
+            }
+        }
+    }
+    g_free(owner);
+    g_free(norm);
+
+    GPtrArray *next = g_ptr_array_new_with_free_func((GDestroyNotify)share_contact_free);
+    for (guint i = 0; i < s->st.contacts->len; i++) {
+        ShareContact *src = s->st.contacts->pdata[i];
+        ShareContact *c = g_new0(ShareContact, 1);
+        c->name = g_strdup(src->name);
+        c->device = g_strdup(src->device);
+        c->email = g_strdup(src->email);
+        c->phone = g_strdup(src->phone);
+        c->photo = g_strdup(src->photo);
+        if ((int)i == match) {
+            g_free(c->photo);
+            c->photo = g_strdup(photo_path);
+            if (!c->device || !*c->device) {
+                g_free(c->device);
+                c->device = g_strdup(device_name);
+            }
+        }
+        g_ptr_array_add(next, c);
+    }
+    if (match < 0 && photo_path && *photo_path) {
+        ShareContact *c = g_new0(ShareContact, 1);
+        c->name = g_strdup(device_name);
+        c->device = g_strdup(device_name);
+        c->photo = g_strdup(photo_path);
+        g_ptr_array_add(next, c);
+    }
+    share_save_contacts(s, next);
+    g_ptr_array_unref(next);
 }
 
 typedef struct {
@@ -1356,6 +2098,7 @@ static void send_progress(gboolean accepted, guint64 sent, guint64 total, gpoint
     if (!d) return;
     if (accepted && d->state == DEVICE_ASKING) {
         d->state = DEVICE_SENDING;
+        c->s->st.xfer_start_us = g_get_monotonic_time();
         share_log(c->s, "they accepted");
     }
     d->sent = sent;
@@ -1377,6 +2120,15 @@ static void send_done(GObject *src, GAsyncResult *res, gpointer user)
                                           ? DEVICE_DECLINED : DEVICE_FAILED;
             g_free(d->message);
             d->message = e ? g_strdup(e->message) : NULL;
+            if (!ok && d->address && *d->address) {
+                GHashTableIter it;
+                gpointer v;
+                g_hash_table_iter_init(&it, s->candidates);
+                while (g_hash_table_iter_next(&it, NULL, &v)) {
+                    Candidate *cand = v;
+                    if (cand->address && g_ascii_strcasecmp(cand->address, d->address) == 0) cand->next_probe = 0;
+                }
+            }
         }
         if (s->send_cancel == c->cancel) {
             g_clear_object(&s->send_cancel);
@@ -1397,11 +2149,12 @@ void share_send_to(Share *s, const char *key)
     d->state = DEVICE_ASKING;
     share_log(s, "asking to send");
     d->sent = d->total = 0;
+    s->st.xfer_start_us = g_get_monotonic_time();
     g_clear_pointer(&d->message, g_free);
     s->send_key = g_strdup(key);
     changed(s);
     if (s->dry) {
-        g_timeout_add(2000, pretend_accept, s);
+        g_timeout_add(1200, pretend_accept, s);
         g_clear_pointer(&s->send_key, g_free);
         return;
     }

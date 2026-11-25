@@ -62,6 +62,14 @@ int fd_recv(void* ctx, uint8_t* buf, size_t len)
     return n < 0 ? -1 : n;
 }
 
+int fd_recv_nb(void* ctx, uint8_t* buf, size_t len)
+{
+    int n = lwip_recv(static_cast<int>(reinterpret_cast<intptr_t>(ctx)), buf, len, MSG_DONTWAIT);
+    if (n >= 0) return n;
+    if (errno == EWOULDBLOCK || errno == EAGAIN) return -2;
+    return -1;
+}
+
 int fd_send(void* ctx, const uint8_t* buf, size_t len)
 {
     int fd = static_cast<int>(reinterpret_cast<intptr_t>(ctx));
@@ -79,6 +87,7 @@ lares::tls::Transport over(int fd)
     lares::tls::Transport t;
     t.ctx = reinterpret_cast<void*>(static_cast<intptr_t>(fd));
     t.recv = fd_recv;
+    t.recv_nonblocking = fd_recv_nb;
     t.send = fd_send;
     return t;
 }
@@ -184,6 +193,8 @@ void test_tls()
     std::string server_err, heard;
     std::vector<uint8_t> big(200000);
     for (size_t i = 0; i < big.size(); i++) big[i] = static_cast<uint8_t>(i ^ (i >> 8));
+    bool try_read_would_block = false;
+    bool try_read_fast = false;
     std::thread server([&] {
         int c = lwip_accept(ls, nullptr, nullptr);
         set_timeout(c, 10000);
@@ -192,6 +203,15 @@ void test_tls()
             char buf[64] = {};
             int n = t->read(reinterpret_cast<uint8_t*>(buf), sizeof buf - 1);
             if (n > 0) heard.assign(buf, n);
+            /* Non-blocking try_read must return -2 immediately when the peer is silent,
+             * never blocking for SO_RCVTIMEO (10 s) on TLS 1.3 post-handshake silence. */
+            auto t0 = std::chrono::steady_clock::now();
+            int nb = t->try_read(reinterpret_cast<uint8_t*>(buf), sizeof buf);
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - t0)
+                                  .count();
+            try_read_would_block = (nb == -2);
+            try_read_fast = (elapsed_ms < 1000);
             t->write(big.data(), big.size());
             t->close();
         }
@@ -222,6 +242,8 @@ void test_tls()
     lwip_close(ls);
     if (!server_err.empty()) std::fprintf(stderr, "tls server: %s\n", server_err.c_str());
     CHECK(server_err.empty());
+    CHECK(try_read_would_block);
+    CHECK(try_read_fast);
     CHECK(heard == "POST /Discover");
     CHECK(got == big);
 }
@@ -316,13 +338,22 @@ void test_session(bool accept)
     std::unique_ptr<ad::Receiver> receiver;
     ad::ReceiverCallbacks cb;
     cb.offer = [&](const ad::Offer& o) {
+        unsigned oid = o.id;
         {
             std::lock_guard<std::mutex> lock(h.mu);
             h.offers++;
             h.sender = o.sender;
             h.offered = o.names;
         }
-        receiver->answer(o.id, accept);
+        if (accept) {
+            /* Delay accept across one wait_answer() poll slice (500 ms) so TLS 1.3
+             * non-blocking polling is exercised before replying 200 OK. */
+            loop.after(700, [&, oid] {
+                if (receiver) receiver->answer(oid, true);
+            });
+        } else {
+            receiver->answer(oid, false);
+        }
     };
     cb.received = [&](unsigned, bool, const std::vector<std::string>& items) {
         std::lock_guard<std::mutex> lock(h.mu);
@@ -363,6 +394,68 @@ void test_session(bool accept)
     });
     CHECK(h.wait([&] { return h.discovered; }, 20));
     CHECK(h.peer == "Test PC/Windows");
+
+    /* Contacts Only policy: unmatched /Discover returns 401 (no peer); matched record succeeds. */
+    const std::string allowed_hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    receiver->set_policy(true, { allowed_hash });
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.discovered = false;
+        h.peer.clear();
+    }
+    ad::discover(loop, there, receiver->port(), cancel, [&](std::optional<ad::Peer> p, const std::string& e) {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.discovered = true;
+        h.peer = p ? p->name + "/" + p->model : "none: " + e;
+        h.cv.notify_all();
+    });
+    CHECK(h.wait([&] { return h.discovered; }, 20));
+    CHECK(h.peer == "none: ");
+
+    /* Unauthenticated /Ask against Contacts Only returns HTTP 401 with clear hint (not a decline). */
+    ad::SendRequest unauth_req;
+    unauth_req.addr = there;
+    unauth_req.port = receiver->port();
+    unauth_req.name = "Sender PC";
+    unauth_req.id = "0123456789ab";
+    unauth_req.paths = { out + L"\\IMG_0412.HEIC" };
+    bool unauth_done = false, unauth_ok = true, unauth_declined = true;
+    std::string unauth_err;
+    ad::send(
+        loop, unauth_req, cancel, [](bool, uint64_t, uint64_t) {},
+        [&](bool ok, bool declined, const std::string& e) {
+            std::lock_guard<std::mutex> lock(h.mu);
+            unauth_done = true;
+            unauth_ok = ok;
+            unauth_declined = declined;
+            unauth_err = e;
+            h.cv.notify_all();
+        });
+    CHECK(h.wait([&] { return unauth_done; }, 20));
+    CHECK(!unauth_ok && !unauth_declined && unauth_err.find("Everyone for 10 Minutes") != std::string::npos);
+
+    std::string xml_rec =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>"
+        "<key>ValidatedEmailHashes</key><array><string>" + allowed_hash + "</string></array>"
+        "</dict></plist>";
+    std::vector<uint8_t> rec_bytes(xml_rec.begin(), xml_rec.end());
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.discovered = false;
+        h.peer.clear();
+    }
+    ad::discover(
+        loop, there, receiver->port(), cancel,
+        [&](std::optional<ad::Peer> p, const std::string& e) {
+            std::lock_guard<std::mutex> lock(h.mu);
+            h.discovered = true;
+            h.peer = p ? p->name + "/" + p->model : "none: " + e;
+            h.cv.notify_all();
+        },
+        rec_bytes);
+    CHECK(h.wait([&] { return h.discovered; }, 20));
+    CHECK(h.peer == "Test PC/Windows");
+    receiver->set_policy(false, {});
 
     ad::SendRequest req;
     req.addr = there;

@@ -82,6 +82,7 @@ target_link_libraries(lares PRIVATE
     dwmapi
     uxtheme
     ole32
+    windowscodecs
     windowsapp
     shell32
     shlwapi
@@ -159,7 +160,8 @@ set(AIRDROP_FORMAT_SOURCES
     share/airdrop/cpio.cpp
     share/airdrop/compress.cpp
     share/airdrop/http.cpp
-    share/airdrop/mdns.cpp)
+    share/airdrop/mdns.cpp
+    share/airdrop/record.cpp)
 add_library(lares_share_core STATIC
     share/rtl_usb.c
     ../src/awdl/frame.c
