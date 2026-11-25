@@ -172,6 +172,230 @@ std::pair<Rgba, Rgba> avatar_gradient(const std::string& seed)
     return kPairs[h % (sizeof(kPairs) / sizeof(kPairs[0]))];
 }
 
+/* Queries exact DirectWrite cap-height / em-size ratio so single-line
+ * buttons, inputs, menu rows and circular avatar initials center optically. */
+float font_cap_ratio(IDWriteFactory* factory, IDWriteTextFormat* fmt)
+{
+    if (!factory || !fmt) return 0.70f;
+    wchar_t fam[128] = {};
+    if (FAILED(fmt->GetFontFamilyName(fam, 128))) return 0.70f;
+    IDWriteFontCollection* coll = nullptr;
+    if (FAILED(fmt->GetFontCollection(&coll)) || !coll) {
+        if (FAILED(factory->GetSystemFontCollection(&coll)) || !coll) return 0.70f;
+    }
+    UINT32 idx = 0;
+    BOOL exists = FALSE;
+    float ratio = 0.70f;
+    if (SUCCEEDED(coll->FindFamilyName(fam, &idx, &exists)) && exists) {
+        IDWriteFontFamily* family = nullptr;
+        if (SUCCEEDED(coll->GetFontFamily(idx, &family)) && family) {
+            IDWriteFont* font = nullptr;
+            if (SUCCEEDED(family->GetFirstMatchingFont(fmt->GetFontWeight(), fmt->GetFontStretch(),
+                                                       fmt->GetFontStyle(), &font)) && font) {
+                DWRITE_FONT_METRICS fm = {};
+                font->GetMetrics(&fm);
+                if (fm.designUnitsPerEm > 0 && fm.capHeight > 0) {
+                    ratio = static_cast<float>(fm.capHeight) / static_cast<float>(fm.designUnitsPerEm);
+                }
+                font->Release();
+            }
+            family->Release();
+        }
+    }
+    coll->Release();
+    return ratio;
+}
+
+/* Draws single-line text optically centered vertically inside `rc` using real
+ * DirectWrite baseline + cap-height metrics (eliminates top/bottom drift). */
+void draw_centered_text(ID2D1RenderTarget* rt, IDWriteFactory* factory, ID2D1SolidColorBrush* brush,
+                        const wchar_t* text, IDWriteTextFormat* fmt, const D2D1_RECT_F& rc,
+                        const Rgba& color, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_CENTER,
+                        bool ellipsis = true)
+{
+    if (!rt || !factory || !brush || !text || !*text || !fmt) return;
+    float bw = rc.right - rc.left;
+    float bh = rc.bottom - rc.top;
+    if (bw <= 0.0f || bh <= 0.0f) return;
+    UINT32 len = static_cast<UINT32>(wcslen(text));
+    IDWriteTextLayout* layout = nullptr;
+    if (FAILED(factory->CreateTextLayout(text, len, fmt, bw, bh, &layout)) || !layout) return;
+    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    layout->SetTextAlignment(align);
+    if (ellipsis) {
+        IDWriteInlineObject* dots = nullptr;
+        if (SUCCEEDED(factory->CreateEllipsisTrimmingSign(fmt, &dots)) && dots) {
+            DWRITE_TRIMMING trim = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+            layout->SetTrimming(&trim, dots);
+            dots->Release();
+        }
+    }
+    DWRITE_LINE_METRICS lm = {};
+    UINT32 lines = 0;
+    float draw_y = rc.top;
+    if (SUCCEEDED(layout->GetLineMetrics(&lm, 1, &lines)) && lines >= 1) {
+        float cap_h = fmt->GetFontSize() * font_cap_ratio(factory, fmt);
+        float mid_y = (rc.top + rc.bottom) * 0.5f;
+        draw_y = mid_y - lm.baseline + cap_h * 0.5f;
+    }
+    brush->SetColor(to_d2d(color));
+    rt->DrawTextLayout(D2D1::Point2F(rc.left, draw_y), layout, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    layout->Release();
+}
+
+/* Draws a crisp macOS-style rounded-square + diagonal pencil Edit icon. */
+void draw_edit_icon(ID2D1Factory* factory, ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
+                    ID2D1StrokeStyle* round_cap, float cx, float cy, float s, const Rgba& color)
+{
+    if (!factory || !rt || !brush) return;
+    brush->SetColor(to_d2d(color));
+    const float lw = 1.45f;
+    const float cr = s * 0.16f;
+    // Open rounded square (left, bottom, partial top & right)
+    ID2D1PathGeometry* box = nullptr;
+    if (SUCCEEDED(factory->CreatePathGeometry(&box)) && box) {
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(box->Open(&sink)) && sink) {
+            float l = cx - s * 0.42f;
+            float r = cx + s * 0.36f;
+            float t = cy - s * 0.36f;
+            float b = cy + s * 0.42f;
+            sink->BeginFigure(D2D1::Point2F(cx + s * 0.02f, t), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine(D2D1::Point2F(l + cr, t));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(l, t + cr), D2D1::SizeF(cr, cr), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(l, b - cr));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(l + cr, b), D2D1::SizeF(cr, cr), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(r - cr, b));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(r, b - cr), D2D1::SizeF(cr, cr), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(r, cy + s * 0.02f));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            sink->Release();
+            rt->DrawGeometry(box, brush, lw, round_cap);
+        }
+        box->Release();
+    }
+
+    // Diagonal pencil shaft + triangular nib + top cap
+    auto fill_quad = [&](D2D1_POINT_2F p0, D2D1_POINT_2F p1, D2D1_POINT_2F p2, D2D1_POINT_2F p3) {
+        ID2D1PathGeometry* g = nullptr;
+        if (FAILED(factory->CreatePathGeometry(&g)) || !g) return;
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(g->Open(&sink)) && sink) {
+            sink->BeginFigure(p0, D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddLine(p1);
+            sink->AddLine(p2);
+            sink->AddLine(p3);
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+            sink->Release();
+            rt->FillGeometry(g, brush);
+        }
+        g->Release();
+    };
+    const float ux = 0.7071f, uy = -0.7071f; // along pencil axis (bottom-left -> top-right)
+    const float nx = 0.7071f, ny = 0.7071f;  // perpendicular half-width
+    const float hw = s * 0.105f;
+    const float tip_x = cx - s * 0.14f;
+    const float tip_y = cy + s * 0.14f;
+    auto pt = [&](float along, float perp) {
+        return D2D1::Point2F(tip_x + ux * along + nx * perp, tip_y + uy * along + ny * perp);
+    };
+    // Triangular nib
+    ID2D1PathGeometry* nib = nullptr;
+    if (SUCCEEDED(factory->CreatePathGeometry(&nib)) && nib) {
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(nib->Open(&sink)) && sink) {
+            sink->BeginFigure(pt(0.0f, 0.0f), D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddLine(pt(s * 0.19f, -hw));
+            sink->AddLine(pt(s * 0.19f, hw));
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+            sink->Release();
+            rt->FillGeometry(nib, brush);
+        }
+        nib->Release();
+    }
+    // Shaft body
+    fill_quad(pt(s * 0.24f, -hw), pt(s * 0.65f, -hw), pt(s * 0.65f, hw), pt(s * 0.24f, hw));
+    // Eraser cap
+    fill_quad(pt(s * 0.70f, -hw), pt(s * 0.81f, -hw), pt(s * 0.81f, hw), pt(s * 0.70f, hw));
+}
+
+/* Draws a crisp macOS-style Trash Can icon (handle, lid, rounded bin + vertical ribs). */
+void draw_trash_icon(ID2D1Factory* factory, ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
+                     ID2D1StrokeStyle* round_cap, float cx, float cy, float s, const Rgba& color)
+{
+    if (!factory || !rt || !brush) return;
+    brush->SetColor(to_d2d(color));
+    const float lw = 1.45f;
+
+    // Lid horizontal bar
+    rt->DrawLine(D2D1::Point2F(cx - s * 0.39f, cy - s * 0.24f),
+                 D2D1::Point2F(cx + s * 0.39f, cy - s * 0.24f), brush, lw + 0.15f, round_cap);
+
+    // Centered top handle arch
+    ID2D1PathGeometry* handle = nullptr;
+    if (SUCCEEDED(factory->CreatePathGeometry(&handle)) && handle) {
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(handle->Open(&sink)) && sink) {
+            float hr = s * 0.10f;
+            float hl = cx - s * 0.16f;
+            float hr_x = cx + s * 0.16f;
+            float ht = cy - s * 0.43f;
+            float hb = cy - s * 0.25f;
+            sink->BeginFigure(D2D1::Point2F(hl, hb), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine(D2D1::Point2F(hl, ht + hr));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(hl + hr, ht), D2D1::SizeF(hr, hr), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(hr_x - hr, ht));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(hr_x, ht + hr), D2D1::SizeF(hr, hr), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(hr_x, hb));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            sink->Release();
+            rt->DrawGeometry(handle, brush, lw, round_cap);
+        }
+        handle->Release();
+    }
+
+    // Rounded bin outline
+    ID2D1PathGeometry* bin = nullptr;
+    if (SUCCEEDED(factory->CreatePathGeometry(&bin)) && bin) {
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(bin->Open(&sink)) && sink) {
+            float br = s * 0.14f;
+            float bl = cx - s * 0.29f;
+            float br_x = cx + s * 0.29f;
+            float bt = cy - s * 0.12f;
+            float bb = cy + s * 0.43f;
+            sink->BeginFigure(D2D1::Point2F(bl, bt), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine(D2D1::Point2F(bl + s * 0.03f, bb - br));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(bl + s * 0.03f + br, bb), D2D1::SizeF(br, br), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(br_x - s * 0.03f - br, bb));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(br_x - s * 0.03f, bb - br), D2D1::SizeF(br, br), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(br_x, bt));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            sink->Release();
+            rt->DrawGeometry(bin, brush, lw, round_cap);
+        }
+        bin->Release();
+    }
+
+    // Two clean inner vertical ribs
+    rt->DrawLine(D2D1::Point2F(cx - s * 0.095f, cy - s * 0.01f),
+                 D2D1::Point2F(cx - s * 0.085f, cy + s * 0.28f), brush, lw - 0.15f, round_cap);
+    rt->DrawLine(D2D1::Point2F(cx + s * 0.095f, cy - s * 0.01f),
+                 D2D1::Point2F(cx + s * 0.085f, cy + s * 0.28f), brush, lw - 0.15f, round_cap);
+}
+
 /* Draws the official Apple AirDrop vector glyph: center solid dot + 3 open-bottom arcs. */
 void draw_airdrop_emblem(ID2D1Factory* factory, ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
                          ID2D1StrokeStyle* round_cap, float cx, float cy, float scale, const Rgba& color)
@@ -569,15 +793,15 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                           ShareActionKind kind, const std::string& value = {}) {
         bool hov = in_overlay ? hover_top(rc) : hover_bg(rc);
         Rgba bg = primary ? (hov ? ap.blue_hover : ap.blue) : (hov ? ap.btn_hover : ap.btn_bg);
-        fill(rt, rc, bg, 6.5f);
+        fill(rt, rc, bg, 7.5f);
         if (!primary) {
             brush_->SetColor(to_d2d(ap.btn_border));
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(rc, 6.5f, 6.5f), brush_, 1.0f);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(rc, 7.5f, 7.5f), brush_, 1.0f);
         }
         Rgba fg = primary ? Rgba{ 1.0f, 1.0f, 1.0f, 1.0f } : ap.text;
-        float bh = rc.bottom - rc.top;
-        label(rt, text, fonts_.ui_sub(), rc.left + 4.0f, rc.top + (bh - 15.0f) * 0.5f,
-              rc.right - rc.left - 8.0f, fg, DWRITE_TEXT_ALIGNMENT_CENTER);
+        D2D1_RECT_F trc = D2D1::RectF(rc.left + 8.0f, rc.top, rc.right - 8.0f, rc.bottom);
+        draw_centered_text(rt, fonts_.factory(), brush_, text, fonts_.ui_sub_semibold(), trc, fg,
+                           DWRITE_TEXT_ALIGNMENT_CENTER);
         share_hits_.push_back({ rc, kind, value });
     };
 
@@ -740,11 +964,11 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
     auto toolbar_pill = [&](const D2D1_RECT_F& rc, const wchar_t* txt, bool active, ShareActionKind kind) {
         bool hov = hover_bg(rc);
         Rgba bg = active ? ap.blue_tint : hov ? ap.pill_hover : ap.pill_bg;
-        fill(rt, rc, bg, 7.0f);
+        fill(rt, rc, bg, 7.5f);
         brush_->SetColor(to_d2d(active ? ap.blue : ap.pill_border));
-        rt->DrawRoundedRectangle(D2D1::RoundedRect(rc, 7.0f, 7.0f), brush_, 1.0f);
-        label(rt, txt, fonts_.ui_sub(), rc.left, rc.top + 6.0f, rc.right - rc.left,
-              active ? ap.blue : ap.text, DWRITE_TEXT_ALIGNMENT_CENTER);
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(rc, 7.5f, 7.5f), brush_, 1.0f);
+        draw_centered_text(rt, fonts_.factory(), brush_, txt, fonts_.ui_sub_semibold(), rc,
+                           active ? ap.blue : ap.text, DWRITE_TEXT_ALIGNMENT_CENTER);
         share_hits_.push_back({ rc, kind, {} });
     };
     toolbar_pill(contacts_rc, contacts_lbl.c_str(), share_contacts_open_, ShareActionKind::ToggleContacts);
@@ -958,8 +1182,9 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                 draw_device_glyph(rt, brush_, n.cx, n.cy, 30.0f, n.kind, { 1.0f, 1.0f, 1.0f, 0.94f });
             } else {
                 std::wstring winit = utf8_to_wide(init);
-                label(rt, winit.c_str(), fonts_.ui_initials(), n.cx - avatar_r, n.cy - 15.5f, avatar_r * 2.0f,
-                      { 1.0f, 1.0f, 1.0f, 0.96f }, DWRITE_TEXT_ALIGNMENT_CENTER);
+                D2D1_RECT_F irc = D2D1::RectF(n.cx - avatar_r, n.cy - avatar_r, n.cx + avatar_r, n.cy + avatar_r);
+                draw_centered_text(rt, fonts_.factory(), brush_, winit.c_str(), fonts_.ui_initials(), irc,
+                                   { 1.0f, 1.0f, 1.0f, 0.96f }, DWRITE_TEXT_ALIGNMENT_CENTER, false);
             }
         }
 
@@ -1286,8 +1511,9 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
             if (lit) fill(rt, irc, ap.blue, 6.0f);
             Rgba fg = lit ? Rgba{ 1.0f, 1.0f, 1.0f, 1.0f } : ap.text;
             if (selected) draw_checkmark(rt, brush_, share_round_cap_, irc.left + 8.0f, (irc.top + irc.bottom) * 0.5f, fg);
-            label(rt, discover_mode_label(kModes[i]), fonts_.ui_body(), irc.left + 26.0f, irc.top + 5.5f,
-                  irc.right - irc.left - 32.0f, fg);
+            D2D1_RECT_F trc = D2D1::RectF(irc.left + 26.0f, irc.top, irc.right - 8.0f, irc.bottom);
+            draw_centered_text(rt, fonts_.factory(), brush_, discover_mode_label(kModes[i]), fonts_.ui_body(), trc,
+                               fg, DWRITE_TEXT_ALIGNMENT_LEADING);
             share_hits_.push_back({ irc, ShareActionKind::PickDiscoverMode, std::to_string(i) });
         }
     }
@@ -1353,116 +1579,190 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         }
     }
 
-    // 3) Inline macOS Contacts & Avatars modal sheet
+    // 3) Inline macOS AirDrop Contacts modal sheet
     if (share_contacts_open_) {
-        const float mw = std::min(460.0f, w - 36.0f);
+        const float pad = 24.0f;
+        const float mw = std::round(std::min(460.0f, w - 48.0f));
         const int shown_contacts = std::min<int>(static_cast<int>(v.contacts.size()), 4);
-        const float list_h = shown_contacts > 0 ? shown_contacts * 46.0f : 34.0f;
-        const float mh = 252.0f + list_h;
-        float mx = cx - mw * 0.5f;
-        float my = y + std::max(18.0f, (h - mh) * 0.5f);
+        const float row_h = 56.0f;
+        const float row_gap = 6.0f;
+        const float list_h = shown_contacts > 0
+                                 ? static_cast<float>(shown_contacts) * row_h +
+                                       static_cast<float>(shown_contacts - 1) * row_gap
+                                 : 44.0f;
+        const float mh = 283.0f + list_h;
+        const float mx = std::round(cx - mw * 0.5f);
+        const float my = std::round(y + std::max(18.0f, (h - mh) * 0.5f));
         D2D1_RECT_F mrc = D2D1::RectF(mx, my, mx + mw, my + mh);
 
-        fill(rt, D2D1::RectF(mx, my + 6.0f, mx + mw, my + mh + 6.0f), ap.shadow, 14.0f);
+        fill(rt, D2D1::RectF(mx, my + 8.0f, mx + mw, my + mh + 8.0f), ap.shadow, 14.0f);
         fill(rt, mrc, ap.popover_bg, 14.0f);
         brush_->SetColor(to_d2d(ap.popover_border));
         rt->DrawRoundedRectangle(D2D1::RoundedRect(mrc, 14.0f, 14.0f), brush_, 1.0f);
         share_hits_.push_back({ mrc, ShareActionKind::ToggleContacts, "noop" });
 
-        float cy_m = my + 16.0f;
-        label(rt, L"AirDrop Contacts & Avatars", fonts_.ui_semibold(), mx + 18.0f, cy_m, mw - 100.0f, ap.text);
-        mac_button(D2D1::RectF(mx + mw - 76.0f, cy_m - 3.0f, mx + mw - 16.0f, cy_m + 23.0f),
+        // Header: "AirDrop Contacts" + Done button
+        float cy_m = my + 22.0f;
+        D2D1_RECT_F title_rc = D2D1::RectF(mx + pad, cy_m, mx + mw - pad - 80.0f, cy_m + 32.0f);
+        draw_centered_text(rt, fonts_.factory(), brush_, L"AirDrop Contacts", fonts_.ui_title(), title_rc,
+                           ap.text, DWRITE_TEXT_ALIGNMENT_LEADING);
+        mac_button(D2D1::RectF(mx + mw - pad - 68.0f, cy_m + 1.0f, mx + mw - pad, cy_m + 31.0f),
                    L"Done", false, true, ShareActionKind::CloseOverlays);
-        cy_m += 24.0f;
-        label(rt, L"Used for Contacts Only verification and device profile photos.",
-              fonts_.ui_sub(), mx + 18.0f, cy_m, mw - 36.0f, ap.sub);
-        cy_m += 24.0f;
+        cy_m += 32.0f + 16.0f;
 
-        // Divider
-        fill(rt, D2D1::RectF(mx + 18.0f, cy_m, mx + mw - 18.0f, cy_m + 1.0f), ap.stage_border);
-        cy_m += 10.0f;
+        // Top divider
+        fill(rt, D2D1::RectF(mx + pad, cy_m, mx + mw - pad, cy_m + 1.0f), ap.stage_border);
+        cy_m += 15.0f;
 
+        // Saved contacts list
         if (v.contacts.empty()) {
-            label(rt, L"No contacts saved yet. Add one below or right-click any device on the radar.",
-                  fonts_.ui_sub(), mx + 18.0f, cy_m + 6.0f, mw - 36.0f, ap.sub);
-            cy_m += 34.0f;
+            D2D1_RECT_F emp_rc = D2D1::RectF(mx + pad, cy_m, mx + mw - pad, cy_m + 44.0f);
+            draw_centered_text(rt, fonts_.factory(), brush_,
+                               L"No contacts yet. Add one below or right-click a nearby device.",
+                               fonts_.ui_sub(), emp_rc, ap.sub, DWRITE_TEXT_ALIGNMENT_LEADING);
+            cy_m += 44.0f;
         } else {
+            Rgba row_bg = dark_ ? Rgba{ 1.0f, 1.0f, 1.0f, 0.045f } : Rgba{ 0.0f, 0.0f, 0.0f, 0.030f };
+            Rgba trash_bg = dark_ ? Rgba{ 1.0f, 0.271f, 0.227f, 0.16f } : Rgba{ 1.0f, 0.231f, 0.188f, 0.11f };
+            Rgba trash_border = dark_ ? Rgba{ 1.0f, 0.271f, 0.227f, 0.28f } : Rgba{ 1.0f, 0.231f, 0.188f, 0.22f };
+
             for (int i = 0; i < shown_contacts; ++i) {
                 const ShareContact& c = v.contacts[static_cast<size_t>(i)];
-                float rcy = cy_m + 18.0f;
-                float rcx = mx + 34.0f;
-                D2D1_RECT_F photo_rc = D2D1::RectF(rcx - 16.0f, rcy - 16.0f, rcx + 16.0f, rcy + 16.0f);
+                D2D1_RECT_F rrc = D2D1::RectF(mx + pad, cy_m, mx + mw - pad, cy_m + row_h);
+                fill(rt, rrc, row_bg, 10.0f);
+
+                const float av_r = 18.0f;
+                const float rcx = std::round(rrc.left + 10.0f + av_r);
+                const float rcy = std::round(cy_m + row_h * 0.5f);
+                D2D1_RECT_F photo_rc = D2D1::RectF(rcx - av_r, rcy - av_r, rcx + av_r, rcy + av_r);
                 ID2D1Bitmap* cbmp = !c.photo.empty() ? load_share_bitmap(utf8_to_wide(c.photo)) : nullptr;
                 if (cbmp) {
                     D2D1_SIZE_F sz = cbmp->GetSize();
                     float side = std::max(1.0f, std::min(sz.width, sz.height));
-                    float sc = 32.0f / side;
+                    float sc = (av_r * 2.0f) / side;
                     ID2D1BitmapBrush* bbrush = nullptr;
                     D2D1_BITMAP_BRUSH_PROPERTIES bprops = D2D1::BitmapBrushProperties(
                         D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_CLAMP, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                     if (SUCCEEDED(rt->CreateBitmapBrush(cbmp, bprops, &bbrush)) && bbrush) {
                         bbrush->SetTransform(D2D1::Matrix3x2F::Scale(sc, sc) *
                                              D2D1::Matrix3x2F::Translation(rcx - sz.width * sc * 0.5f, rcy - sz.height * sc * 0.5f));
-                        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), 16.0f, 16.0f), bbrush);
+                        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), av_r, av_r), bbrush);
                         bbrush->Release();
                     }
                 } else {
-                    auto [tc, _bc] = avatar_gradient(c.name.empty() ? c.device : c.name);
-                    brush_->SetColor(to_d2d(tc));
-                    rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), 16.0f, 16.0f), brush_);
+                    auto [tc, bc] = avatar_gradient(c.name.empty() ? c.device : c.name);
+                    D2D1_GRADIENT_STOP stops[2] = { { 0.0f, to_d2d(tc) }, { 1.0f, to_d2d(bc) } };
+                    ID2D1GradientStopCollection* gsc = nullptr;
+                    ID2D1LinearGradientBrush* gbrush = nullptr;
+                    if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &gsc)) && gsc) {
+                        if (SUCCEEDED(rt->CreateLinearGradientBrush(
+                                D2D1::LinearGradientBrushProperties(D2D1::Point2F(rcx, rcy - av_r),
+                                                                    D2D1::Point2F(rcx, rcy + av_r)),
+                                gsc, &gbrush)) && gbrush) {
+                            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), av_r, av_r), gbrush);
+                            gbrush->Release();
+                        }
+                        gsc->Release();
+                    }
                     std::wstring wi = utf8_to_wide(share_initials(c.name.empty() ? c.device : c.name));
-                    label(rt, wi.c_str(), fonts_.ui_sub(), rcx - 16.0f, rcy - 8.0f, 32.0f,
-                          { 1.0f, 1.0f, 1.0f, 0.96f }, DWRITE_TEXT_ALIGNMENT_CENTER);
+                    draw_centered_text(rt, fonts_.factory(), brush_, wi.c_str(), fonts_.ui_semibold(), photo_rc,
+                                       { 1.0f, 1.0f, 1.0f, 0.96f }, DWRITE_TEXT_ALIGNMENT_CENTER, false);
                 }
+                brush_->SetColor(to_d2d(ap.avatar_ring));
+                rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), av_r, av_r), brush_, 1.0f);
                 share_hits_.push_back({ photo_rc, ShareActionKind::ContactChangePhoto, std::to_string(i) });
 
                 std::wstring cname = utf8_to_wide(c.name.empty() ? c.device : c.name);
-                std::string meta;
-                if (!c.email.empty()) meta += c.email;
-                if (!c.phone.empty()) { if (!meta.empty()) meta += " · "; meta += c.phone; }
-                if (!c.device.empty() && c.device != c.name) { if (!meta.empty()) meta += " · "; meta += c.device; }
-                if (meta.empty()) meta = "Photo avatar";
-                label(rt, cname.c_str(), fonts_.ui_semibold(), mx + 58.0f, cy_m + 1.0f, mw - 194.0f, ap.text);
-                label(rt, utf8_to_wide(meta).c_str(), fonts_.ui_sub(), mx + 58.0f, cy_m + 19.0f, mw - 194.0f, ap.sub);
-                mac_button(D2D1::RectF(mx + mw - 130.0f, cy_m + 6.0f, mx + mw - 84.0f, cy_m + 30.0f),
-                           L"Edit", false, true, ShareActionKind::ContactEdit, std::to_string(i));
-                mac_button(D2D1::RectF(mx + mw - 78.0f, cy_m + 6.0f, mx + mw - 18.0f, cy_m + 30.0f),
-                           L"Remove", false, true, ShareActionKind::ContactRemove, std::to_string(i));
-                cy_m += 46.0f;
+                std::string sub_str = (!c.device.empty() && c.device != c.name) ? c.device : std::string();
+                const float text_x = rrc.left + 58.0f;
+                const float text_r = rrc.right - 90.0f;
+                if (!sub_str.empty()) {
+                    draw_centered_text(rt, fonts_.factory(), brush_, cname.c_str(), fonts_.ui_semibold(),
+                                       D2D1::RectF(text_x, cy_m + 9.0f, text_r, cy_m + 28.0f),
+                                       ap.text, DWRITE_TEXT_ALIGNMENT_LEADING);
+                    draw_centered_text(rt, fonts_.factory(), brush_, utf8_to_wide(sub_str).c_str(), fonts_.ui_sub(),
+                                       D2D1::RectF(text_x, cy_m + 29.0f, text_r, cy_m + 47.0f),
+                                       ap.sub, DWRITE_TEXT_ALIGNMENT_LEADING);
+                } else {
+                    draw_centered_text(rt, fonts_.factory(), brush_, cname.c_str(), fonts_.ui_semibold(),
+                                       D2D1::RectF(text_x, cy_m, text_r, cy_m + row_h),
+                                       ap.text, DWRITE_TEXT_ALIGNMENT_LEADING);
+                }
+
+                // Edit icon button (32x32)
+                D2D1_RECT_F edit_rc = D2D1::RectF(rrc.right - 80.0f, cy_m + 12.0f, rrc.right - 48.0f, cy_m + 44.0f);
+                bool edit_hov = hover_top(edit_rc);
+                fill(rt, edit_rc, edit_hov ? ap.btn_hover : ap.btn_bg, 8.0f);
+                brush_->SetColor(to_d2d(ap.btn_border));
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(edit_rc, 8.0f, 8.0f), brush_, 1.0f);
+                draw_edit_icon(d2d_factory_, rt, brush_, share_round_cap_,
+                               (edit_rc.left + edit_rc.right) * 0.5f, (edit_rc.top + edit_rc.bottom) * 0.5f,
+                               14.5f, ap.text);
+                share_hits_.push_back({ edit_rc, ShareActionKind::ContactEdit, std::to_string(i) });
+
+                // Trash icon button (32x32)
+                D2D1_RECT_F del_rc = D2D1::RectF(rrc.right - 42.0f, cy_m + 12.0f, rrc.right - 10.0f, cy_m + 44.0f);
+                bool del_hov = hover_top(del_rc);
+                fill(rt, del_rc, del_hov ? ap.red : trash_bg, 8.0f);
+                if (!del_hov) {
+                    brush_->SetColor(to_d2d(trash_border));
+                    rt->DrawRoundedRectangle(D2D1::RoundedRect(del_rc, 8.0f, 8.0f), brush_, 1.0f);
+                }
+                draw_trash_icon(d2d_factory_, rt, brush_, share_round_cap_,
+                                (del_rc.left + del_rc.right) * 0.5f, (del_rc.top + del_rc.bottom) * 0.5f,
+                                15.0f, del_hov ? Rgba{ 1.0f, 1.0f, 1.0f, 1.0f } : ap.red);
+                share_hits_.push_back({ del_rc, ShareActionKind::ContactRemove, std::to_string(i) });
+
+                cy_m += row_h + (i + 1 < shown_contacts ? row_gap : 0.0f);
             }
         }
 
-        // Add / Edit contact form
-        fill(rt, D2D1::RectF(mx + 18.0f, cy_m + 4.0f, mx + mw - 18.0f, cy_m + 5.0f), ap.stage_border);
-        cy_m += 14.0f;
-        label(rt, share_editing_contact_ >= 0 ? L"Edit Contact" : L"Add Contact",
-              fonts_.ui_semibold(), mx + 18.0f, cy_m, mw - 36.0f, ap.text);
-        cy_m += 22.0f;
+        // Bottom divider
+        cy_m += 16.0f;
+        fill(rt, D2D1::RectF(mx + pad, cy_m, mx + mw - pad, cy_m + 1.0f), ap.stage_border);
+        cy_m += 18.0f;
 
-        auto draw_field = [&](int idx, float fx, float fy, float fw, const wchar_t* placeholder, const std::string& val) {
-            D2D1_RECT_F frc = D2D1::RectF(fx, fy, fx + fw, fy + 28.0f);
+        // Add / Edit contact form
+        draw_centered_text(rt, fonts_.factory(), brush_,
+                           share_editing_contact_ >= 0 ? L"Edit Contact" : L"Add Contact",
+                           fonts_.ui_semibold(), D2D1::RectF(mx + pad, cy_m, mx + mw - pad, cy_m + 20.0f),
+                           ap.text, DWRITE_TEXT_ALIGNMENT_LEADING);
+        cy_m += 28.0f;
+
+        auto draw_labeled_field = [&](int idx, float fx, float fy, float fw, const wchar_t* title_lbl,
+                                      const wchar_t* placeholder, const std::string& val) {
+            draw_centered_text(rt, fonts_.factory(), brush_, title_lbl, fonts_.ui_sub_semibold(),
+                               D2D1::RectF(fx + 2.0f, fy, fx + fw, fy + 16.0f),
+                               ap.sub, DWRITE_TEXT_ALIGNMENT_LEADING);
+            float iy = fy + 22.0f;
+            const float fh = 34.0f;
+            D2D1_RECT_F frc = D2D1::RectF(fx, iy, fx + fw, iy + fh);
             bool focused = (share_contact_field_ == idx);
-            fill(rt, frc, ap.field_bg, 6.0f);
+            fill(rt, frc, ap.field_bg, 8.0f);
             brush_->SetColor(to_d2d(focused ? ap.blue : ap.field_border));
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(frc, 6.0f, 6.0f), brush_, focused ? 1.6f : 1.0f);
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(frc, 8.0f, 8.0f), brush_, focused ? 1.6f : 1.0f);
             std::wstring shown = val.empty() ? std::wstring(placeholder) : utf8_to_wide(val);
             if (focused && !val.empty()) shown += L"|";
-            label(rt, shown.c_str(), fonts_.ui_sub(), fx + 9.0f, fy + 6.0f, fw - 18.0f, val.empty() ? ap.sub : ap.text);
+            draw_centered_text(rt, fonts_.factory(), brush_, shown.c_str(), fonts_.ui_sub(),
+                               D2D1::RectF(fx + 12.0f, iy, fx + fw - 12.0f, iy + fh),
+                               val.empty() ? ap.sub : ap.text, DWRITE_TEXT_ALIGNMENT_LEADING);
             share_hits_.push_back({ frc, ShareActionKind::ContactFocusField, std::to_string(idx) });
         };
 
-        float half_w = (mw - 46.0f) * 0.5f;
-        draw_field(0, mx + 18.0f, cy_m, half_w, L"Name (e.g. Susuin)", share_draft_name_);
-        draw_field(3, mx + 28.0f + half_w, cy_m, half_w, L"Device name (optional)", share_draft_device_);
-        cy_m += 36.0f;
-        draw_field(1, mx + 18.0f, cy_m, half_w, L"Apple ID email", share_draft_email_);
-        draw_field(2, mx + 28.0f + half_w, cy_m, half_w, L"Phone (+1…)", share_draft_phone_);
-        cy_m += 40.0f;
+        const float col_gap = 14.0f;
+        const float half_w = std::floor((mw - pad * 2.0f - col_gap) * 0.5f);
+        draw_labeled_field(0, mx + pad, cy_m, half_w, L"Name", L"John", share_draft_name_);
+        draw_labeled_field(3, mx + mw - pad - half_w, cy_m, half_w, L"Device Name", L"John's iPhone", share_draft_device_);
+        cy_m += 78.0f;
 
         std::wstring photo_btn = share_draft_photo_.empty() ? L"Choose Photo…" : L"Photo Selected";
-        mac_button(D2D1::RectF(mx + 18.0f, cy_m, mx + 148.0f, cy_m + 28.0f),
+        mac_button(D2D1::RectF(mx + pad, cy_m, mx + pad + 136.0f, cy_m + 34.0f),
                    photo_btn.c_str(), false, true, ShareActionKind::ContactPickPhoto);
-        mac_button(D2D1::RectF(mx + mw - 126.0f, cy_m, mx + mw - 18.0f, cy_m + 28.0f),
+        if (share_editing_contact_ >= 0) {
+            mac_button(D2D1::RectF(mx + mw - pad - 210.0f, cy_m, mx + mw - pad - 134.0f, cy_m + 34.0f),
+                       L"Cancel", false, true, ShareActionKind::ContactCancelEdit);
+        }
+        mac_button(D2D1::RectF(mx + mw - pad - 124.0f, cy_m, mx + mw - pad, cy_m + 34.0f),
                    share_editing_contact_ >= 0 ? L"Save Contact" : L"Add Contact", true, true, ShareActionKind::ContactAdd);
     }
 
@@ -1478,15 +1778,15 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         if (share_ctx_has_device_) {
             items.push_back({ L"Send Files…", ShareActionKind::DeviceClick, share_ctx_key_ });
         }
-        items.push_back({ known ? L"Edit Contact…" : L"Add to Contacts…",
+        items.push_back({ known ? L"Edit Contact…" : L"Add to Contacts",
                           ShareActionKind::DeviceAddContact, share_ctx_raw_name_ });
         items.push_back({ L"Set Profile Photo…", ShareActionKind::DeviceSetPhoto, share_ctx_raw_name_ });
 
         const float item_h = 30.0f;
         const float cw = 196.0f;
         const float ch = 12.0f + item_h * static_cast<float>(items.size());
-        float cx_m = std::clamp(share_ctx_x_, x + 12.0f, x + w - cw - 12.0f);
-        float cy_m = std::clamp(share_ctx_y_, y + 12.0f, y + h - ch - 12.0f);
+        float cx_m = std::round(std::clamp(share_ctx_x_, x + 12.0f, x + w - cw - 12.0f));
+        float cy_m = std::round(std::clamp(share_ctx_y_, y + 12.0f, y + h - ch - 12.0f));
         D2D1_RECT_F crc = D2D1::RectF(cx_m, cy_m, cx_m + cw, cy_m + ch);
 
         fill(rt, D2D1::RectF(cx_m, cy_m + 4.0f, cx_m + cw, cy_m + ch + 4.0f), ap.shadow, 10.0f);
@@ -1500,8 +1800,9 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
             bool lit = hover_top(irc);
             if (lit) fill(rt, irc, ap.blue, 6.0f);
             Rgba fg = lit ? Rgba{ 1.0f, 1.0f, 1.0f, 1.0f } : ap.text;
-            label(rt, items[i].label, fonts_.ui_body(), irc.left + 12.0f, irc.top + 5.5f,
-                  irc.right - irc.left - 24.0f, fg);
+            draw_centered_text(rt, fonts_.factory(), brush_, items[i].label, fonts_.ui_body(),
+                               D2D1::RectF(irc.left + 12.0f, irc.top, irc.right - 12.0f, irc.bottom),
+                               fg, DWRITE_TEXT_ALIGNMENT_LEADING);
             share_hits_.push_back({ irc, items[i].kind, items[i].value });
         }
     }
@@ -1622,6 +1923,11 @@ bool MainWindow::share_click(float lx, float ly)
             share_ctx_open_ = false;
             share_editing_contact_ = -1;
             share_contact_field_ = -1;
+            share_draft_name_.clear();
+            share_draft_device_.clear();
+            share_draft_email_.clear();
+            share_draft_phone_.clear();
+            share_draft_photo_.clear();
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
         case ShareActionKind::DeviceClick: {
@@ -1646,10 +1952,10 @@ bool MainWindow::share_click(float lx, float ly)
             share_ctx_open_ = false;
             share_mode_menu_open_ = false;
             share_adapter_open_ = false;
-            share_contacts_open_ = true;
-            share_editing_contact_ = -1;
             const ShareContact* existing = share_find_contact(share_view_.contacts, value);
             if (existing) {
+                share_contacts_open_ = true;
+                share_editing_contact_ = -1;
                 for (size_t i = 0; i < share_view_.contacts.size(); ++i) {
                     if (&share_view_.contacts[i] == existing) {
                         share_editing_contact_ = static_cast<int>(i);
@@ -1661,14 +1967,17 @@ bool MainWindow::share_click(float lx, float ly)
                 share_draft_phone_ = existing->phone;
                 share_draft_device_ = existing->device.empty() ? value : existing->device;
                 share_draft_photo_ = utf8_to_wide(existing->photo);
+                share_contact_field_ = 0;
             } else {
-                share_draft_name_ = suggest_person_name(value);
-                share_draft_device_ = value;
-                share_draft_email_.clear();
-                share_draft_phone_.clear();
-                share_draft_photo_.clear();
+                // Immediately save the nearby device with all information sent by it
+                auto list = share_view_.contacts;
+                ShareContact c;
+                c.name = suggest_person_name(value);
+                if (c.name.empty()) c.name = value;
+                c.device = value;
+                list.push_back(std::move(c));
+                share_.save_contacts(list);
             }
-            share_contact_field_ = 1; // Focus Apple ID email right away
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
         }
@@ -1719,6 +2028,11 @@ bool MainWindow::share_click(float lx, float ly)
             share_adapter_open_ = false;
             share_ctx_open_ = false;
             share_editing_contact_ = -1;
+            share_draft_name_.clear();
+            share_draft_device_.clear();
+            share_draft_email_.clear();
+            share_draft_phone_.clear();
+            share_draft_photo_.clear();
             share_contact_field_ = share_contacts_open_ ? 0 : -1;
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
@@ -1792,6 +2106,16 @@ bool MainWindow::share_click(float lx, float ly)
             }
             break;
         }
+        case ShareActionKind::ContactCancelEdit:
+            share_editing_contact_ = -1;
+            share_draft_name_.clear();
+            share_draft_device_.clear();
+            share_draft_email_.clear();
+            share_draft_phone_.clear();
+            share_draft_photo_.clear();
+            share_contact_field_ = 0;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            break;
         case ShareActionKind::ContactRemove: {
             int idx = std::atoi(value.c_str());
             auto list = share_view_.contacts;
@@ -1891,15 +2215,18 @@ bool MainWindow::share_key_down(WPARAM vk)
     if (share_contacts_open_) {
         if (vk == VK_ESCAPE) {
             share_contacts_open_ = false;
+            share_editing_contact_ = -1;
             share_contact_field_ = -1;
+            share_draft_name_.clear();
+            share_draft_device_.clear();
+            share_draft_email_.clear();
+            share_draft_phone_.clear();
+            share_draft_photo_.clear();
             InvalidateRect(hwnd_, nullptr, FALSE);
             return true;
         }
         if (vk == VK_TAB) {
-            static const int kOrder[4] = { 0, 3, 1, 2 };
-            int pos = 0;
-            for (int i = 0; i < 4; ++i) if (kOrder[i] == share_contact_field_) pos = i;
-            share_contact_field_ = kOrder[(pos + 1) % 4];
+            share_contact_field_ = (share_contact_field_ == 0) ? 3 : 0;
             InvalidateRect(hwnd_, nullptr, FALSE);
             return true;
         }

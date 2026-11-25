@@ -815,11 +815,11 @@ button.airdrop-btn-primary,
 button.airdrop-btn-primary:hover {
   background-image: none;
   box-shadow: none;
-  min-height: 26px;
-  padding: 2px 12px;
-  border-radius: 6px;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 button.airdrop-btn {
@@ -840,6 +840,65 @@ button.airdrop-btn-primary {
 
 button.airdrop-btn-primary:hover {
   background-color: var(--ad-blue-hover);
+}
+
+.airdrop-contacts-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ad-text);
+}
+
+.airdrop-contact-row {
+  background-color: var(--ad-pill-bg);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.airdrop-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ad-sub);
+}
+
+entry.airdrop-contact-entry {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+button.airdrop-icon-btn,
+button.airdrop-icon-btn:hover,
+button.airdrop-icon-btn-danger,
+button.airdrop-icon-btn-danger:hover {
+  background-image: none;
+  box-shadow: none;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+button.airdrop-icon-btn {
+  background-color: var(--ad-btn-bg);
+  color: var(--ad-text);
+  border: 1px solid var(--ad-popover-border);
+}
+
+button.airdrop-icon-btn:hover {
+  background-color: var(--ad-btn-hover);
+}
+
+button.airdrop-icon-btn-danger {
+  background-color: rgba(255, 59, 48, 0.14);
+  color: #ff3b30;
+  border: 1px solid rgba(255, 59, 48, 0.24);
+}
+
+button.airdrop-icon-btn-danger:hover {
+  background-color: #ff3b30;
+  color: #ffffff;
+  border-color: #ff3b30;
 }
 
 .airdrop-menu-item,

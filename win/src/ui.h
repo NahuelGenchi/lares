@@ -119,6 +119,7 @@ private:
         ContactPickPhoto,
         ContactAdd,
         ContactEdit,
+        ContactCancelEdit,
         ContactRemove,
         ContactChangePhoto,
     };

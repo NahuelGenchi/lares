@@ -24,6 +24,7 @@ void FontManager::shutdown()
     safe_release(typography_);
     safe_release(fmt_ui_title_);
     safe_release(fmt_ui_initials_);
+    safe_release(fmt_ui_sub_semibold_);
     safe_release(fmt_ui_sub_);
     safe_release(fmt_ui_semibold_);
     safe_release(fmt_ui_body_);
@@ -136,6 +137,7 @@ bool FontManager::init(HINSTANCE hinst)
     if (!make_ui_fmt(14.0f, DWRITE_FONT_WEIGHT_REGULAR, &fmt_ui_body_)) return false;
     if (!make_ui_fmt(13.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, &fmt_ui_semibold_)) return false;
     if (!make_ui_fmt(12.0f, DWRITE_FONT_WEIGHT_REGULAR, &fmt_ui_sub_)) return false;
+    if (!make_ui_fmt(12.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, &fmt_ui_sub_semibold_)) return false;
     if (!make_ui_fmt(24.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, &fmt_ui_initials_)) return false;
     if (!make_ui_fmt(18.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, &fmt_ui_title_)) return false;
 
