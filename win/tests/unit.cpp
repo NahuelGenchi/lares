@@ -819,6 +819,18 @@ static void test_share()
     CHECK(share_find_contact(cback, "Unknown", share_sha256_hex("susuin@example.com")) != nullptr);
     CHECK(share_find_contact(cback, "susuin") != nullptr);
     CHECK(share_find_contact(cback, "Nobody") == nullptr);
+
+    /* iOS curly apostrophe (U+2019) and possessive owner-prefix matching. */
+    std::vector<ShareContact> apost = {
+        { "Alex", "Alex's iPhone", "alex@example.com", "", "C:\\Pics\\alex.png" },
+        { "Maya", "", "", "", "C:\\Pics\\maya.png" },
+    };
+    const ShareContact* hit_alex = share_find_contact(apost, "Alex\xE2\x80\x99s iPhone");
+    CHECK(hit_alex != nullptr && hit_alex->name == "Alex");
+    const ShareContact* hit_maya = share_find_contact(apost, "Maya\xE2\x80\x99s iPad");
+    CHECK(hit_maya != nullptr && hit_maya->name == "Maya");
+    const ShareContact* hit_alex_mac = share_find_contact(apost, "Alex\xE2\x80\x99s MacBook Air");
+    CHECK(hit_alex_mac != nullptr && hit_alex_mac->name == "Alex");
 }
 
 int main()

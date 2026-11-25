@@ -430,6 +430,7 @@ void draw_speech_popover(ID2D1Factory* factory, ID2D1RenderTarget* rt, ID2D1Soli
 
 struct RadarNode {
     std::string key;           // ShareDevice::key, or "__incoming__" if synthetic
+    std::string raw_name;      // exact device/sender name advertised over AirDrop
     std::string display_name;
     std::string subtitle;
     ShareDeviceKind kind = ShareDeviceKind::Phone;
@@ -441,6 +442,15 @@ struct RadarNode {
     float cx = 0.0f;
     float cy = 0.0f;
 };
+
+/* Suggests a clean person name from an Apple device name (e.g. "Nahuel’s iPhone" -> "Nahuel"). */
+std::string suggest_person_name(const std::string& raw)
+{
+    size_t pos = raw.find("\xE2\x80\x99s ");
+    if (pos == std::string::npos) pos = raw.find("'s ");
+    if (pos != std::string::npos && pos >= 2) return raw.substr(0, pos);
+    return raw;
+}
 
 int popover_priority(const RadarNode& n)
 {
@@ -545,7 +555,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
     const ShareView& v = share_view_;
     const ShareSession& s = v.s;
     const AirDropPalette ap = airdrop_palette(dark_);
-    const bool overlay_open = share_mode_menu_open_ || share_adapter_open_ || share_contacts_open_;
+    const bool overlay_open = share_mode_menu_open_ || share_adapter_open_ || share_contacts_open_ || share_ctx_open_;
 
     auto hover_bg = [&](const D2D1_RECT_F& rc) {
         return !overlay_open && mouse_in_ && drop_open_.empty() && point_in_rect(mouse_x_, mouse_y_, rc);
@@ -708,7 +718,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
             status_line = L"Looking for nearby Apple devices…";
         }
     } else {
-        status_line = L"Click a person or drop files onto them to share · Right-click to set a photo";
+        status_line = L"Click a person or drop files onto them to share · Right-click to add to contacts or set a photo";
     }
     if (!status_line.empty()) {
         label(rt, status_line.c_str(), fonts_.ui_sub(), x + 24.0f, trig_rc.bottom + 8.0f, w - 48.0f,
@@ -765,6 +775,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         n.has_device = true;
         n.dev = d;
         std::string raw_name = d.name.empty() ? std::string("Apple Device") : d.name;
+        n.raw_name = raw_name;
         const ShareContact* contact = share_find_contact(v.contacts, raw_name);
         n.display_name = (contact && !contact->name.empty()) ? contact->name : raw_name;
         n.subtitle = share_model_label(d.model, raw_name);
@@ -795,6 +806,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         n.has_incoming = true;
         n.inc = s.incoming;
         std::string raw_name = s.incoming.sender.empty() ? std::string("Someone nearby") : s.incoming.sender;
+        n.raw_name = raw_name;
         const ShareContact* contact = share_find_contact(v.contacts, raw_name, s.incoming.matched_hash);
         n.display_name = (contact && !contact->name.empty()) ? contact->name : raw_name;
         n.subtitle = share_model_label(s.incoming.sender_model, raw_name);
@@ -871,13 +883,13 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
 
     // --------------------------------------------------------- Draw device avatars
     for (const RadarNode& n : nodes) {
-        D2D1_RECT_F av_hit = D2D1::RectF(n.cx - avatar_r - 12.0f, n.cy - avatar_r - 6.0f,
-                                         n.cx + avatar_r + 12.0f, n.cy + avatar_r + 44.0f);
+        D2D1_RECT_F av_hit = D2D1::RectF(n.cx - avatar_r - 18.0f, n.cy - avatar_r - 6.0f,
+                                         n.cx + avatar_r + 18.0f, n.cy + avatar_r + 46.0f);
         bool is_drag_target = share_drag_active_ && n.has_device && share_drag_key_ == n.key;
         bool is_hov = n.has_device && hover_bg(av_hit);
 
+        share_circles_.push_back({ n.key, n.raw_name, n.display_name, n.has_device, n.cx, n.cy, avatar_r + 12.0f, av_hit });
         if (n.has_device) {
-            share_circles_.push_back({ n.key, n.display_name, n.cx, n.cy, avatar_r + 12.0f });
             share_hits_.push_back({ av_hit, ShareActionKind::DeviceClick, n.key });
         }
 
@@ -1410,18 +1422,21 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                 if (!c.phone.empty()) { if (!meta.empty()) meta += " · "; meta += c.phone; }
                 if (!c.device.empty() && c.device != c.name) { if (!meta.empty()) meta += " · "; meta += c.device; }
                 if (meta.empty()) meta = "Photo avatar";
-                label(rt, cname.c_str(), fonts_.ui_semibold(), mx + 58.0f, cy_m + 1.0f, mw - 144.0f, ap.text);
-                label(rt, utf8_to_wide(meta).c_str(), fonts_.ui_sub(), mx + 58.0f, cy_m + 19.0f, mw - 144.0f, ap.sub);
+                label(rt, cname.c_str(), fonts_.ui_semibold(), mx + 58.0f, cy_m + 1.0f, mw - 194.0f, ap.text);
+                label(rt, utf8_to_wide(meta).c_str(), fonts_.ui_sub(), mx + 58.0f, cy_m + 19.0f, mw - 194.0f, ap.sub);
+                mac_button(D2D1::RectF(mx + mw - 130.0f, cy_m + 6.0f, mx + mw - 84.0f, cy_m + 30.0f),
+                           L"Edit", false, true, ShareActionKind::ContactEdit, std::to_string(i));
                 mac_button(D2D1::RectF(mx + mw - 78.0f, cy_m + 6.0f, mx + mw - 18.0f, cy_m + 30.0f),
                            L"Remove", false, true, ShareActionKind::ContactRemove, std::to_string(i));
                 cy_m += 46.0f;
             }
         }
 
-        // Add contact form
+        // Add / Edit contact form
         fill(rt, D2D1::RectF(mx + 18.0f, cy_m + 4.0f, mx + mw - 18.0f, cy_m + 5.0f), ap.stage_border);
         cy_m += 14.0f;
-        label(rt, L"Add Contact", fonts_.ui_semibold(), mx + 18.0f, cy_m, mw - 36.0f, ap.text);
+        label(rt, share_editing_contact_ >= 0 ? L"Edit Contact" : L"Add Contact",
+              fonts_.ui_semibold(), mx + 18.0f, cy_m, mw - 36.0f, ap.text);
         cy_m += 22.0f;
 
         auto draw_field = [&](int idx, float fx, float fy, float fw, const wchar_t* placeholder, const std::string& val) {
@@ -1447,8 +1462,48 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         std::wstring photo_btn = share_draft_photo_.empty() ? L"Choose Photo…" : L"Photo Selected";
         mac_button(D2D1::RectF(mx + 18.0f, cy_m, mx + 148.0f, cy_m + 28.0f),
                    photo_btn.c_str(), false, true, ShareActionKind::ContactPickPhoto);
-        mac_button(D2D1::RectF(mx + mw - 118.0f, cy_m, mx + mw - 18.0f, cy_m + 28.0f),
-                   L"Add Contact", true, true, ShareActionKind::ContactAdd);
+        mac_button(D2D1::RectF(mx + mw - 126.0f, cy_m, mx + mw - 18.0f, cy_m + 28.0f),
+                   share_editing_contact_ >= 0 ? L"Save Contact" : L"Add Contact", true, true, ShareActionKind::ContactAdd);
+    }
+
+    // 4) macOS right-click context menu on a nearby device
+    if (share_ctx_open_) {
+        struct CtxItem {
+            const wchar_t* label;
+            ShareActionKind kind;
+            std::string value;
+        };
+        bool known = share_find_contact(v.contacts, share_ctx_raw_name_) != nullptr;
+        std::vector<CtxItem> items;
+        if (share_ctx_has_device_) {
+            items.push_back({ L"Send Files…", ShareActionKind::DeviceClick, share_ctx_key_ });
+        }
+        items.push_back({ known ? L"Edit Contact…" : L"Add to Contacts…",
+                          ShareActionKind::DeviceAddContact, share_ctx_raw_name_ });
+        items.push_back({ L"Set Profile Photo…", ShareActionKind::DeviceSetPhoto, share_ctx_raw_name_ });
+
+        const float item_h = 30.0f;
+        const float cw = 196.0f;
+        const float ch = 12.0f + item_h * static_cast<float>(items.size());
+        float cx_m = std::clamp(share_ctx_x_, x + 12.0f, x + w - cw - 12.0f);
+        float cy_m = std::clamp(share_ctx_y_, y + 12.0f, y + h - ch - 12.0f);
+        D2D1_RECT_F crc = D2D1::RectF(cx_m, cy_m, cx_m + cw, cy_m + ch);
+
+        fill(rt, D2D1::RectF(cx_m, cy_m + 4.0f, cx_m + cw, cy_m + ch + 4.0f), ap.shadow, 10.0f);
+        fill(rt, crc, ap.popover_bg, 10.0f);
+        brush_->SetColor(to_d2d(ap.popover_border));
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(crc, 10.0f, 10.0f), brush_, 1.0f);
+
+        for (size_t i = 0; i < items.size(); ++i) {
+            D2D1_RECT_F irc = D2D1::RectF(cx_m + 6.0f, cy_m + 6.0f + static_cast<float>(i) * item_h,
+                                          cx_m + cw - 6.0f, cy_m + 6.0f + static_cast<float>(i + 1) * item_h);
+            bool lit = hover_top(irc);
+            if (lit) fill(rt, irc, ap.blue, 6.0f);
+            Rgba fg = lit ? Rgba{ 1.0f, 1.0f, 1.0f, 1.0f } : ap.text;
+            label(rt, items[i].label, fonts_.ui_body(), irc.left + 12.0f, irc.top + 5.5f,
+                  irc.right - irc.left - 24.0f, fg);
+            share_hits_.push_back({ irc, items[i].kind, items[i].value });
+        }
     }
 
     content_height_ = h + kPagePadTop * 2.0f;
@@ -1545,6 +1600,7 @@ bool MainWindow::share_click(float lx, float ly)
             share_mode_menu_focus_ = -1;
             share_adapter_open_ = false;
             share_contacts_open_ = false;
+            share_ctx_open_ = false;
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
         case ShareActionKind::PickDiscoverMode: {
@@ -1563,10 +1619,13 @@ bool MainWindow::share_click(float lx, float ly)
             share_mode_menu_focus_ = -1;
             share_adapter_open_ = false;
             share_contacts_open_ = false;
+            share_ctx_open_ = false;
+            share_editing_contact_ = -1;
             share_contact_field_ = -1;
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
         case ShareActionKind::DeviceClick: {
+            share_ctx_open_ = false;
             if (share_view_.s.sending && !share_view_.files.empty()) {
                 share_.send_to(value);
             } else {
@@ -1580,9 +1639,42 @@ bool MainWindow::share_click(float lx, float ly)
                 std::vector<std::wstring> files = pick_files_to_send(title.c_str());
                 if (!files.empty()) share_.send_files_to(value, files);
             }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            break;
+        }
+        case ShareActionKind::DeviceAddContact: {
+            share_ctx_open_ = false;
+            share_mode_menu_open_ = false;
+            share_adapter_open_ = false;
+            share_contacts_open_ = true;
+            share_editing_contact_ = -1;
+            const ShareContact* existing = share_find_contact(share_view_.contacts, value);
+            if (existing) {
+                for (size_t i = 0; i < share_view_.contacts.size(); ++i) {
+                    if (&share_view_.contacts[i] == existing) {
+                        share_editing_contact_ = static_cast<int>(i);
+                        break;
+                    }
+                }
+                share_draft_name_ = existing->name;
+                share_draft_email_ = existing->email;
+                share_draft_phone_ = existing->phone;
+                share_draft_device_ = existing->device.empty() ? value : existing->device;
+                share_draft_photo_ = utf8_to_wide(existing->photo);
+            } else {
+                share_draft_name_ = suggest_person_name(value);
+                share_draft_device_ = value;
+                share_draft_email_.clear();
+                share_draft_phone_.clear();
+                share_draft_photo_.clear();
+            }
+            share_contact_field_ = 1; // Focus Apple ID email right away
+            InvalidateRect(hwnd_, nullptr, FALSE);
             break;
         }
         case ShareActionKind::DeviceSetPhoto: {
+            share_ctx_open_ = false;
+            InvalidateRect(hwnd_, nullptr, FALSE);
             std::wstring p = pick_photo_file();
             if (!p.empty()) share_.set_device_photo(value, p);
             break;
@@ -1625,6 +1717,8 @@ bool MainWindow::share_click(float lx, float ly)
             share_contacts_open_ = !share_contacts_open_;
             share_mode_menu_open_ = false;
             share_adapter_open_ = false;
+            share_ctx_open_ = false;
+            share_editing_contact_ = -1;
             share_contact_field_ = share_contacts_open_ ? 0 : -1;
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
@@ -1633,6 +1727,7 @@ bool MainWindow::share_click(float lx, float ly)
             share_adapter_open_ = !share_adapter_open_;
             share_mode_menu_open_ = false;
             share_contacts_open_ = false;
+            share_ctx_open_ = false;
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
         case ShareActionKind::GiveBack:
@@ -1665,13 +1760,33 @@ bool MainWindow::share_click(float lx, float ly)
                 c.device = share_draft_device_;
                 c.photo = wide_to_utf8(share_draft_photo_);
                 if (c.name.empty()) c.name = !c.device.empty() ? c.device : (!c.email.empty() ? c.email : c.phone);
-                list.push_back(std::move(c));
+                if (share_editing_contact_ >= 0 && share_editing_contact_ < static_cast<int>(list.size())) {
+                    list[static_cast<size_t>(share_editing_contact_)] = std::move(c);
+                } else {
+                    list.push_back(std::move(c));
+                }
                 share_.save_contacts(list);
                 share_draft_name_.clear();
                 share_draft_email_.clear();
                 share_draft_phone_.clear();
                 share_draft_device_.clear();
                 share_draft_photo_.clear();
+                share_editing_contact_ = -1;
+                share_contact_field_ = 0;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            break;
+        }
+        case ShareActionKind::ContactEdit: {
+            int idx = std::atoi(value.c_str());
+            if (idx >= 0 && idx < static_cast<int>(share_view_.contacts.size())) {
+                const ShareContact& c = share_view_.contacts[static_cast<size_t>(idx)];
+                share_editing_contact_ = idx;
+                share_draft_name_ = c.name;
+                share_draft_device_ = c.device;
+                share_draft_email_ = c.email;
+                share_draft_phone_ = c.phone;
+                share_draft_photo_ = utf8_to_wide(c.photo);
                 share_contact_field_ = 0;
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
@@ -1682,6 +1797,8 @@ bool MainWindow::share_click(float lx, float ly)
             auto list = share_view_.contacts;
             if (idx >= 0 && idx < static_cast<int>(list.size())) {
                 list.erase(list.begin() + idx);
+                if (share_editing_contact_ == idx) share_editing_contact_ = -1;
+                else if (share_editing_contact_ > idx) --share_editing_contact_;
                 share_.save_contacts(list);
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
@@ -1708,22 +1825,37 @@ bool MainWindow::share_click(float lx, float ly)
 
 bool MainWindow::share_right_click(float lx, float ly)
 {
-    if (!is_share_section_active() || share_contacts_open_ || share_mode_menu_open_ || share_adapter_open_) return false;
+    if (!is_share_section_active() || share_contacts_open_) return false;
+    share_mode_menu_open_ = false;
+    share_adapter_open_ = false;
+    share_ctx_open_ = false;
     for (const auto& c : share_circles_) {
         float dx = lx - c.cx;
         float dy = ly - c.cy;
-        if (dx * dx + dy * dy <= c.r * c.r) {
-            std::wstring p = pick_photo_file();
-            if (!p.empty()) share_.set_device_photo(c.name, p);
+        if (dx * dx + dy * dy <= c.r * c.r || point_in_rect(lx, ly, c.hit_rect)) {
+            share_ctx_open_ = true;
+            share_ctx_x_ = lx;
+            share_ctx_y_ = ly;
+            share_ctx_key_ = c.key;
+            share_ctx_raw_name_ = c.raw_name.empty() ? c.name : c.raw_name;
+            share_ctx_display_name_ = c.name;
+            share_ctx_has_device_ = c.has_device;
+            InvalidateRect(hwnd_, nullptr, FALSE);
             return true;
         }
     }
+    InvalidateRect(hwnd_, nullptr, FALSE);
     return false;
 }
 
 bool MainWindow::share_key_down(WPARAM vk)
 {
     if (!is_share_section_active()) return false;
+    if (share_ctx_open_ && vk == VK_ESCAPE) {
+        share_ctx_open_ = false;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return true;
+    }
     if (share_mode_menu_open_) {
         if (vk == VK_ESCAPE) {
             share_mode_menu_open_ = false;
@@ -1782,13 +1914,18 @@ bool MainWindow::share_key_down(WPARAM vk)
                 c.device = share_draft_device_;
                 c.photo = wide_to_utf8(share_draft_photo_);
                 if (c.name.empty()) c.name = !c.device.empty() ? c.device : (!c.email.empty() ? c.email : c.phone);
-                list.push_back(std::move(c));
+                if (share_editing_contact_ >= 0 && share_editing_contact_ < static_cast<int>(list.size())) {
+                    list[static_cast<size_t>(share_editing_contact_)] = std::move(c);
+                } else {
+                    list.push_back(std::move(c));
+                }
                 share_.save_contacts(list);
                 share_draft_name_.clear();
                 share_draft_email_.clear();
                 share_draft_phone_.clear();
                 share_draft_device_.clear();
                 share_draft_photo_.clear();
+                share_editing_contact_ = -1;
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return true;

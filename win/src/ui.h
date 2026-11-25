@@ -100,6 +100,7 @@ private:
         PickDiscoverMode,
         CloseOverlays,
         DeviceClick,
+        DeviceAddContact,
         DeviceSetPhoto,
         Accept,
         Decline,
@@ -117,6 +118,7 @@ private:
         ContactFocusField,
         ContactPickPhoto,
         ContactAdd,
+        ContactEdit,
         ContactRemove,
         ContactChangePhoto,
     };
@@ -129,8 +131,11 @@ private:
 
     struct ShareDeviceCircle {
         std::string key;
+        std::string raw_name;
         std::string name;
+        bool has_device = false;
         float cx = 0.0f, cy = 0.0f, r = 34.0f;
+        D2D1_RECT_F hit_rect = {};
     };
 
     enum class DeviceActionKind {
@@ -376,6 +381,14 @@ private:
     int share_mode_menu_focus_ = -1;
     bool share_adapter_open_ = false;
     bool share_contacts_open_ = false;
+    bool share_ctx_open_ = false;
+    float share_ctx_x_ = 0.0f;
+    float share_ctx_y_ = 0.0f;
+    std::string share_ctx_key_;
+    std::string share_ctx_raw_name_;
+    std::string share_ctx_display_name_;
+    bool share_ctx_has_device_ = false;
+    int share_editing_contact_ = -1; // -1 = adding new, >=0 = editing contact index
     int share_contact_field_ = -1;   // 0=name, 1=email, 2=phone, 3=device
     std::string share_draft_name_;
     std::string share_draft_email_;

@@ -384,6 +384,61 @@ static void sync_receiver_policy(Share *s)
     g_strfreev(hashes);
 }
 
+static char *normalize_contact_name(const char *s)
+{
+    if (!s || !*s) return g_strdup("");
+    GString *out = g_string_sized_new(strlen(s));
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        /* Normalize UTF-8 curly apostrophes (U+2018 / U+2019) to ASCII '\''. */
+        if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] == 0x98 || p[2] == 0x99)) {
+            g_string_append_c(out, '\'');
+            p += 2;
+            continue;
+        }
+        g_string_append_c(out, g_ascii_tolower((char)*p));
+    }
+    char *res = g_string_free(out, FALSE);
+    return g_strstrip(res);
+}
+
+static char *owner_prefix_norm(const char *norm)
+{
+    if (!norm) return NULL;
+    const char *p = strstr(norm, "'s ");
+    if (p && (size_t)(p - norm) >= 2) {
+        char *sub = g_strndup(norm, (gsize)(p - norm));
+        return g_strstrip(sub);
+    }
+    return NULL;
+}
+
+static gboolean contact_matches_exact(const ShareContact *c, const char *norm_name)
+{
+    if (!c || !norm_name || !*norm_name) return FALSE;
+    if (c->device && *c->device) {
+        char *cd = normalize_contact_name(c->device);
+        gboolean ok = g_str_equal(cd, norm_name);
+        g_free(cd);
+        if (ok) return TRUE;
+    }
+    if (c->name && *c->name) {
+        char *cn = normalize_contact_name(c->name);
+        gboolean ok = g_str_equal(cn, norm_name);
+        g_free(cn);
+        if (ok) return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean contact_matches_owner(const ShareContact *c, const char *owner)
+{
+    if (!c || !owner || !*owner || !c->name || !*c->name) return FALSE;
+    char *cn = normalize_contact_name(c->name);
+    gboolean ok = g_str_equal(cn, owner);
+    g_free(cn);
+    return ok;
+}
+
 const ShareContact *share_find_contact(const ShareState *st, const char *name, const char *matched_hash)
 {
     if (!st || !st->contacts) return NULL;
@@ -402,12 +457,30 @@ const ShareContact *share_find_contact(const ShareState *st, const char *name, c
         }
     }
     if (!name || !*name) return NULL;
+    char *norm = normalize_contact_name(name);
+    const ShareContact *found = NULL;
     for (guint i = 0; i < st->contacts->len; i++) {
         ShareContact *c = st->contacts->pdata[i];
-        if (c->device && g_ascii_strcasecmp(c->device, name) == 0) return c;
-        if (c->name && g_ascii_strcasecmp(c->name, name) == 0) return c;
+        if (contact_matches_exact(c, norm)) {
+            found = c;
+            break;
+        }
     }
-    return NULL;
+    if (!found) {
+        char *owner = owner_prefix_norm(norm);
+        if (owner && *owner) {
+            for (guint i = 0; i < st->contacts->len; i++) {
+                ShareContact *c = st->contacts->pdata[i];
+                if (contact_matches_owner(c, owner)) {
+                    found = c;
+                    break;
+                }
+            }
+        }
+        g_free(owner);
+    }
+    g_free(norm);
+    return found;
 }
 
 static void candidate_free(gpointer data)
@@ -1772,8 +1845,27 @@ void share_save_contacts(Share *s, GPtrArray *contacts)
 void share_set_device_photo(Share *s, const char *device_name, const char *photo_path)
 {
     if (!device_name || !*device_name) return;
+    char *norm = normalize_contact_name(device_name);
+    char *owner = owner_prefix_norm(norm);
+    int match = -1;
+    for (guint i = 0; i < s->st.contacts->len; i++) {
+        if (contact_matches_exact(s->st.contacts->pdata[i], norm)) {
+            match = (int)i;
+            break;
+        }
+    }
+    if (match < 0 && owner && *owner) {
+        for (guint i = 0; i < s->st.contacts->len; i++) {
+            if (contact_matches_owner(s->st.contacts->pdata[i], owner)) {
+                match = (int)i;
+                break;
+            }
+        }
+    }
+    g_free(owner);
+    g_free(norm);
+
     GPtrArray *next = g_ptr_array_new_with_free_func((GDestroyNotify)share_contact_free);
-    gboolean updated = FALSE;
     for (guint i = 0; i < s->st.contacts->len; i++) {
         ShareContact *src = s->st.contacts->pdata[i];
         ShareContact *c = g_new0(ShareContact, 1);
@@ -1782,20 +1874,17 @@ void share_set_device_photo(Share *s, const char *device_name, const char *photo
         c->email = g_strdup(src->email);
         c->phone = g_strdup(src->phone);
         c->photo = g_strdup(src->photo);
-        if (!updated
-            && ((c->device && g_ascii_strcasecmp(c->device, device_name) == 0)
-                || (c->name && g_ascii_strcasecmp(c->name, device_name) == 0))) {
+        if ((int)i == match) {
             g_free(c->photo);
             c->photo = g_strdup(photo_path);
             if (!c->device || !*c->device) {
                 g_free(c->device);
                 c->device = g_strdup(device_name);
             }
-            updated = TRUE;
         }
         g_ptr_array_add(next, c);
     }
-    if (!updated && photo_path && *photo_path) {
+    if (match < 0 && photo_path && *photo_path) {
         ShareContact *c = g_new0(ShareContact, 1);
         c->name = g_strdup(device_name);
         c->device = g_strdup(device_name);

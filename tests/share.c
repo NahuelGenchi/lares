@@ -87,6 +87,25 @@ static void test_device_and_contacts(void)
     GPtrArray *ph = share_hash_phone_variants("+1 (555) 123-4567");
     g_assert_cmpuint(ph->len, ==, 2);
     g_ptr_array_unref(ph);
+
+    /* iOS curly apostrophe (U+2019) and possessive owner-prefix matching. */
+    ShareState st = { 0 };
+    st.contacts = g_ptr_array_new();
+    ShareContact c1 = { .name = "Alex", .device = "Alex's iPhone", .email = "alex@example.com" };
+    ShareContact c2 = { .name = "Maya", .device = NULL, .email = NULL };
+    g_ptr_array_add(st.contacts, &c1);
+    g_ptr_array_add(st.contacts, &c2);
+    const ShareContact *hit = share_find_contact(&st, "Alex\xE2\x80\x99s iPhone", NULL);
+    g_assert_nonnull(hit);
+    g_assert_cmpstr(hit->name, ==, "Alex");
+    hit = share_find_contact(&st, "Maya\xE2\x80\x99s iPad", NULL);
+    g_assert_nonnull(hit);
+    g_assert_cmpstr(hit->name, ==, "Maya");
+    hit = share_find_contact(&st, "Alex\xE2\x80\x99s MacBook Air", NULL);
+    g_assert_nonnull(hit);
+    g_assert_cmpstr(hit->name, ==, "Alex");
+    g_assert_null(share_find_contact(&st, "Nobody\xE2\x80\x99s iPhone", NULL));
+    g_ptr_array_unref(st.contacts);
 }
 
 /* ------------------------------------------------------------- loopback */

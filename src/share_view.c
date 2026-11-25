@@ -64,8 +64,11 @@ typedef struct {
     GtkWidget *entry_email;
     GtkWidget *entry_phone;
     GtkWidget *draft_photo_btn;
+    GtkWidget *contact_submit_btn;
     char *draft_photo;
+    int editing_contact;
 
+    GtkWidget *ctx_popover;
     char *devices_shape;
     char *popover_shape;
     GHashTable *avatars; /* device key -> GtkWidget* (GtkDrawingArea) */
@@ -76,6 +79,8 @@ typedef struct {
 
 static void update(ShareView *v);
 static void refresh_contacts_dialog(ShareView *v);
+static void open_contacts_window(ShareView *v);
+static void prefill_contact_for_device(ShareView *v, const char *raw_name, const char *matched_hash);
 
 static void destroy_surface(gpointer p)
 {
@@ -608,12 +613,8 @@ static void launch_photo_picker(ShareView *v, GtkWindow *parent, const char *dev
     g_object_unref(d);
 }
 
-static void on_device_left_click(GtkGestureClick *g, int n_press, double x, double y, gpointer user)
+static void prompt_send_files_to(ShareView *v, const char *key, const char *name)
 {
-    ShareView *v = user;
-    GtkWidget *w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
-    const char *key = g_object_get_data(G_OBJECT(w), "dev-key");
-    const char *name = g_object_get_data(G_OBJECT(w), "dev-name");
     if (!key) return;
     const ShareState *st = share_state(v->share);
     if (st->sending && st->paths && st->paths[0]) {
@@ -639,12 +640,113 @@ static void on_device_left_click(GtkGestureClick *g, int n_press, double x, doub
     g_object_unref(d);
 }
 
+static void on_device_left_click(GtkGestureClick *g, int n_press, double x, double y, gpointer user)
+{
+    ShareView *v = user;
+    GtkWidget *w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
+    const char *key = g_object_get_data(G_OBJECT(w), "dev-key");
+    const char *name = g_object_get_data(G_OBJECT(w), "dev-name");
+    prompt_send_files_to(v, key, name);
+}
+
+static void dismiss_ctx_popover(ShareView *v)
+{
+    if (!v->ctx_popover) return;
+    GtkWidget *pop = v->ctx_popover;
+    v->ctx_popover = NULL;
+    gtk_widget_unparent(pop);
+}
+
+static void on_ctx_closed(GtkPopover *pop, ShareView *v)
+{
+    if (v->ctx_popover == GTK_WIDGET(pop)) {
+        v->ctx_popover = NULL;
+        gtk_widget_unparent(GTK_WIDGET(pop));
+    }
+}
+
+static void on_ctx_send(GtkButton *b, ShareView *v)
+{
+    char *key = g_strdup(g_object_get_data(G_OBJECT(b), "dev-key"));
+    char *name = g_strdup(g_object_get_data(G_OBJECT(b), "dev-name"));
+    dismiss_ctx_popover(v);
+    if (key) prompt_send_files_to(v, key, name);
+    g_free(key);
+    g_free(name);
+}
+
+static void on_ctx_add_contact(GtkButton *b, ShareView *v)
+{
+    char *raw = g_strdup(g_object_get_data(G_OBJECT(b), "dev-raw-name"));
+    char *mhash = g_strdup(g_object_get_data(G_OBJECT(b), "dev-hash"));
+    dismiss_ctx_popover(v);
+    prefill_contact_for_device(v, raw, mhash);
+    g_free(raw);
+    g_free(mhash);
+}
+
+static void on_ctx_set_photo(GtkButton *b, ShareView *v)
+{
+    char *raw = g_strdup(g_object_get_data(G_OBJECT(b), "dev-raw-name"));
+    dismiss_ctx_popover(v);
+    if (raw && *raw) launch_photo_picker(v, GTK_WINDOW(v->app->win), raw, -1);
+    g_free(raw);
+}
+
+static GtkWidget *ctx_menu_button(const char *label, GCallback cb, ShareView *v)
+{
+    GtkWidget *mi = gtk_button_new();
+    gtk_widget_add_css_class(mi, "airdrop-menu-item");
+    GtkWidget *ml = gtk_label_new(label);
+    gtk_label_set_xalign(GTK_LABEL(ml), 0);
+    gtk_button_set_child(GTK_BUTTON(mi), ml);
+    g_signal_connect(mi, "clicked", cb, v);
+    return mi;
+}
+
 static void on_device_right_click(GtkGestureClick *g, int n_press, double x, double y, gpointer user)
 {
     ShareView *v = user;
     GtkWidget *w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
-    const char *name = g_object_get_data(G_OBJECT(w), "dev-name");
-    if (name) launch_photo_picker(v, GTK_WINDOW(v->app->win), name, -1);
+    const char *key = g_object_get_data(G_OBJECT(w), "dev-key");
+    const char *disp = g_object_get_data(G_OBJECT(w), "dev-name");
+    const char *raw = g_object_get_data(G_OBJECT(w), "dev-raw-name");
+    const char *mhash = g_object_get_data(G_OBJECT(w), "dev-hash");
+    const char *lookup = (raw && *raw) ? raw : disp;
+
+    dismiss_ctx_popover(v);
+
+    const ShareState *st = share_state(v->share);
+    gboolean known = share_find_contact(st, lookup, mhash) != NULL;
+
+    GtkWidget *pop = gtk_popover_new();
+    gtk_popover_set_has_arrow(GTK_POPOVER(pop), FALSE);
+    gtk_widget_set_halign(pop, GTK_ALIGN_START);
+    GdkRectangle rect = { (int)x, (int)y, 1, 1 };
+    gtk_popover_set_pointing_to(GTK_POPOVER(pop), &rect);
+    gtk_widget_set_parent(pop, w);
+
+    GtkWidget *mbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    if (key && *key) {
+        GtkWidget *sb = ctx_menu_button("Send Files…", G_CALLBACK(on_ctx_send), v);
+        g_object_set_data_full(G_OBJECT(sb), "dev-key", g_strdup(key), g_free);
+        g_object_set_data_full(G_OBJECT(sb), "dev-name", g_strdup(disp ? disp : ""), g_free);
+        gtk_box_append(GTK_BOX(mbox), sb);
+    }
+
+    GtkWidget *cb = ctx_menu_button(known ? "Edit Contact…" : "Add to Contacts…", G_CALLBACK(on_ctx_add_contact), v);
+    g_object_set_data_full(G_OBJECT(cb), "dev-raw-name", g_strdup(lookup ? lookup : ""), g_free);
+    if (mhash && *mhash) g_object_set_data_full(G_OBJECT(cb), "dev-hash", g_strdup(mhash), g_free);
+    gtk_box_append(GTK_BOX(mbox), cb);
+
+    GtkWidget *pb = ctx_menu_button("Set Profile Photo…", G_CALLBACK(on_ctx_set_photo), v);
+    g_object_set_data_full(G_OBJECT(pb), "dev-raw-name", g_strdup(lookup ? lookup : ""), g_free);
+    gtk_box_append(GTK_BOX(mbox), pb);
+
+    gtk_popover_set_child(GTK_POPOVER(pop), mbox);
+    v->ctx_popover = pop;
+    g_signal_connect(pop, "closed", G_CALLBACK(on_ctx_closed), v);
+    gtk_popover_popup(GTK_POPOVER(pop));
 }
 
 static GdkDragAction on_device_drag_enter(GtkDropTarget *t, double x, double y, gpointer user)
@@ -694,6 +796,81 @@ static gboolean on_drop_files(GtkDropTarget *t, const GValue *val, double x, dou
 
 /* ------------------------------------------------------------- Contacts dialog */
 
+static char *suggest_person_name(const char *raw_name)
+{
+    if (!raw_name || !*raw_name) return g_strdup("");
+    const char *cut = strstr(raw_name, "'s ");
+    if (!cut) cut = strstr(raw_name, "\xE2\x80\x99s ");
+    if (!cut) cut = strstr(raw_name, "\xE2\x80\x98s ");
+    if (cut && (size_t)(cut - raw_name) >= 2)
+        return g_strndup(raw_name, (gsize)(cut - raw_name));
+    return g_strdup(raw_name);
+}
+
+static int find_contact_index(const ShareState *st, const char *raw_name, const char *matched_hash)
+{
+    const ShareContact *found = share_find_contact(st, raw_name, matched_hash);
+    if (!found || !st->contacts) return -1;
+    for (guint i = 0; i < st->contacts->len; i++) {
+        if (st->contacts->pdata[i] == found) return (int)i;
+    }
+    return -1;
+}
+
+static void reset_contact_form(ShareView *v)
+{
+    v->editing_contact = -1;
+    if (v->entry_name) gtk_editable_set_text(GTK_EDITABLE(v->entry_name), "");
+    if (v->entry_device) gtk_editable_set_text(GTK_EDITABLE(v->entry_device), "");
+    if (v->entry_email) gtk_editable_set_text(GTK_EDITABLE(v->entry_email), "");
+    if (v->entry_phone) gtk_editable_set_text(GTK_EDITABLE(v->entry_phone), "");
+    g_clear_pointer(&v->draft_photo, g_free);
+    if (v->draft_photo_btn) gtk_button_set_label(GTK_BUTTON(v->draft_photo_btn), "Choose Photo…");
+    if (v->contact_submit_btn) gtk_button_set_label(GTK_BUTTON(v->contact_submit_btn), "Add Contact");
+}
+
+static void edit_contact_in_dialog(ShareView *v, int idx, const char *fallback_device)
+{
+    open_contacts_window(v);
+    const ShareState *st = share_state(v->share);
+    if (!st->contacts || idx < 0 || (guint)idx >= st->contacts->len) return;
+    ShareContact *c = st->contacts->pdata[idx];
+    v->editing_contact = idx;
+    gtk_editable_set_text(GTK_EDITABLE(v->entry_name), c->name ? c->name : "");
+    gtk_editable_set_text(GTK_EDITABLE(v->entry_device),
+                          (c->device && *c->device) ? c->device : (fallback_device ? fallback_device : ""));
+    gtk_editable_set_text(GTK_EDITABLE(v->entry_email), c->email ? c->email : "");
+    gtk_editable_set_text(GTK_EDITABLE(v->entry_phone), c->phone ? c->phone : "");
+    g_free(v->draft_photo);
+    v->draft_photo = (c->photo && *c->photo) ? g_strdup(c->photo) : NULL;
+    gtk_button_set_label(GTK_BUTTON(v->draft_photo_btn), v->draft_photo ? "Photo Selected" : "Choose Photo…");
+    gtk_button_set_label(GTK_BUTTON(v->contact_submit_btn), "Save Contact");
+    gtk_widget_grab_focus(v->entry_email);
+}
+
+static void prefill_contact_for_device(ShareView *v, const char *raw_name, const char *matched_hash)
+{
+    const ShareState *st = share_state(v->share);
+    int idx = find_contact_index(st, raw_name, matched_hash);
+    if (idx >= 0) {
+        edit_contact_in_dialog(v, idx, raw_name);
+        return;
+    }
+    open_contacts_window(v);
+    reset_contact_form(v);
+    char *suggested = suggest_person_name(raw_name);
+    gtk_editable_set_text(GTK_EDITABLE(v->entry_name), suggested);
+    gtk_editable_set_text(GTK_EDITABLE(v->entry_device), raw_name ? raw_name : "");
+    g_free(suggested);
+    gtk_widget_grab_focus(v->entry_email);
+}
+
+static void on_contact_edit(GtkButton *b, ShareView *v)
+{
+    int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "idx"));
+    edit_contact_in_dialog(v, idx, NULL);
+}
+
 static void on_contact_remove(GtkButton *b, ShareView *v)
 {
     int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "idx"));
@@ -710,6 +887,8 @@ static void on_contact_remove(GtkButton *b, ShareView *v)
         c->photo = g_strdup(src_c->photo);
         g_ptr_array_add(copy, c);
     }
+    if (v->editing_contact == idx) reset_contact_form(v);
+    else if (v->editing_contact > idx) v->editing_contact--;
     share_save_contacts(v->share, copy);
     g_ptr_array_unref(copy);
     refresh_contacts_dialog(v);
@@ -736,7 +915,20 @@ static void on_contact_add(GtkButton *b, ShareView *v)
 
     const ShareState *st = share_state(v->share);
     GPtrArray *copy = g_ptr_array_new_with_free_func(destroy_contact);
+    ShareContact *nc = g_new0(ShareContact, 1);
+    nc->name = g_strdup(*name ? name : (*dev ? dev : (*email ? email : phone)));
+    nc->device = *dev ? g_strdup(dev) : NULL;
+    nc->email = *email ? g_strdup(email) : NULL;
+    nc->phone = *phone ? g_strdup(phone) : NULL;
+    nc->photo = v->draft_photo ? g_strdup(v->draft_photo) : NULL;
+
+    gboolean replaced = FALSE;
     for (guint i = 0; st->contacts && i < st->contacts->len; i++) {
+        if ((int)i == v->editing_contact) {
+            g_ptr_array_add(copy, nc);
+            replaced = TRUE;
+            continue;
+        }
         ShareContact *src_c = st->contacts->pdata[i];
         ShareContact *c = g_new0(ShareContact, 1);
         c->name = g_strdup(src_c->name);
@@ -746,24 +938,18 @@ static void on_contact_add(GtkButton *b, ShareView *v)
         c->photo = g_strdup(src_c->photo);
         g_ptr_array_add(copy, c);
     }
-    ShareContact *nc = g_new0(ShareContact, 1);
-    nc->name = g_strdup(*name ? name : (*dev ? dev : (*email ? email : phone)));
-    nc->device = *dev ? g_strdup(dev) : NULL;
-    nc->email = *email ? g_strdup(email) : NULL;
-    nc->phone = *phone ? g_strdup(phone) : NULL;
-    nc->photo = v->draft_photo ? g_strdup(v->draft_photo) : NULL;
-    g_ptr_array_add(copy, nc);
+    if (!replaced) g_ptr_array_add(copy, nc);
 
     share_save_contacts(v->share, copy);
     g_ptr_array_unref(copy);
 
-    gtk_editable_set_text(GTK_EDITABLE(v->entry_name), "");
-    gtk_editable_set_text(GTK_EDITABLE(v->entry_device), "");
-    gtk_editable_set_text(GTK_EDITABLE(v->entry_email), "");
-    gtk_editable_set_text(GTK_EDITABLE(v->entry_phone), "");
-    g_clear_pointer(&v->draft_photo, g_free);
-    gtk_button_set_label(GTK_BUTTON(v->draft_photo_btn), "Choose Photo…");
+    reset_contact_form(v);
     refresh_contacts_dialog(v);
+}
+
+static void on_contact_entry_activate(GtkEntry *e, ShareView *v)
+{
+    on_contact_add(NULL, v);
 }
 
 static void refresh_contacts_dialog(ShareView *v)
@@ -800,6 +986,12 @@ static void refresh_contacts_dialog(ShareView *v)
         g_string_free(meta, TRUE);
         gtk_box_append(GTK_BOX(row), texts);
 
+        GtkWidget *eb = gtk_button_new_with_label("Edit");
+        gtk_widget_add_css_class(eb, "airdrop-btn");
+        g_object_set_data(G_OBJECT(eb), "idx", GINT_TO_POINTER((int)i));
+        g_signal_connect(eb, "clicked", G_CALLBACK(on_contact_edit), v);
+        gtk_box_append(GTK_BOX(row), eb);
+
         GtkWidget *pb = gtk_button_new_with_label("Photo");
         gtk_widget_add_css_class(pb, "airdrop-btn");
         g_object_set_data(G_OBJECT(pb), "idx", GINT_TO_POINTER((int)i));
@@ -824,12 +1016,16 @@ static gboolean on_contacts_close(GtkWindow *w, ShareView *v)
     v->entry_email = NULL;
     v->entry_phone = NULL;
     v->draft_photo_btn = NULL;
+    v->contact_submit_btn = NULL;
+    v->editing_contact = -1;
+    g_clear_pointer(&v->draft_photo, g_free);
     return FALSE;
 }
 
-static void on_open_contacts(GtkButton *b, ShareView *v)
+static void open_contacts_window(ShareView *v)
 {
     if (v->contacts_win) {
+        refresh_contacts_dialog(v);
         gtk_window_present(GTK_WINDOW(v->contacts_win));
         return;
     }
@@ -837,7 +1033,7 @@ static void on_open_contacts(GtkButton *b, ShareView *v)
     gtk_window_set_title(GTK_WINDOW(win), "AirDrop Contacts & Avatars");
     gtk_window_set_transient_for(GTK_WINDOW(win), GTK_WINDOW(v->app->win));
     gtk_window_set_modal(GTK_WINDOW(win), TRUE);
-    gtk_window_set_default_size(GTK_WINDOW(win), 440, -1);
+    gtk_window_set_default_size(GTK_WINDOW(win), 460, -1);
     gtk_widget_add_css_class(win, "lares");
     g_signal_connect(win, "close-request", G_CALLBACK(on_contacts_close), v);
 
@@ -861,9 +1057,11 @@ static void on_open_contacts(GtkButton *b, ShareView *v)
     v->entry_name = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(v->entry_name), "Name (e.g. Susuin)");
     gtk_widget_set_hexpand(v->entry_name, TRUE);
+    g_signal_connect(v->entry_name, "activate", G_CALLBACK(on_contact_entry_activate), v);
     v->entry_device = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(v->entry_device), "Device name (optional)");
     gtk_widget_set_hexpand(v->entry_device, TRUE);
+    g_signal_connect(v->entry_device, "activate", G_CALLBACK(on_contact_entry_activate), v);
     gtk_box_append(GTK_BOX(row1), v->entry_name);
     gtk_box_append(GTK_BOX(row1), v->entry_device);
     gtk_box_append(GTK_BOX(box), row1);
@@ -872,9 +1070,11 @@ static void on_open_contacts(GtkButton *b, ShareView *v)
     v->entry_email = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(v->entry_email), "Apple ID email");
     gtk_widget_set_hexpand(v->entry_email, TRUE);
+    g_signal_connect(v->entry_email, "activate", G_CALLBACK(on_contact_entry_activate), v);
     v->entry_phone = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(v->entry_phone), "Phone (+1…)");
     gtk_widget_set_hexpand(v->entry_phone, TRUE);
+    g_signal_connect(v->entry_phone, "activate", G_CALLBACK(on_contact_entry_activate), v);
     gtk_box_append(GTK_BOX(row2), v->entry_email);
     gtk_box_append(GTK_BOX(row2), v->entry_phone);
     gtk_box_append(GTK_BOX(box), row2);
@@ -889,16 +1089,23 @@ static void on_open_contacts(GtkButton *b, ShareView *v)
     gtk_widget_set_hexpand(spacer, TRUE);
     gtk_box_append(GTK_BOX(actions), spacer);
 
-    GtkWidget *add = gtk_button_new_with_label("Add Contact");
-    gtk_widget_add_css_class(add, "airdrop-btn-primary");
-    g_signal_connect(add, "clicked", G_CALLBACK(on_contact_add), v);
-    gtk_box_append(GTK_BOX(actions), add);
+    v->contact_submit_btn = gtk_button_new_with_label("Add Contact");
+    gtk_widget_add_css_class(v->contact_submit_btn, "airdrop-btn-primary");
+    g_signal_connect(v->contact_submit_btn, "clicked", G_CALLBACK(on_contact_add), v);
+    gtk_box_append(GTK_BOX(actions), v->contact_submit_btn);
     gtk_box_append(GTK_BOX(box), actions);
 
     gtk_window_set_child(GTK_WINDOW(win), box);
     v->contacts_win = win;
+    v->editing_contact = -1;
     refresh_contacts_dialog(v);
     gtk_window_present(GTK_WINDOW(win));
+}
+
+static void on_open_contacts(GtkButton *b, ShareView *v)
+{
+    open_contacts_window(v);
+    reset_contact_form(v);
 }
 
 /* ------------------------------------------------------------- Popover & Devices */
@@ -931,7 +1138,11 @@ static char *compute_devices_shape(const ShareState *st)
 {
     GString *s = g_string_new(NULL);
     g_string_append_printf(s, "c:%u|", st->contacts ? st->contacts->len : 0);
-    if (st->incoming) g_string_append_printf(s, "in:%s:%d|", st->incoming->sender ? st->incoming->sender : "", st->incoming->state);
+    for (guint i = 0; st->contacts && i < st->contacts->len; i++) {
+        ShareContact *c = st->contacts->pdata[i];
+        g_string_append_printf(s, "%s=%s=%s;", c->name ? c->name : "", c->device ? c->device : "", c->photo ? c->photo : "");
+    }
+    if (st->incoming) g_string_append_printf(s, "|in:%s:%d|", st->incoming->sender ? st->incoming->sender : "", st->incoming->state);
     for (guint i = 0; i < st->devices->len; i++) {
         ShareDevice *d = st->devices->pdata[i];
         g_string_append_printf(s, "%s:%s:%s:%d;", d->key, d->name ? d->name : "", d->model ? d->model : "", d->state);
@@ -1147,10 +1358,12 @@ static void add_device_node(ShareView *v, const char *key, const char *raw_name,
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_widget_add_css_class(box, "airdrop-device");
     gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
+    g_object_set_data_full(G_OBJECT(box), "dev-name", g_strdup(disp), g_free);
+    g_object_set_data_full(G_OBJECT(box), "dev-raw-name", g_strdup(raw_name && *raw_name ? raw_name : disp), g_free);
+    if (matched_hash && *matched_hash) g_object_set_data_full(G_OBJECT(box), "dev-hash", g_strdup(matched_hash), g_free);
     if (clickable) {
         gtk_widget_set_cursor_from_name(box, "pointer");
         g_object_set_data_full(G_OBJECT(box), "dev-key", g_strdup(key), g_free);
-        g_object_set_data_full(G_OBJECT(box), "dev-name", g_strdup(disp), g_free);
     }
 
     AvatarData *ad = g_new0(AvatarData, 1);
@@ -1185,16 +1398,16 @@ static void add_device_node(ShareView *v, const char *key, const char *raw_name,
     gtk_label_set_ellipsize(GTK_LABEL(sl), PANGO_ELLIPSIZE_END);
     gtk_box_append(GTK_BOX(box), sl);
 
+    GtkGesture *right = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(right), 3);
+    g_signal_connect(right, "released", G_CALLBACK(on_device_right_click), v);
+    gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(right));
+
     if (clickable) {
         GtkGesture *left = gtk_gesture_click_new();
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(left), 1);
         g_signal_connect(left, "released", G_CALLBACK(on_device_left_click), v);
         gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(left));
-
-        GtkGesture *right = gtk_gesture_click_new();
-        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(right), 3);
-        g_signal_connect(right, "released", G_CALLBACK(on_device_right_click), v);
-        gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(right));
 
         GtkDropTarget *drop = gtk_drop_target_new(GDK_TYPE_FILE_LIST, GDK_ACTION_COPY);
         g_signal_connect(drop, "enter", G_CALLBACK(on_device_drag_enter), da);
@@ -1208,6 +1421,7 @@ static void add_device_node(ShareView *v, const char *key, const char *raw_name,
 
 static void rebuild_devices(ShareView *v, const ShareState *st)
 {
+    dismiss_ctx_popover(v);
     clear_box(v->devices_row);
     g_hash_table_remove_all(v->avatars);
 
@@ -1344,7 +1558,7 @@ static void update_status_line(ShareView *v)
         else if (st->card_in_use)
             text = g_strdup("Your Wi-Fi card is in use · Click Scan or pick a discovery mode to start AirDrop");
     } else {
-        text = g_strdup("Click a person or drop files onto them to share · Right-click to set a photo");
+        text = g_strdup("Click a person or drop files onto them to share · Right-click to add to contacts or set a photo");
     }
 
     gtk_label_set_text(GTK_LABEL(v->status_label), text ? text : "");
@@ -1460,15 +1674,22 @@ static void on_changed(gpointer data) { update(data); }
 
 /* -------------------------------------------------------------- build */
 
+static void on_page_destroy(GtkWidget *w, ShareView *v)
+{
+    dismiss_ctx_popover(v);
+}
+
 GtkWidget *share_build(Lares *app, Section *self)
 {
     ShareView *v = g_new0(ShareView, 1);
     v->app = app;
     v->share = share_new();
+    v->editing_contact = -1;
     v->avatars = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     self->view = v;
 
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    g_signal_connect(page, "destroy", G_CALLBACK(on_page_destroy), v);
     gtk_widget_set_hexpand(page, TRUE);
     gtk_widget_set_vexpand(page, TRUE);
 
@@ -1687,9 +1908,12 @@ void share_shown(Lares *app, Section *self, gboolean on)
             v->browsing_auto = TRUE;
             share_set_browsing(v->share, TRUE);
         }
-    } else if (v->browsing_auto) {
-        v->browsing_auto = FALSE;
-        share_set_browsing(v->share, FALSE);
+    } else {
+        dismiss_ctx_popover(v);
+        if (v->browsing_auto) {
+            v->browsing_auto = FALSE;
+            share_set_browsing(v->share, FALSE);
+        }
     }
     sync_tick(v);
 }

@@ -556,6 +556,31 @@ std::string serialize_contacts_ini(const std::vector<ShareContact>& contacts)
     return ss.str();
 }
 
+static std::string normalize_contact_name(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        // Normalize UTF-8 curly apostrophes (U+2018 / U+2019: E2 80 98 / E2 80 99) to ASCII '\''
+        if (c == 0xE2 && i + 2 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0x80 &&
+            (static_cast<unsigned char>(s[i + 2]) == 0x98 || static_cast<unsigned char>(s[i + 2]) == 0x99)) {
+            out.push_back('\'');
+            i += 2;
+            continue;
+        }
+        out.push_back(static_cast<char>(std::tolower(c)));
+    }
+    return trim_copy(out);
+}
+
+static std::string owner_prefix_norm(const std::string& norm)
+{
+    size_t p = norm.find("'s ");
+    if (p != std::string::npos && p >= 2) return trim_copy(norm.substr(0, p));
+    return {};
+}
+
 const ShareContact* share_find_contact(const std::vector<ShareContact>& contacts, const std::string& name,
                                        const std::string& matched_hash)
 {
@@ -570,10 +595,16 @@ const ShareContact* share_find_contact(const std::vector<ShareContact>& contacts
         }
     }
     if (name.empty()) return nullptr;
-    std::string lo = ascii_lower(name);
+    std::string lo = normalize_contact_name(name);
     for (const ShareContact& c : contacts) {
-        if (!c.device.empty() && ascii_lower(c.device) == lo) return &c;
-        if (!c.name.empty() && ascii_lower(c.name) == lo) return &c;
+        if (!c.device.empty() && normalize_contact_name(c.device) == lo) return &c;
+        if (!c.name.empty() && normalize_contact_name(c.name) == lo) return &c;
+    }
+    std::string owner = owner_prefix_norm(lo);
+    if (!owner.empty()) {
+        for (const ShareContact& c : contacts) {
+            if (!c.name.empty() && normalize_contact_name(c.name) == owner) return &c;
+        }
     }
     return nullptr;
 }
@@ -1268,17 +1299,28 @@ void ShareManager::set_device_photo(const std::string& device_name, const std::w
         list = view_.contacts;
     }
     std::string photo_u8 = narrow(photo_path);
-    std::string lo = ascii_lower(device_name);
-    bool updated = false;
-    for (ShareContact& c : list) {
-        if ((!c.device.empty() && ascii_lower(c.device) == lo) || (!c.name.empty() && ascii_lower(c.name) == lo)) {
-            c.photo = photo_u8;
-            if (c.device.empty()) c.device = device_name;
-            updated = true;
+    std::string lo = normalize_contact_name(device_name);
+    std::string owner = owner_prefix_norm(lo);
+    int match = -1;
+    for (size_t i = 0; i < list.size(); ++i) {
+        if ((!list[i].device.empty() && normalize_contact_name(list[i].device) == lo) ||
+            (!list[i].name.empty() && normalize_contact_name(list[i].name) == lo)) {
+            match = static_cast<int>(i);
             break;
         }
     }
-    if (!updated && !photo_u8.empty()) {
+    if (match < 0 && !owner.empty()) {
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (!list[i].name.empty() && normalize_contact_name(list[i].name) == owner) {
+                match = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (match >= 0) {
+        list[static_cast<size_t>(match)].photo = photo_u8;
+        if (list[static_cast<size_t>(match)].device.empty()) list[static_cast<size_t>(match)].device = device_name;
+    } else if (!photo_u8.empty()) {
         ShareContact c;
         c.name = device_name;
         c.device = device_name;

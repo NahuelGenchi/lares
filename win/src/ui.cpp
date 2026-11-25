@@ -442,6 +442,8 @@ void MainWindow::select_section(const std::string& id, bool animate)
             share_mode_menu_open_ = false;
             share_adapter_open_ = false;
             share_contacts_open_ = false;
+            share_ctx_open_ = false;
+            share_editing_contact_ = -1;
             share_contact_field_ = -1;
             int vis = visible_index_of(i);
             nav_pill_target_y_ = kNavPadTop + vis * (nav_item_h() + kHalf);
@@ -1796,9 +1798,10 @@ LRESULT MainWindow::handle_msg(UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(wp) != WA_INACTIVE) InvalidateRect(hwnd_, nullptr, FALSE);
         else {
             close_dropdown();
-            if (share_mode_menu_open_ || share_adapter_open_) {
+            if (share_mode_menu_open_ || share_adapter_open_ || share_ctx_open_) {
                 share_mode_menu_open_ = false;
                 share_adapter_open_ = false;
+                share_ctx_open_ = false;
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
         }
