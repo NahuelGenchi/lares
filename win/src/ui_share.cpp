@@ -2364,8 +2364,19 @@ void MainWindow::share_drop_files(float lx, float ly, const std::vector<std::wst
 
 void MainWindow::on_share_updated()
 {
+    bool was_asking = share_view_.s.has_incoming && share_view_.s.incoming.state == ShareIncomingState::Asking;
     share_.resume();
     share_view_ = share_.view();
+    bool now_asking = share_view_.s.has_incoming && share_view_.s.incoming.state == ShareIncomingState::Asking;
+    if (!was_asking && now_asking) {
+        /* Dismiss overlays so an incoming Accept/Decline prompt is never obscured. */
+        share_mode_menu_open_ = false;
+        share_mode_menu_focus_ = -1;
+        share_adapter_open_ = false;
+        share_ctx_open_ = false;
+        share_contacts_open_ = false;
+        share_contact_field_ = -1;
+    }
     bool wake = share_view_.running && share_view_.s.wake && !opts_.dry_run;
     ble_.set_active(wake);
     sync_share_tick();

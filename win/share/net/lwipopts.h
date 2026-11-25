@@ -66,16 +66,16 @@
 #define LWIP_TCP_MAX_SACK_NUM           4
 #define LWIP_TCP_TIMESTAMPS             0
 #define TCP_LISTEN_BACKLOG              1
-#define TCP_DEFAULT_LISTEN_BACKLOG      8
+#define TCP_DEFAULT_LISTEN_BACKLOG      16
 
 #define MEM_ALIGNMENT                   8
 #define MEM_SIZE                        (768 * 1024)
 #define MEMP_NUM_PBUF                   64
 #define MEMP_NUM_UDP_PCB                6
-#define MEMP_NUM_TCP_PCB                24
+#define MEMP_NUM_TCP_PCB                48
 #define MEMP_NUM_TCP_PCB_LISTEN         4
 #define MEMP_NUM_TCP_SEG                512
-#define MEMP_NUM_NETCONN                32
+#define MEMP_NUM_NETCONN                64
 #define MEMP_NUM_NETBUF                 32
 #define MEMP_NUM_TCPIP_MSG_INPKT        256
 #define MEMP_NUM_TCPIP_MSG_API          64
@@ -91,7 +91,7 @@
 #define DEFAULT_RAW_RECVMBOX_SIZE       8
 #define DEFAULT_UDP_RECVMBOX_SIZE       32
 #define DEFAULT_TCP_RECVMBOX_SIZE       64
-#define DEFAULT_ACCEPTMBOX_SIZE         8
+#define DEFAULT_ACCEPTMBOX_SIZE         16
 
 #define LWIP_STATS                      0
 #define LWIP_NETIF_STATUS_CALLBACK      0

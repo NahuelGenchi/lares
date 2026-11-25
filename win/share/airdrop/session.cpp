@@ -34,6 +34,7 @@ namespace {
 
 constexpr char kModel[] = "Windows";            /* Receiver/SenderModelName */
 constexpr unsigned kIoTimeout = 30;             /* s: a peer that stops reading or writing (SEC-10) */
+constexpr unsigned kDiscoverIdleTimeout = 10;   /* s: idle keep-alive /Discover slot releases sooner */
 constexpr unsigned kConnectTimeout = 10;        /* s */
 /* A /Discover that isn't answered soon is tried again on a new connection
  * rather than waited for: over a fixed radio a phone is there about once a
@@ -45,13 +46,13 @@ constexpr auto kPromptSlice = std::chrono::milliseconds(500);
 constexpr unsigned kSenderAskTimeout = 45;      /* s, longer than a receiver's 15 s (ASK-2a) */
 constexpr unsigned kUploadResponseTimeout = 60; /* s */
 constexpr unsigned kDrainTimeout = 2;           /* s, reading what follows a complete archive (UP-11) */
-constexpr size_t kMaxMessage = 1024 * 1024;     /* a /Discover or /Ask body, and a response */
+constexpr size_t kMaxMessage = 4 * 1024 * 1024; /* a /Discover or /Ask body (multi-photo icons), and a response */
 constexpr size_t kMaxPending = 1024 * 1024;     /* bytes buffered while a prompt is up */
 constexpr uint64_t kMaxUpload = 16ull << 30;    /* an upload, unpacked (SEC-3) */
 constexpr auto kProgressEvery = std::chrono::milliseconds(250);
 constexpr size_t kReadChunk = 64 * 1024;
 constexpr int kSliceMs = 250;                   /* how often a blocked socket looks at its Cancel */
-constexpr int kMaxConnections = 6;
+constexpr int kMaxConnections = 16;
 
 using Clock = std::chrono::steady_clock;
 
@@ -222,7 +223,7 @@ public:
                 socklen_t len = sizeof soerr;
                 lwip_getsockopt(fd_, SOL_SOCKET, SO_ERROR, &soerr, &len);
                 if (soerr) {
-                    err = soerr == ECONNREFUSED ? "The connection was refused." : "The connection failed.";
+                    err = (soerr == ECONNREFUSED || soerr == ECONNRESET) ? "The connection was refused." : "The connection failed.";
                     return false;
                 }
                 r = 0;
@@ -264,6 +265,15 @@ public:
         return true;
     }
 
+    /* Non-blocking read: >0 bytes, 0 at the end, -1 on error, -2 would block. */
+    int recv_nonblocking(uint8_t* buf, size_t len)
+    {
+        int n = lwip_recv(fd_, buf, len, MSG_DONTWAIT);
+        if (n >= 0) return n;
+        if (errno == EWOULDBLOCK || errno == EAGAIN) return -2;
+        return -1;
+    }
+
     /* Whether something (bytes or the end) waits to be read. */
     bool readable()
     {
@@ -276,6 +286,9 @@ public:
         tls::Transport t;
         t.ctx = this;
         t.recv = [](void* ctx, uint8_t* b, size_t n) { return static_cast<Sock*>(ctx)->recv(b, n); };
+        t.recv_nonblocking = [](void* ctx, uint8_t* b, size_t n) {
+            return static_cast<Sock*>(ctx)->recv_nonblocking(b, n);
+        };
         t.send = [](void* ctx, const uint8_t* b, size_t n) { return static_cast<Sock*>(ctx)->send_all(b, n) ? 0 : -1; };
         return t;
     }
@@ -769,8 +782,12 @@ struct Conn {
             Value b = Value::dict();
             b.add("StatusCode", Value::integer(401));
             Bytes out;
-            if (bplist_encode(b, out)) send_response(200, &out, false);
-            else fail(500);
+            if (bplist_encode(b, out)) {
+                send_response(200, &out, false);
+                sock->set_timeout(kDiscoverIdleTimeout);
+            } else {
+                fail(500);
+            }
             return;
         }
         /* Everyone (100) or matched Contact (200) (ID-3, ID-4). */
@@ -781,8 +798,12 @@ struct Conn {
         b.add("ReceiverModelName", Value::string(kModel));
         b.add("ReceiverMediaCapabilities", Value::data(kCaps, sizeof kCaps - 1));
         Bytes out;
-        if (bplist_encode(b, out)) send_response(200, &out, false);
-        else fail(500);
+        if (bplist_encode(b, out)) {
+            send_response(200, &out, false);
+            sock->set_timeout(kDiscoverIdleTimeout);
+        } else {
+            fail(500);
+        }
     }
 
     /* ASK-5: a file's FileBomPath is "./<FileName>", or "./<folder>/<FileName>"
@@ -816,6 +837,9 @@ struct Conn {
     {
         auto end = Clock::now() + kPromptTimeout;
         int answer = 0;
+        /* Cap any mid-flight TLS 1.3 post-handshake renegotiation read so the
+         * prompt loop never stalls for kIoTimeout (30 s). */
+        sock->set_timeout(2);
         std::unique_lock<std::mutex> lock(r->mu);
         for (;;) {
             answer = r->answers[id];
@@ -829,9 +853,14 @@ struct Conn {
             bool gone = false;
             if (sock->readable()) {
                 uint8_t buf[4096];
-                int n = tls->read(buf, sizeof buf);
-                if (n <= 0 || input.size() + static_cast<size_t>(n) > kMaxPending) gone = true;
-                else input.insert(input.end(), buf, buf + n);
+                int n = tls->try_read(buf, sizeof buf);
+                if (n == -2) {
+                    /* TLS 1.3 post-handshake record or partial record; peer is still waiting. */
+                } else if (n <= 0 || input.size() + static_cast<size_t>(n) > kMaxPending) {
+                    gone = true;
+                } else {
+                    input.insert(input.end(), buf, buf + n);
+                }
             }
             lock.lock();
             if (gone) {
@@ -840,11 +869,14 @@ struct Conn {
             }
         }
         r->answers.erase(id);
+        lock.unlock();
+        sock->set_timeout(kIoTimeout);
         return answer;
     }
 
     void on_ask()
     {
+        sock->set_timeout(kIoTimeout);
         slot_discover = false; /* HTTP-7 */
         if (accepted || slot_upload) return fail(400);
         Value req;
@@ -884,12 +916,18 @@ struct Conn {
         std::string sender_model = lookup_str(req, "SenderModelName");
         bool contacts_only = false;
         std::string matched_hash = match_sender_record(req, contacts_only);
-        if (contacts_only && matched_hash.empty()) return fail(401);
+        if (contacts_only && matched_hash.empty()) {
+            trace("receiver: /Ask rejected (401, contacts only)");
+            return fail(401);
+        }
         if (const Value* icon = req.find("FileIcon", Value::Type::Data);
             icon && !icon->get_data().empty() && icon->get_data().size() <= 512 * 1024) {
             offer.file_icon = icon->get_data();
         }
-        if (bad) return fail(400);
+        if (bad) {
+            trace("receiver: /Ask rejected (400, %zu files, %zu items)", nfiles, nitems);
+            return fail(400);
+        }
         links = nitems > 0;
         {
             std::lock_guard<std::mutex> lock(r->mu);
@@ -909,6 +947,7 @@ struct Conn {
 
         int answer = wait_answer();
         if (answer != 1) {
+            trace("receiver: offer %s", answer == 2 ? "declined" : answer == 0 ? "timed out" : "withdrawn by sender");
             unsigned i = id;
             r->note([rr, i] {
                 if (rr->cb.withdrawn) rr->cb.withdrawn(i);
@@ -935,6 +974,7 @@ struct Conn {
 
     bool upload_start(const HttpHeaders& headers)
     {
+        sock->set_timeout(kIoTimeout);
         /* UP-6: only after an accepted /Ask on this connection, once. */
         if (!accepted || links || slot_upload) {
             fail_status = 400;
@@ -1031,7 +1071,10 @@ struct Conn {
     /* A whole message has been read: answer it. */
     void dispatch()
     {
-        if (too_big) return fail(413);
+        if (too_big) {
+            trace("receiver: request body too large (413)");
+            return fail(413);
+        }
         switch (route) {
         case Route::Discover: return on_discover();
         case Route::Ask: return on_ask();
@@ -1055,7 +1098,10 @@ struct Conn {
     {
         std::string err;
         tls = tls::Stream::server(sock->transport(), r->id, err);
-        if (!tls) return;
+        if (!tls) {
+            trace("receiver: TLS handshake failed: %s", err.c_str());
+            return;
+        }
         http = std::make_unique<HttpParser>(HttpKind::Request, callbacks());
         std::vector<uint8_t> buf(kReadChunk);
         while (!closing && !r->cancel->cancelled()) {
@@ -1125,6 +1171,11 @@ void Receiver::Impl::accept_loop()
         }
         if (fd < 0) continue;   /* a quarter second passed: look at the cancel */
         if (cancel->cancelled() || workers.size() >= static_cast<size_t>(kMaxConnections)) {
+            if (!cancel->cancelled()) {
+                note([this] {
+                    if (cb.trace) cb.trace(0, "receiver: connection limit reached, closing incoming socket");
+                });
+            }
             lwip_close(fd);
             continue;
         }
@@ -1161,7 +1212,7 @@ std::unique_ptr<Receiver> Receiver::start(Loop& loop, const Address& addr, const
         int on = 1;
         lwip_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
         sockaddr_in6 sa = socket_address(addr, i < kPorts ? static_cast<uint16_t>(kPort + i) : 0);
-        if (lwip_bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == 0 && lwip_listen(fd, 8) == 0) {
+        if (lwip_bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == 0 && lwip_listen(fd, 16) == 0) {
             sockaddr_in6 bound{};
             socklen_t len = sizeof bound;
             lwip_getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &len);

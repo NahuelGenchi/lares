@@ -19,6 +19,7 @@
 
 #define MODEL "Linux"                        /* Receiver/SenderModelName, as owly sends */
 #define IO_TIMEOUT 30                        /* s: a peer that stops reading or writing (SEC-10) */
+#define DISCOVER_IDLE_TIMEOUT 10             /* s: idle keep-alive /Discover slot releases sooner */
 #define CONNECT_TIMEOUT 10                   /* s */
 /* A /Discover that isn't answered soon is tried again on a new connection
  * rather than waited for: over a fixed radio a phone is there about once a
@@ -31,7 +32,7 @@
 #define SENDER_ASK_TIMEOUT 45                /* s, longer than a receiver's 15 s (ASK-2a) */
 #define UPLOAD_RESPONSE_TIMEOUT 60           /* s */
 #define DRAIN_TIMEOUT 2                      /* s, reading what follows a complete archive (UP-11) */
-#define MAX_MESSAGE (1024 * 1024)            /* a /Discover or /Ask body, and a response */
+#define MAX_MESSAGE (4 * 1024 * 1024)        /* a /Discover or /Ask body (multi-photo icons), and a response */
 #define MAX_PENDING (1024 * 1024)            /* bytes buffered while a prompt is up */
 #define MAX_UPLOAD (16ULL << 30)             /* an upload, unpacked (SEC-3) */
 #define PROGRESS_EVERY (250 * G_TIME_SPAN_MILLISECOND)
@@ -777,8 +778,12 @@ static void on_discover(Conn *c)
         g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
         g_variant_builder_add(&b, "{sv}", "StatusCode", g_variant_new_int64(401));
         GBytes *body = encode(g_variant_builder_end(&b));
-        if (body) send_response(c, 200, body, FALSE);
-        else fail(c, 500);
+        if (body) {
+            send_response(c, 200, body, FALSE);
+            set_timeout(c->conn, DISCOVER_IDLE_TIMEOUT);
+        } else {
+            fail(c, 500);
+        }
         if (body) g_bytes_unref(body);
         return;
     }
@@ -792,8 +797,12 @@ static void on_discover(Conn *c)
     g_variant_builder_add(&b, "{sv}", "ReceiverMediaCapabilities", v_data(CAPS, sizeof CAPS - 1));
     g_free(matched);
     GBytes *body = encode(g_variant_builder_end(&b));
-    if (body) send_response(c, 200, body, FALSE);
-    else fail(c, 500);
+    if (body) {
+        send_response(c, 200, body, FALSE);
+        set_timeout(c->conn, DISCOVER_IDLE_TIMEOUT);
+    } else {
+        fail(c, 500);
+    }
     if (body) g_bytes_unref(body);
 }
 
@@ -852,9 +861,18 @@ static int wait_answer(Conn *c)
         gboolean gone = (cond & (G_IO_HUP | G_IO_ERR)) != 0;
         if (!gone && (cond & G_IO_IN)) {
             guint8 buf[4096];
-            gssize n = g_input_stream_read(c->in, buf, sizeof buf, r->cancel, NULL);
-            if (n <= 0 || c->input->len + n > MAX_PENDING) gone = TRUE;
-            else g_byte_array_append(c->input, buf, n);
+            GError *re = NULL;
+            gssize n = G_IS_POLLABLE_INPUT_STREAM(c->in)
+                           ? g_pollable_input_stream_read_nonblocking(G_POLLABLE_INPUT_STREAM(c->in), buf, sizeof buf,
+                                                                      r->cancel, &re)
+                           : g_input_stream_read(c->in, buf, sizeof buf, r->cancel, &re);
+            if (g_error_matches(re, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {
+                g_clear_error(&re);
+            } else {
+                g_clear_error(&re);
+                if (n <= 0 || c->input->len + (gsize)n > MAX_PENDING) gone = TRUE;
+                else g_byte_array_append(c->input, buf, (guint)n);
+            }
         }
         g_mutex_lock(&r->lock);
         if (gone) {
@@ -869,6 +887,7 @@ static int wait_answer(Conn *c)
 
 static void on_ask(Conn *c)
 {
+    set_timeout(c->conn, IO_TIMEOUT);
     c->slot_discover = FALSE; /* HTTP-7 */
     if (c->accepted || c->slot_upload) return fail(c, 400);
     GVariant *req = decode_body(c);
@@ -928,6 +947,7 @@ static void on_ask(Conn *c)
     }
     g_variant_unref(req);
     if (contacts_only && !matched_hash) {
+        trace(c, "receiver: /Ask rejected (401, contacts only)");
         g_free(sender);
         g_free(sender_model);
         if (file_icon) g_bytes_unref(file_icon);
@@ -936,6 +956,7 @@ static void on_ask(Conn *c)
         return fail(c, 401);
     }
     if (bad) {
+        trace(c, "receiver: /Ask rejected (400, %" G_GSIZE_FORMAT " files, %" G_GSIZE_FORMAT " items)", nfiles, nitems);
         g_free(sender);
         g_free(sender_model);
         g_free(matched_hash);
@@ -963,6 +984,7 @@ static void on_ask(Conn *c)
 
     int answer = wait_answer(c);
     if (answer != 1) {
+        trace(c, "receiver: offer %s", answer == 2 ? "declined" : answer == 0 ? "timed out" : "withdrawn by sender");
         Note *w = g_new0(Note, 1);
         w->kind = NOTE_WITHDRAWN;
         w->offer.id = c->id;
@@ -993,6 +1015,7 @@ static void on_ask(Conn *c)
 
 static gboolean upload_start(Conn *c, GHashTable *headers)
 {
+    set_timeout(c->conn, IO_TIMEOUT);
     /* UP-6: only after an accepted /Ask on this connection, once. */
     if (!c->accepted || c->links || c->slot_upload) {
         c->fail = 400;
@@ -1082,7 +1105,10 @@ static const HttpCallbacks SERVER_HTTP = { http_head, http_body, http_done };
 /* A whole message has been read: answer it. */
 static void dispatch(Conn *c)
 {
-    if (c->too_big) return fail(c, 413);
+    if (c->too_big) {
+        trace(c, "receiver: request body too large (413)");
+        return fail(c, 413);
+    }
     switch (c->route) {
     case ROUTE_DISCOVER: return on_discover(c);
     case ROUTE_ASK: return on_ask(c);
@@ -1110,6 +1136,7 @@ static void serve(Conn *c)
     GIOStream *tls = tls_server(G_IO_STREAM(c->conn), r->cert, NULL);
     if (!tls) return;
     if (!g_tls_connection_handshake(G_TLS_CONNECTION(tls), r->cancel, NULL)) {
+        trace(c, "receiver: TLS handshake failed");
         g_object_unref(tls);
         return;
     }
@@ -1211,9 +1238,8 @@ AirdropReceiver *airdrop_receiver_new(const char *address, const char *name, con
     r->contact_hashes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     g_mutex_init(&r->lock);
     g_cond_init(&r->cond);
-    /* A few connections at once: a sender's /Discover connection can stay
-     * open beside its /Ask (HTTP-1). */
-    r->service = g_threaded_socket_service_new(6);
+    /* Room for parallel /Discover keep-alive sockets alongside /Ask and /Upload (HTTP-1). */
+    r->service = g_threaded_socket_service_new(16);
     gboolean ok = FALSE;
     for (int i = 0; i <= AIRDROP_PORTS && !ok; i++) {
         GSocketAddress *a = g_inet_socket_address_new_from_string(address, i < AIRDROP_PORTS ? AIRDROP_PORT + i : 0);

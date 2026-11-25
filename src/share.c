@@ -18,10 +18,12 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
-/* s between /Discover tries while looking (DISC-5): a phone is reachable
- * about once a second over a fixed radio, and refuses until its Bluetooth
- * advert has woken it, so a slower retry only adds to the wait. */
+/* s between /Discover tries while looking (DISC-5): initial probes go fast,
+ * then back off for peers in sender-only or Contacts Only mode so the radio
+ * isn't flooded while receiving. */
 #define DISCOVER_RETRY 1
+#define DISCOVER_SLOW 3
+#define DISCOVER_IDLE 5
 /* s between /Discover re-checks on already-listed devices so peers switched
  * to Contacts Only or Receiving Off disappear instead of staying stale. */
 #define DISCOVER_RECHECK 5
@@ -38,7 +40,7 @@ typedef struct {
     guint16 port;
     guint flags;
     gboolean trying, listed;
-    guint missed;
+    guint missed, fail_streak;
     gint64 next_probe;
 } Candidate;
 
@@ -915,6 +917,7 @@ static void receiver_withdrawn(guint id, gpointer user)
     Share *s = user;
     ShareIncoming *in = incoming_for(s, id);
     if (!in || in->state != INCOMING_ASKING) return;
+    share_log(s, "offer withdrawn");
     incoming_free(in);
     s->st.incoming = NULL;
     changed(s);
@@ -999,7 +1002,22 @@ static void unmark_address(Share *s, const char *address, gint64 next_probe)
         if (cand->address && g_ascii_strcasecmp(cand->address, address) == 0) {
             cand->listed = FALSE;
             cand->missed = 0;
+            cand->fail_streak = 0;
             cand->next_probe = next_probe;
+        }
+    }
+}
+
+static void wake_candidates(Share *s)
+{
+    GHashTableIter it;
+    gpointer v;
+    g_hash_table_iter_init(&it, s->candidates);
+    while (g_hash_table_iter_next(&it, NULL, &v)) {
+        Candidate *cand = v;
+        if (!cand->listed) {
+            cand->fail_streak = 0;
+            cand->next_probe = 0;
         }
     }
 }
@@ -1022,11 +1040,11 @@ static gboolean remove_idle_device_by(Share *s, const char *key, const char *add
 static void try_discover(Share *s, Candidate *c)
 {
     if (c->trying || !s->discover_cancel) return;
+    if (transfer_active(s)) return; /* keep AWDL link free for active incoming/outgoing transfers */
     gint64 now = g_get_monotonic_time();
     if (c->next_probe && now < c->next_probe) return;
     if (address_trying(s, c->address)) return;
     if (c->listed) {
-        if (transfer_active(s)) return;
         ShareDevice *d = device_at(s, c->address);
         if (d && !g_str_equal(d->key, c->key)) {
             Candidate *primary = g_hash_table_lookup(s->candidates, d->key);
@@ -1034,7 +1052,7 @@ static void try_discover(Share *s, Candidate *c)
         }
     }
     c->trying = TRUE;
-    if (!c->listed)
+    if (!c->listed && (c->fail_streak < 3 || c->fail_streak % 5 == 0))
         share_log(s, "asking a %s", g_str_has_prefix(c->key, "awdl:") ? "nearby AWDL device directly" : "service found over mDNS");
     g_object_set_data_full(G_OBJECT(s->discover_cancel), "share", s, NULL);
     airdrop_discover_async(c->address, c->port, s->discover_cancel, discovered, g_strdup(c->key));
@@ -1076,14 +1094,20 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
                     }
                 }
             } else {
-                if (explicit_refusal) c->next_probe = now + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC;
-                share_log(s, "not listed yet: %s", e ? e->message : "it didn't list us");
+                c->fail_streak++;
+                guint wait_s = c->fail_streak < 5 ? (explicit_refusal ? DISCOVER_MISS_RETRY : DISCOVER_RETRY)
+                             : c->fail_streak < 10 ? DISCOVER_SLOW
+                                                   : DISCOVER_IDLE;
+                c->next_probe = now + (gint64)wait_s * G_USEC_PER_SEC;
+                if (c->fail_streak <= 3 || c->fail_streak % 5 == 0)
+                    share_log(s, "not listed yet: %s", e ? e->message : "it didn't list us");
             }
         } else {
             gboolean was_listed = c->listed;
             gint64 next = now + (gint64)DISCOVER_RECHECK * G_USEC_PER_SEC;
             c->listed = TRUE;
             c->missed = 0;
+            c->fail_streak = 0;
             c->next_probe = next;
             GHashTableIter it;
             gpointer v;
@@ -1093,6 +1117,7 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
                 if (sib->address && c->address && g_ascii_strcasecmp(sib->address, c->address) == 0) {
                     sib->listed = TRUE;
                     sib->missed = 0;
+                    sib->fail_streak = 0;
                     sib->next_probe = next;
                 }
             }
@@ -1149,12 +1174,17 @@ static void add_candidate(Share *s, const char *key, const char *address, guint1
         c->key = g_strdup(key);
         g_hash_table_insert(s->candidates, c->key, c);
     }
+    gboolean fresh_mdns = !g_str_has_prefix(key, "awdl:");
     if (!c->address || g_strcmp0(c->address, address) || c->port != port) {
         g_free(c->address);
         c->address = g_strdup(address);
         c->port = port;
         c->listed = FALSE;
         c->missed = 0;
+        c->fail_streak = 0;
+        c->next_probe = 0;
+    } else if (fresh_mdns && !c->listed) {
+        c->fail_streak = 0;
         c->next_probe = 0;
     }
     if (flags) c->flags = flags;
@@ -1793,9 +1823,20 @@ static gboolean receive_over(gpointer data)
 void share_set_discover_mode(Share *s, ShareDiscoverMode mode)
 {
     if (mode != SHARE_DISCOVER_OFF && s->st.setup != SHARE_READY) return;
+    ShareDiscoverMode old_mode = s->st.mode;
     if (mode == SHARE_DISCOVER_EVERYONE && s->st.mode != SHARE_DISCOVER_EVERYONE) s->prev_mode = s->st.mode;
     s->st.mode = mode;
     s->st.receiving = mode != SHARE_DISCOVER_OFF;
+    /* Rotate our mDNS service instance and host label when discoverability
+     * changes while the link is up so Apple senders don't reuse a cached 401
+     * from Contacts Only, and the old service's goodbye doesn't flush the new
+     * host's AAAA record. */
+    if (mode != old_mode && mode != SHARE_DISCOVER_OFF && s->st.link == LINK_UP) {
+        g_free(s->service_id);
+        g_free(s->label);
+        s->service_id = random_id();
+        s->label = g_strconcat("lares-", s->service_id, NULL);
+    }
     g_clear_handle_id(&s->receive_timer, g_source_remove);
     if (mode == SHARE_DISCOVER_EVERYONE) {
         log_session(s, "discoverable: everyone for 10 minutes");
@@ -1868,6 +1909,7 @@ void share_set_looking(Share *s, gboolean on)
     s->looking = on;
     if (on) {
         log_session(s, "looking while files are picked");
+        wake_candidates(s);
         if (s->st.link == LINK_FAILED) s->st.link = LINK_OFF;
         if (s->dry && !s->dry_timer) s->dry_timer = g_timeout_add(1500, pretend_device, s);
     } else if (!s->st.sending && !s->st.browsing) {
@@ -1889,7 +1931,10 @@ void share_set_sending(Share *s, const char *const *paths)
     gboolean keep = (on && (s->looking || s->st.browsing)) || s->st.browsing;
     s->looking = FALSE;
     s->st.sending = on;
-    if (on) log_session(s, keep ? "files picked" : "sending");
+    if (on) {
+        log_session(s, keep ? "files picked" : "sending");
+        wake_candidates(s);
+    }
     if (!keep) {
         g_ptr_array_set_size(s->st.devices, 0);
         g_hash_table_remove_all(s->candidates);
@@ -1976,6 +2021,13 @@ void share_save_contacts(Share *s, GPtrArray *contacts)
     g_free(path);
     g_key_file_unref(kf);
     sync_receiver_policy(s);
+    if (s->st.mode == SHARE_DISCOVER_CONTACTS && s->st.link == LINK_UP) {
+        g_free(s->service_id);
+        g_free(s->label);
+        s->service_id = random_id();
+        s->label = g_strconcat("lares-", s->service_id, NULL);
+        parts_apply(s);
+    }
     changed(s);
 }
 

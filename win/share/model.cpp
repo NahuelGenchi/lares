@@ -30,7 +30,9 @@ namespace lares {
 namespace {
 
 constexpr unsigned kReceiveSeconds = 600;     /* as an iPhone's Everyone for 10 minutes */
-constexpr unsigned kDiscoverRetryMs = 1000;   /* DISC-5: a phone is there about once a second */
+constexpr unsigned kDiscoverRetryMs = 1000;   /* DISC-5: initial probes when a peer appears */
+constexpr unsigned kDiscoverSlowMs = 3000;    /* backoff after repeated failures so channel 6 isn't flooded */
+constexpr unsigned kDiscoverIdleMs = 5000;    /* steady-state poll for peers in sender-only or Contacts Only mode */
 constexpr unsigned kDiscoverRecheckMs = 5000; /* re-verify listed devices when peer switches to Contacts Only or Off */
 constexpr unsigned kDiscoverMissMs = 2000;    /* retry interval after a missed re-check */
 constexpr unsigned kLingerSeconds = 60;       /* the link waits this long for a next use */
@@ -115,7 +117,7 @@ struct Candidate {
     uint16_t port = 0;
     unsigned flags = 0;
     bool trying = false, listed = false;
-    unsigned missed = 0;
+    unsigned missed = 0, fail_streak = 0;
     Loop::Clock::time_point next_probe{};
 };
 
@@ -302,7 +304,18 @@ struct Share::Impl {
             if (_stricmp(cand.address.c_str(), peer_addr.c_str()) == 0) {
                 cand.listed = false;
                 cand.missed = 0;
+                cand.fail_streak = 0;
                 cand.next_probe = next;
+            }
+        }
+    }
+
+    void wake_candidates()
+    {
+        for (auto& [k, cand] : candidates) {
+            if (!cand.listed) {
+                cand.fail_streak = 0;
+                cand.next_probe = {};
             }
         }
     }
@@ -326,11 +339,11 @@ struct Share::Impl {
     void try_discover(Candidate& c)
     {
         if (c.trying || !discover_cancel) return;
+        if (transfer_active()) return; /* keep AWDL channel 6 free for active incoming/outgoing transfers */
         auto now = Loop::Clock::now();
         if (c.next_probe != Loop::Clock::time_point{} && now < c.next_probe) return;
         if (address_trying(c.address)) return;
         if (c.listed) {
-            if (transfer_active()) return;
             /* When both mDNS and AWDL candidates share one device, only the primary key re-probes. */
             if (Device* d = device_at(c.address); d && d->key != c.key) {
                 if (auto it = candidates.find(d->key); it != candidates.end() && it->second.listed) return;
@@ -339,7 +352,7 @@ struct Share::Impl {
         airdrop::Address a;
         if (!airdrop::parse_address(c.address, net_iface_index(iface), a)) return;
         c.trying = true;
-        if (!c.listed)
+        if (!c.listed && (c.fail_streak < 3 || c.fail_streak % 5 == 0))
             share_log("asking a %s", c.key.compare(0, 5, "awdl:") == 0 ? "nearby AWDL device directly" : "service found over mDNS");
         std::string key = c.key;
         auto cancel = discover_cancel;
@@ -381,19 +394,26 @@ struct Share::Impl {
                 }
                 return;
             }
-            if (explicit_refusal) c.next_probe = now + std::chrono::milliseconds(kDiscoverMissMs);
-            share_log("not listed yet: %s", err.empty() ? "it didn't list us" : err.c_str());
+            c.fail_streak++;
+            unsigned wait_ms = c.fail_streak < 5 ? (explicit_refusal ? kDiscoverMissMs : kDiscoverRetryMs)
+                             : c.fail_streak < 10 ? kDiscoverSlowMs
+                                                  : kDiscoverIdleMs;
+            c.next_probe = now + std::chrono::milliseconds(wait_ms);
+            if (c.fail_streak <= 3 || c.fail_streak % 5 == 0)
+                share_log("not listed yet: %s", err.empty() ? "it didn't list us" : err.c_str());
             return;
         }
         bool was_listed = c.listed;
         auto next = now + std::chrono::milliseconds(kDiscoverRecheckMs);
         c.listed = true;
         c.missed = 0;
+        c.fail_streak = 0;
         c.next_probe = next;
         for (auto& [k2, sib] : candidates) {
             if (_stricmp(sib.address.c_str(), c.address.c_str()) == 0) {
                 sib.listed = true;
                 sib.missed = 0;
+                sib.fail_streak = 0;
                 sib.next_probe = next;
             }
         }
@@ -435,11 +455,16 @@ struct Share::Impl {
     {
         Candidate& c = candidates[key];
         c.key = key;
+        bool fresh_mdns = key.compare(0, 5, "awdl:") != 0;
         if (c.address.empty() || c.address != where || c.port != port) {
             c.address = where;
             c.port = port;
             c.listed = false;
             c.missed = 0;
+            c.fail_streak = 0;
+            c.next_probe = {};
+        } else if (fresh_mdns && !c.listed) {
+            c.fail_streak = 0;
             c.next_probe = {};
         }
         if (flags) c.flags = flags;
@@ -501,6 +526,7 @@ struct Share::Impl {
         cb.withdrawn = [this](unsigned id) {
             Incoming* in = incoming_for(id);
             if (!in || in->state != IncomingState::Asking) return;
+            share_log("offer withdrawn");
             clear_thumb();
             st().incoming.reset();
             changed();
@@ -860,9 +886,18 @@ void Share::refresh()
 void Share::set_mode(DiscoverMode mode)
 {
     if (mode != DiscoverMode::Off && st_.setup != Setup::Ready) return;
+    DiscoverMode old_mode = st_.mode;
     if (mode == DiscoverMode::Everyone && st_.mode != DiscoverMode::Everyone) d_->prev_mode = st_.mode;
     st_.mode = mode;
     st_.receiving = mode != DiscoverMode::Off;
+    /* Rotate our mDNS service instance and host label when discoverability
+     * changes while the link is up so Apple senders don't reuse a cached 401
+     * from Contacts Only, and the old service's goodbye doesn't flush the new
+     * host's AAAA record. */
+    if (mode != old_mode && mode != DiscoverMode::Off && st_.link == LinkState::Up) {
+        d_->service_id = random_id();
+        d_->label = "lares-" + d_->service_id;
+    }
     loop_.cancel(d_->receive_timer);
     if (mode == DiscoverMode::Everyone) {
         d_->log_session("discoverable: everyone for 10 minutes");
@@ -891,8 +926,14 @@ void Share::set_receiving(bool on)
 
 void Share::set_contact_hashes(std::set<std::string> hashes)
 {
+    bool diff = (hashes != d_->contact_hashes);
     d_->contact_hashes = std::move(hashes);
     if (d_->receiver) d_->receiver->set_policy(st_.mode == DiscoverMode::ContactsOnly, d_->contact_hashes);
+    if (diff && st_.mode == DiscoverMode::ContactsOnly && st_.link == LinkState::Up) {
+        d_->service_id = random_id();
+        d_->label = "lares-" + d_->service_id;
+        d_->parts_apply();
+    }
 }
 
 void Share::set_browsing(bool on)
@@ -940,6 +981,7 @@ void Share::set_looking(bool on)
     looking_ = on;
     if (on) {
         d_->log_session("looking while files are picked");
+        d_->wake_candidates();
         if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
     } else if (!st_.sending && !st_.browsing) {
         st_.devices.clear();
@@ -959,7 +1001,10 @@ void Share::set_sending(const std::vector<std::wstring>& paths)
     bool keep = (on && (looking_ || st_.browsing)) || st_.browsing;
     looking_ = false;
     st_.sending = on;
-    if (on) d_->log_session(keep ? "files picked" : "sending");
+    if (on) {
+        d_->log_session(keep ? "files picked" : "sending");
+        d_->wake_candidates();
+    }
     if (!keep) {
         st_.devices.clear();
         d_->candidates.clear();

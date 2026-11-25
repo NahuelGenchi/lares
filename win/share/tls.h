@@ -13,10 +13,12 @@
 namespace lares::tls {
 
 /* The bytes under TLS. recv: bytes read, 0 at the end, -1 on an error or a
- * timeout. send: 0 once all of it went, -1 if not. */
+ * timeout. recv_nonblocking (optional): bytes read, 0 at the end, -1 on an
+ * error, -2 when nothing is ready yet. send: 0 once all of it went, -1 if not. */
 struct Transport {
     void* ctx = nullptr;
     int (*recv)(void* ctx, uint8_t* buf, size_t len) = nullptr;
+    int (*recv_nonblocking)(void* ctx, uint8_t* buf, size_t len) = nullptr;
     int (*send)(void* ctx, const uint8_t* buf, size_t len) = nullptr;
 };
 
@@ -38,6 +40,10 @@ public:
     /* Up to `len` decrypted bytes: how many, 0 when the peer closed, -1 on
      * an error. */
     int read(uint8_t* buf, size_t len);
+    /* Non-blocking decrypted read for polling an idle connection (e.g. while an
+     * /Ask prompt is up): >0 bytes, 0 when the peer closed, -1 on an error, -2
+     * when no plaintext is ready yet (including after TLS 1.3 control records). */
+    int try_read(uint8_t* buf, size_t len);
     /* All of it, encrypted: false on an error. */
     bool write(const uint8_t* buf, size_t len);
     /* Sends close_notify; reads and writes fail after it. */
