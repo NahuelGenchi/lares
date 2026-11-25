@@ -1720,8 +1720,17 @@ static void send_thread(GTask *task, gpointer src, gpointer data, GCancellable *
         || !write_bytes(l.out, ask, cancel, &e))
         goto out;
     set_timeout(l.conn, SENDER_ASK_TIMEOUT);
-    if (!read_response(&l, &resp, cancel, &e) || resp.status != 200) {
+    if (!read_response(&l, &resp, cancel, &e)) {
         g_clear_error(&e);
+        g_set_error_literal(&e, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED, "Declined, or not answered."); /* ASK-1 */
+        goto out;
+    }
+    if (resp.status == 401) {
+        g_set_error_literal(&e, G_IO_ERROR, G_IO_ERROR_FAILED,
+                            "Set AirDrop on that device to Everyone for 10 Minutes.");
+        goto out;
+    }
+    if (resp.status != 200) {
         g_set_error_literal(&e, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED, "Declined, or not answered."); /* ASK-1 */
         goto out;
     }

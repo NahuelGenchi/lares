@@ -29,9 +29,11 @@ namespace lares {
 
 namespace {
 
-constexpr unsigned kReceiveSeconds = 600;   /* as an iPhone's Everyone for 10 minutes */
-constexpr unsigned kDiscoverRetryMs = 1000; /* DISC-5: a phone is there about once a second */
-constexpr unsigned kLingerSeconds = 60;     /* the link waits this long for a next use */
+constexpr unsigned kReceiveSeconds = 600;     /* as an iPhone's Everyone for 10 minutes */
+constexpr unsigned kDiscoverRetryMs = 1000;   /* DISC-5: a phone is there about once a second */
+constexpr unsigned kDiscoverRecheckMs = 5000; /* re-verify listed devices when peer switches to Contacts Only or Off */
+constexpr unsigned kDiscoverMissMs = 2000;    /* retry interval after a missed re-check */
+constexpr unsigned kLingerSeconds = 60;       /* the link waits this long for a next use */
 constexpr unsigned kQuietSeconds = 20;      /* no Apple device heard in this long: say so */
 constexpr uint8_t kChannel = 6;             /* the adapter is 2.4 GHz only */
 constexpr int kFirmwareResource = 101;      /* firmware.rc */
@@ -113,6 +115,8 @@ struct Candidate {
     uint16_t port = 0;
     unsigned flags = 0;
     bool trying = false, listed = false;
+    unsigned missed = 0;
+    Loop::Clock::time_point next_probe{};
 };
 
 } // namespace
@@ -276,13 +280,67 @@ struct Share::Impl {
         return nullptr;
     }
 
+    bool transfer_active()
+    {
+        if (!send_key.empty()) return true;
+        const Incoming* in = st().incoming.get();
+        return in && (in->state == IncomingState::Asking || in->state == IncomingState::Receiving);
+    }
+
+    bool address_trying(const std::string& peer_addr) const
+    {
+        for (const auto& [k, cand] : candidates)
+            if (cand.trying && !cand.address.empty() && _stricmp(cand.address.c_str(), peer_addr.c_str()) == 0)
+                return true;
+        return false;
+    }
+
+    void unmark_address(const std::string& peer_addr, Loop::Clock::time_point next)
+    {
+        if (peer_addr.empty()) return;
+        for (auto& [k, cand] : candidates) {
+            if (_stricmp(cand.address.c_str(), peer_addr.c_str()) == 0) {
+                cand.listed = false;
+                cand.missed = 0;
+                cand.next_probe = next;
+            }
+        }
+    }
+
+    bool remove_idle_device_by(const std::string& key, const std::string& peer_addr)
+    {
+        bool removed = false;
+        for (auto it = st().devices.begin(); it != st().devices.end();) {
+            bool match = (!key.empty() && it->key == key) ||
+                         (!peer_addr.empty() && !it->address.empty() && _stricmp(it->address.c_str(), peer_addr.c_str()) == 0);
+            if (match && it->state == DeviceState::Found) {
+                it = st().devices.erase(it);
+                removed = true;
+            } else {
+                ++it;
+            }
+        }
+        return removed;
+    }
+
     void try_discover(Candidate& c)
     {
-        if (c.trying || c.listed || !discover_cancel) return;
+        if (c.trying || !discover_cancel) return;
+        auto now = Loop::Clock::now();
+        if (c.next_probe != Loop::Clock::time_point{} && now < c.next_probe) return;
+        if (address_trying(c.address)) return;
+        if (c.listed) {
+            if (transfer_active()) return;
+            /* When both mDNS and AWDL candidates share one device, only the primary key re-probes. */
+            if (Device* d = device_at(c.address); d && d->key != c.key) {
+                if (auto it = candidates.find(d->key); it != candidates.end() && it->second.listed) return;
+            }
+        }
         airdrop::Address a;
         if (!airdrop::parse_address(c.address, net_iface_index(iface), a)) return;
         c.trying = true;
-        share_log("asking a %s", c.key.compare(0, 5, "awdl:") == 0 ? "nearby AWDL device directly" : "service found over mDNS");
+        if (!c.listed)
+            share_log("asking a %s", c.key.compare(0, 5, "awdl:") == 0 ? "nearby AWDL device directly" : "service found over mDNS");
         std::string key = c.key;
         auto cancel = discover_cancel;
         airdrop::discover(loop(), a, c.port, cancel,
@@ -299,17 +357,52 @@ struct Share::Impl {
         if (it == candidates.end()) return;
         Candidate& c = it->second;
         c.trying = false;
+        auto now = Loop::Clock::now();
         if (!peer) {
+            bool explicit_refusal = err.empty(); /* peer answered /Discover without ReceiverComputerName (e.g. Contacts Only) */
+            if (c.listed || device_at(c.address)) {
+                if (explicit_refusal) {
+                    share_log("device is no longer discoverable");
+                    std::string peer_addr = c.address;
+                    unmark_address(peer_addr, now + std::chrono::milliseconds(kDiscoverMissMs));
+                    if (remove_idle_device_by(key, peer_addr)) changed();
+                    return;
+                }
+                c.missed++;
+                bool refused = err == "The connection was refused.";
+                unsigned limit = refused ? 2u : 3u;
+                if (c.missed >= limit) {
+                    share_log("device stopped answering: %s", err.c_str());
+                    std::string peer_addr = c.address;
+                    unmark_address(peer_addr, now + std::chrono::milliseconds(kDiscoverMissMs));
+                    if (remove_idle_device_by(key, peer_addr)) changed();
+                } else {
+                    c.next_probe = now + std::chrono::milliseconds(refused ? kDiscoverRetryMs : kDiscoverMissMs);
+                }
+                return;
+            }
+            if (explicit_refusal) c.next_probe = now + std::chrono::milliseconds(kDiscoverMissMs);
             share_log("not listed yet: %s", err.empty() ? "it didn't list us" : err.c_str());
             return;
         }
-        share_log("listed a device");
+        bool was_listed = c.listed;
+        auto next = now + std::chrono::milliseconds(kDiscoverRecheckMs);
         c.listed = true;
+        c.missed = 0;
+        c.next_probe = next;
+        for (auto& [k2, sib] : candidates) {
+            if (_stricmp(sib.address.c_str(), c.address.c_str()) == 0) {
+                sib.listed = true;
+                sib.missed = 0;
+                sib.next_probe = next;
+            }
+        }
         Device* d = device_find(key);
         Device* same = device_at(c.address);
+        bool dirty = false;
         if (!d && same) {
             d = same;   /* found both over mDNS and on AWDL alone: one device */
-            if (c.flags) d->flags = c.flags;
+            if (c.flags && d->flags != c.flags) { d->flags = c.flags; dirty = true; }
         }
         if (!d) {
             Device nd;
@@ -319,14 +412,19 @@ struct Share::Impl {
             nd.flags = c.flags;
             st().devices.push_back(std::move(nd));
             d = &st().devices.back();
+            dirty = true;
         }
-        d->name = peer->name;
-        d->model = peer->model;
-        changed();
+        if (d->name != peer->name || d->model != peer->model) {
+            d->name = peer->name;
+            d->model = peer->model;
+            dirty = true;
+        }
+        if (!was_listed) share_log("listed a device");
+        if (dirty) changed();
     }
 
     /* Receivers refuse until a Bluetooth advert has woken them: keep asking
-     * while looking (DISC-5). */
+     * while looking (DISC-5), and re-verify listed devices periodically. */
     void retry_discover()
     {
         retry = loop().after(kDiscoverRetryMs, [this] { retry_discover(); });
@@ -341,6 +439,8 @@ struct Share::Impl {
             c.address = where;
             c.port = port;
             c.listed = false;
+            c.missed = 0;
+            c.next_probe = {};
         }
         if (flags) c.flags = flags;
         if (Device* d = device_find(key); d && flags) d->flags = flags;
@@ -356,15 +456,16 @@ struct Share::Impl {
 
     void drop_device(const std::string& key)
     {
-        candidates.erase(key);
-        for (auto it = st().devices.begin(); it != st().devices.end(); ++it) {
-            if (it->key != key) continue;
-            if (it->state != DeviceState::Asking && it->state != DeviceState::Sending) {
-                st().devices.erase(it);
-                changed();
-            }
-            return;
+        std::string peer_addr;
+        if (auto it = candidates.find(key); it != candidates.end()) {
+            peer_addr = it->second.address;
+            candidates.erase(it);
         }
+        if (peer_addr.empty()) {
+            if (Device* d = device_find(key)) peer_addr = d->address;
+        }
+        unmark_address(peer_addr, Loop::Clock::now() + std::chrono::milliseconds(kDiscoverMissMs));
+        if (remove_idle_device_by(key, peer_addr)) changed();
     }
 
     // ------------------------------------------------------------ receiver
@@ -886,9 +987,18 @@ void Share::dismiss_device(const std::string& key)
 {
     Device* d = d_->device_find(key);
     if (!d || d->state == DeviceState::Asking || d->state == DeviceState::Sending) return;
+    std::string addr = d->address;
     d->state = DeviceState::Found;
     d->sent = d->total = 0;
     d->message.clear();
+    bool still_listed = false;
+    for (const auto& [ck, cand] : d_->candidates) {
+        if (cand.listed && !addr.empty() && _stricmp(cand.address.c_str(), addr.c_str()) == 0) {
+            still_listed = true;
+            break;
+        }
+    }
+    if (!still_listed && !addr.empty()) d_->remove_idle_device_by(key, addr);
     bool any_busy = false;
     for (const Device& dev : st_.devices) {
         if (dev.state != DeviceState::Found) any_busy = true;
@@ -940,6 +1050,11 @@ void Share::send_to(const std::string& key)
             if (dev) {
                 dev->state = ok ? DeviceState::Sent : declined ? DeviceState::Declined : DeviceState::Failed;
                 dev->message = err;
+                if (!ok && !dev->address.empty()) {
+                    for (auto& [ck, cand] : impl->candidates) {
+                        if (_stricmp(cand.address.c_str(), dev->address.c_str()) == 0) cand.next_probe = {};
+                    }
+                }
             }
             if (impl->send_cancel == cancel) {
                 impl->send_cancel.reset();

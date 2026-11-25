@@ -22,6 +22,10 @@
  * about once a second over a fixed radio, and refuses until its Bluetooth
  * advert has woken it, so a slower retry only adds to the wait. */
 #define DISCOVER_RETRY 1
+/* s between /Discover re-checks on already-listed devices so peers switched
+ * to Contacts Only or Receiving Off disappear instead of staying stale. */
+#define DISCOVER_RECHECK 5
+#define DISCOVER_MISS_RETRY 2
 /* s the link stays up after the last use, so the next send or receive
  * doesn't wait the 2.7 s lares-awdl takes to set the card up. */
 #define LINK_LINGER 60
@@ -34,6 +38,8 @@ typedef struct {
     guint16 port;
     guint flags;
     gboolean trying, listed;
+    guint missed;
+    gint64 next_probe;
 } Candidate;
 
 struct Share {
@@ -963,11 +969,73 @@ static const AirdropReceiverCallbacks RECEIVER = {
 
 static void discovered(GObject *src, GAsyncResult *res, gpointer data);
 
+static gboolean transfer_active(Share *s)
+{
+    if (s->send_key) return TRUE;
+    return s->st.incoming && (s->st.incoming->state == INCOMING_ASKING || s->st.incoming->state == INCOMING_RECEIVING);
+}
+
+static gboolean address_trying(Share *s, const char *address)
+{
+    if (!address || !*address) return FALSE;
+    GHashTableIter it;
+    gpointer v;
+    g_hash_table_iter_init(&it, s->candidates);
+    while (g_hash_table_iter_next(&it, NULL, &v)) {
+        Candidate *cand = v;
+        if (cand->trying && cand->address && g_ascii_strcasecmp(cand->address, address) == 0) return TRUE;
+    }
+    return FALSE;
+}
+
+static void unmark_address(Share *s, const char *address, gint64 next_probe)
+{
+    if (!address || !*address) return;
+    GHashTableIter it;
+    gpointer v;
+    g_hash_table_iter_init(&it, s->candidates);
+    while (g_hash_table_iter_next(&it, NULL, &v)) {
+        Candidate *cand = v;
+        if (cand->address && g_ascii_strcasecmp(cand->address, address) == 0) {
+            cand->listed = FALSE;
+            cand->missed = 0;
+            cand->next_probe = next_probe;
+        }
+    }
+}
+
+static gboolean remove_idle_device_by(Share *s, const char *key, const char *address)
+{
+    gboolean removed = FALSE;
+    for (guint i = s->st.devices->len; i > 0; i--) {
+        ShareDevice *d = s->st.devices->pdata[i - 1];
+        gboolean match = (key && *key && g_str_equal(d->key, key))
+                         || (address && *address && d->address && g_ascii_strcasecmp(d->address, address) == 0);
+        if (match && d->state == DEVICE_FOUND) {
+            g_ptr_array_remove_index(s->st.devices, i - 1);
+            removed = TRUE;
+        }
+    }
+    return removed;
+}
+
 static void try_discover(Share *s, Candidate *c)
 {
-    if (c->trying || c->listed || !s->discover_cancel) return;
+    if (c->trying || !s->discover_cancel) return;
+    gint64 now = g_get_monotonic_time();
+    if (c->next_probe && now < c->next_probe) return;
+    if (address_trying(s, c->address)) return;
+    if (c->listed) {
+        if (transfer_active(s)) return;
+        ShareDevice *d = device_at(s, c->address);
+        if (d && !g_str_equal(d->key, c->key)) {
+            Candidate *primary = g_hash_table_lookup(s->candidates, d->key);
+            if (primary && primary->listed) return;
+        }
+    }
     c->trying = TRUE;
-    share_log(s, "asking a %s", g_str_has_prefix(c->key, "awdl:") ? "nearby AWDL device directly" : "service found over mDNS");
+    if (!c->listed)
+        share_log(s, "asking a %s", g_str_has_prefix(c->key, "awdl:") ? "nearby AWDL device directly" : "service found over mDNS");
     g_object_set_data_full(G_OBJECT(s->discover_cancel), "share", s, NULL);
     airdrop_discover_async(c->address, c->port, s->discover_cancel, discovered, g_strdup(c->key));
 }
@@ -983,15 +1051,57 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
     Candidate *c = s ? g_hash_table_lookup(s->candidates, key) : NULL;
     if (c) {
         c->trying = FALSE;
-        if (!peer) share_log(s, "not listed yet: %s", e ? e->message : "it didn't list us");
-        if (peer) {
-            share_log(s, "listed a device");
+        gint64 now = g_get_monotonic_time();
+        if (!peer) {
+            gboolean explicit_refusal = (e == NULL);
+            if (c->listed || device_at(s, c->address)) {
+                if (explicit_refusal) {
+                    share_log(s, "device is no longer discoverable");
+                    char *addr = g_strdup(c->address);
+                    unmark_address(s, addr, now + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC);
+                    if (remove_idle_device_by(s, key, addr)) changed(s);
+                    g_free(addr);
+                } else {
+                    c->missed++;
+                    gboolean refused = g_error_matches(e, G_IO_ERROR, G_IO_ERROR_CONNECTION_REFUSED);
+                    guint limit = refused ? 2 : 3;
+                    if (c->missed >= limit) {
+                        share_log(s, "device stopped answering: %s", e->message);
+                        char *addr = g_strdup(c->address);
+                        unmark_address(s, addr, now + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC);
+                        if (remove_idle_device_by(s, key, addr)) changed(s);
+                        g_free(addr);
+                    } else {
+                        c->next_probe = now + (gint64)(refused ? DISCOVER_RETRY : DISCOVER_MISS_RETRY) * G_USEC_PER_SEC;
+                    }
+                }
+            } else {
+                if (explicit_refusal) c->next_probe = now + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC;
+                share_log(s, "not listed yet: %s", e ? e->message : "it didn't list us");
+            }
+        } else {
+            gboolean was_listed = c->listed;
+            gint64 next = now + (gint64)DISCOVER_RECHECK * G_USEC_PER_SEC;
             c->listed = TRUE;
+            c->missed = 0;
+            c->next_probe = next;
+            GHashTableIter it;
+            gpointer v;
+            g_hash_table_iter_init(&it, s->candidates);
+            while (g_hash_table_iter_next(&it, NULL, &v)) {
+                Candidate *sib = v;
+                if (sib->address && c->address && g_ascii_strcasecmp(sib->address, c->address) == 0) {
+                    sib->listed = TRUE;
+                    sib->missed = 0;
+                    sib->next_probe = next;
+                }
+            }
             ShareDevice *d = device_find(s, key);
             ShareDevice *same = device_at(s, c->address);
+            gboolean dirty = FALSE;
             if (!d && same) {
                 d = same; /* found both over mDNS and on AWDL alone: one device */
-                if (c->flags) d->flags = c->flags;
+                if (c->flags && d->flags != c->flags) { d->flags = c->flags; dirty = TRUE; }
             }
             if (!d) {
                 d = g_new0(ShareDevice, 1);
@@ -1001,12 +1111,17 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
                 d->flags = c->flags;
                 d->state = DEVICE_FOUND;
                 g_ptr_array_add(s->st.devices, d);
+                dirty = TRUE;
             }
-            g_free(d->name);
-            g_free(d->model);
-            d->name = g_strdup(peer->name);
-            d->model = g_strdup(peer->model);
-            changed(s);
+            if (g_strcmp0(d->name, peer->name) != 0 || g_strcmp0(d->model, peer->model) != 0) {
+                g_free(d->name);
+                g_free(d->model);
+                d->name = g_strdup(peer->name);
+                d->model = g_strdup(peer->model);
+                dirty = TRUE;
+            }
+            if (!was_listed) share_log(s, "listed a device");
+            if (dirty) changed(s);
         }
     }
     airdrop_peer_free(peer);
@@ -1015,7 +1130,7 @@ static void discovered(GObject *src, GAsyncResult *res, gpointer data)
 }
 
 /* Receivers refuse until a Bluetooth advert has woken them, which can take
- * many seconds: keep asking while looking (DISC-5). */
+ * many seconds: keep asking while looking (DISC-5), and re-verify listed devices. */
 static gboolean retry_discover(gpointer data)
 {
     Share *s = data;
@@ -1039,6 +1154,8 @@ static void add_candidate(Share *s, const char *key, const char *address, guint1
         c->address = g_strdup(address);
         c->port = port;
         c->listed = FALSE;
+        c->missed = 0;
+        c->next_probe = 0;
     }
     if (flags) c->flags = flags;
     ShareDevice *d = device_find(s, key);
@@ -1058,12 +1175,16 @@ static void ask_peer(Share *s, const char *mac)
 
 static void drop_device(Share *s, const char *key)
 {
+    Candidate *c = g_hash_table_lookup(s->candidates, key);
+    char *addr = c && c->address ? g_strdup(c->address) : NULL;
     g_hash_table_remove(s->candidates, key);
-    ShareDevice *d = device_find(s, key);
-    if (d && d->state != DEVICE_ASKING && d->state != DEVICE_SENDING) {
-        g_ptr_array_remove(s->st.devices, d);
-        changed(s);
+    if (!addr) {
+        ShareDevice *d = device_find(s, key);
+        if (d && d->address) addr = g_strdup(d->address);
     }
+    unmark_address(s, addr, g_get_monotonic_time() + (gint64)DISCOVER_MISS_RETRY * G_USEC_PER_SEC);
+    if (remove_idle_device_by(s, key, addr)) changed(s);
+    g_free(addr);
 }
 
 static void mdns_found(const AirdropService *svc, gpointer user)
@@ -1797,9 +1918,25 @@ void share_dismiss_device(Share *s, const char *key)
 {
     ShareDevice *d = device_find(s, key);
     if (!d || d->state == DEVICE_ASKING || d->state == DEVICE_SENDING) return;
+    char *addr = g_strdup(d->address);
     d->state = DEVICE_FOUND;
     d->sent = d->total = 0;
     g_clear_pointer(&d->message, g_free);
+    if (!s->dry && addr && *addr) {
+        gboolean still_listed = FALSE;
+        GHashTableIter it;
+        gpointer v;
+        g_hash_table_iter_init(&it, s->candidates);
+        while (g_hash_table_iter_next(&it, NULL, &v)) {
+            Candidate *cand = v;
+            if (cand->listed && cand->address && g_ascii_strcasecmp(cand->address, addr) == 0) {
+                still_listed = TRUE;
+                break;
+            }
+        }
+        if (!still_listed) remove_idle_device_by(s, key, addr);
+    }
+    g_free(addr);
     gboolean any = FALSE;
     for (guint i = 0; i < s->st.devices->len; i++) {
         ShareDevice *x = s->st.devices->pdata[i];
@@ -1931,6 +2068,15 @@ static void send_done(GObject *src, GAsyncResult *res, gpointer user)
                                           ? DEVICE_DECLINED : DEVICE_FAILED;
             g_free(d->message);
             d->message = e ? g_strdup(e->message) : NULL;
+            if (!ok && d->address && *d->address) {
+                GHashTableIter it;
+                gpointer v;
+                g_hash_table_iter_init(&it, s->candidates);
+                while (g_hash_table_iter_next(&it, NULL, &v)) {
+                    Candidate *cand = v;
+                    if (cand->address && g_ascii_strcasecmp(cand->address, d->address) == 0) cand->next_probe = 0;
+                }
+            }
         }
         if (s->send_cancel == c->cancel) {
             g_clear_object(&s->send_cancel);

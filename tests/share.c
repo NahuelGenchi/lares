@@ -267,7 +267,11 @@ static void test_loopback(void)
     g_assert_cmpstr(f.peer->name, ==, "Test PC");
     g_assert_cmpstr(f.peer->model, ==, "Linux");
 
-    /* Contacts Only policy rejects unauthenticated /Discover (StatusCode 401). */
+    /* Contacts Only policy rejects unauthenticated /Discover (StatusCode 401 -> NULL peer, no transport error)
+     * and rejects /Ask with HTTP 401 ("Everyone for 10 Minutes" hint). */
+    const char *text = "Hello from the loopback.\n";
+    char *a = write_file(outbox, "Café ☕.txt", text);
+    char *one[] = { a, NULL };
     const char *allowed[] = { "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", NULL };
     airdrop_receiver_set_policy(f.r, TRUE, allowed);
     AirdropPeer *prev_peer = f.peer;
@@ -275,14 +279,15 @@ static void test_loopback(void)
     airdrop_discover_async("::1", port, NULL, discovered, &f);
     run(&f);
     g_assert_null(f.peer);
+    g_assert_no_error(f.error);
+    g_assert_false(send_and_wait(&f, port, 0, one));
+    g_assert_error(f.error, G_IO_ERROR, G_IO_ERROR_FAILED);
+    g_assert_nonnull(strstr(f.error->message, "Everyone for 10 Minutes"));
     g_clear_error(&f.error);
     airdrop_receiver_set_policy(f.r, FALSE, NULL);
     f.peer = prev_peer;
 
     /* A file, in DVZip (flags unknown, UP-1b). */
-    const char *text = "Hello from the loopback.\n";
-    char *a = write_file(outbox, "Café ☕.txt", text);
-    char *one[] = { a, NULL };
     g_assert_true(send_and_wait(&f, port, 0, one));
     g_assert_no_error(f.error);
     g_assert_true(f.accepted);

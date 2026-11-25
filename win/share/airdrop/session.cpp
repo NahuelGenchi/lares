@@ -1526,7 +1526,16 @@ void send(Loop& loop, const SendRequest& request, std::shared_ptr<Cancel> cancel
         sock.set_timeout(kSenderAskTimeout);
         Response resp;
         std::string why;
-        if (!read_response(*t, resp, why) || resp.status != 200) {
+        if (!read_response(*t, resp, why)) {
+            err = "Declined, or not answered."; /* ASK-1 */
+            declined = true;
+            return finish();
+        }
+        if (resp.status == 401) {
+            err = "Set AirDrop on that device to Everyone for 10 Minutes.";
+            return finish();
+        }
+        if (resp.status != 200) {
             err = "Declined, or not answered."; /* ASK-1 */
             declined = true;
             return finish();

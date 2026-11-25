@@ -379,7 +379,29 @@ void test_session(bool accept)
         h.cv.notify_all();
     });
     CHECK(h.wait([&] { return h.discovered; }, 20));
-    CHECK(h.peer.rfind("none:", 0) == 0);
+    CHECK(h.peer == "none: ");
+
+    /* Unauthenticated /Ask against Contacts Only returns HTTP 401 with clear hint (not a decline). */
+    ad::SendRequest unauth_req;
+    unauth_req.addr = there;
+    unauth_req.port = receiver->port();
+    unauth_req.name = "Sender PC";
+    unauth_req.id = "0123456789ab";
+    unauth_req.paths = { out + L"\\IMG_0412.HEIC" };
+    bool unauth_done = false, unauth_ok = true, unauth_declined = true;
+    std::string unauth_err;
+    ad::send(
+        loop, unauth_req, cancel, [](bool, uint64_t, uint64_t) {},
+        [&](bool ok, bool declined, const std::string& e) {
+            std::lock_guard<std::mutex> lock(h.mu);
+            unauth_done = true;
+            unauth_ok = ok;
+            unauth_declined = declined;
+            unauth_err = e;
+            h.cv.notify_all();
+        });
+    CHECK(h.wait([&] { return unauth_done; }, 20));
+    CHECK(!unauth_ok && !unauth_declined && unauth_err.find("Everyone for 10 Minutes") != std::string::npos);
 
     std::string xml_rec =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>"
