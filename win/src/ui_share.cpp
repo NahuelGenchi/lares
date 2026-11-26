@@ -926,11 +926,20 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         swprintf(tbuf, 32, L" · %d:%02d left", left / 60, left % 60);
         status_line = (s.link == ShareLink::Up ? L"Visible as " : L"Starting AirDrop as ") + pc_name + tbuf;
     } else if (s.mode == ShareDiscoverMode::ContactsOnly) {
+        size_t verifiable = 0;
+        for (const ShareContact& c : v.contacts) {
+            if ((!c.email.empty() && !share_hash_email(c.email).empty()) ||
+                (!c.phone.empty() && !share_hash_phone_variants(c.phone).empty())) {
+                ++verifiable;
+            }
+        }
         if (v.contacts.empty()) {
-            status_line = L"Contacts Only · Add a contact to verify nearby Apple devices";
+            status_line = L"Contacts Only · Add a contact with an email or phone to verify nearby Apple devices";
+        } else if (verifiable == 0) {
+            status_line = L"Contacts Only · Add an email or phone in Contacts to verify nearby Apple devices";
         } else {
-            status_line = L"Visible to " + std::to_wstring(v.contacts.size()) +
-                          (v.contacts.size() == 1 ? L" contact as " : L" contacts as ") + pc_name;
+            status_line = L"Visible to " + std::to_wstring(verifiable) +
+                          (verifiable == 1 ? L" contact as " : L" contacts as ") + pc_name;
         }
     } else if (share_drag_active_) {
         status_line = L"Drop files on a nearby device to send immediately";
@@ -1583,14 +1592,17 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
     if (share_contacts_open_) {
         const float pad = 24.0f;
         const float mw = std::round(std::min(460.0f, w - 48.0f));
-        const int shown_contacts = std::min<int>(static_cast<int>(v.contacts.size()), 4);
         const float row_h = 56.0f;
         const float row_gap = 6.0f;
+        const float fixed_h = 347.0f;
+        const float avail_list = std::max(row_h, h - 36.0f - fixed_h);
+        const int max_rows = std::clamp(static_cast<int>((avail_list + row_gap) / (row_h + row_gap)), 1, 4);
+        const int shown_contacts = std::min<int>(static_cast<int>(v.contacts.size()), max_rows);
         const float list_h = shown_contacts > 0
                                  ? static_cast<float>(shown_contacts) * row_h +
                                        static_cast<float>(shown_contacts - 1) * row_gap
                                  : 44.0f;
-        const float mh = 283.0f + list_h;
+        const float mh = fixed_h + list_h;
         const float mx = std::round(cx - mw * 0.5f);
         const float my = std::round(y + std::max(18.0f, (h - mh) * 0.5f));
         D2D1_RECT_F mrc = D2D1::RectF(mx, my, mx + mw, my + mh);
@@ -1636,6 +1648,10 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                 const float rcy = std::round(cy_m + row_h * 0.5f);
                 D2D1_RECT_F photo_rc = D2D1::RectF(rcx - av_r, rcy - av_r, rcx + av_r, rcy + av_r);
                 ID2D1Bitmap* cbmp = !c.photo.empty() ? load_share_bitmap(utf8_to_wide(c.photo)) : nullptr;
+                const std::string primary = !c.name.empty() ? c.name
+                                            : !c.device.empty() ? c.device
+                                            : !c.email.empty() ? c.email
+                                                               : c.phone;
                 if (cbmp) {
                     D2D1_SIZE_F sz = cbmp->GetSize();
                     float side = std::max(1.0f, std::min(sz.width, sz.height));
@@ -1650,7 +1666,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                         bbrush->Release();
                     }
                 } else {
-                    auto [tc, bc] = avatar_gradient(c.name.empty() ? c.device : c.name);
+                    auto [tc, bc] = avatar_gradient(primary);
                     D2D1_GRADIENT_STOP stops[2] = { { 0.0f, to_d2d(tc) }, { 1.0f, to_d2d(bc) } };
                     ID2D1GradientStopCollection* gsc = nullptr;
                     ID2D1LinearGradientBrush* gbrush = nullptr;
@@ -1664,7 +1680,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                         }
                         gsc->Release();
                     }
-                    std::wstring wi = utf8_to_wide(share_initials(c.name.empty() ? c.device : c.name));
+                    std::wstring wi = utf8_to_wide(share_initials(primary));
                     draw_centered_text(rt, fonts_.factory(), brush_, wi.c_str(), fonts_.ui_semibold(), photo_rc,
                                        { 1.0f, 1.0f, 1.0f, 0.96f }, DWRITE_TEXT_ALIGNMENT_CENTER, false);
                 }
@@ -1672,8 +1688,16 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                 rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(rcx, rcy), av_r, av_r), brush_, 1.0f);
                 share_hits_.push_back({ photo_rc, ShareActionKind::ContactChangePhoto, std::to_string(i) });
 
-                std::wstring cname = utf8_to_wide(c.name.empty() ? c.device : c.name);
-                std::string sub_str = (!c.device.empty() && c.device != c.name) ? c.device : std::string();
+                std::wstring cname = utf8_to_wide(primary);
+                std::string sub_str;
+                auto append_sub = [&](const std::string& part) {
+                    if (part.empty() || part == primary) return;
+                    if (!sub_str.empty()) sub_str += " \xC2\xB7 ";
+                    sub_str += part;
+                };
+                append_sub(c.device);
+                append_sub(c.email);
+                append_sub(c.phone);
                 const float text_x = rrc.left + 58.0f;
                 const float text_r = rrc.right - 90.0f;
                 if (!sub_str.empty()) {
@@ -1753,7 +1777,10 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         const float half_w = std::floor((mw - pad * 2.0f - col_gap) * 0.5f);
         draw_labeled_field(0, mx + pad, cy_m, half_w, L"Name", L"John", share_draft_name_);
         draw_labeled_field(3, mx + mw - pad - half_w, cy_m, half_w, L"Device Name", L"John's iPhone", share_draft_device_);
-        cy_m += 78.0f;
+        cy_m += 68.0f;
+        draw_labeled_field(1, mx + pad, cy_m, half_w, L"Email", L"Apple ID email", share_draft_email_);
+        draw_labeled_field(2, mx + mw - pad - half_w, cy_m, half_w, L"Phone", L"+1 555-0100", share_draft_phone_);
+        cy_m += 74.0f;
 
         std::wstring photo_btn = share_draft_photo_.empty() ? L"Choose Photo…" : L"Photo Selected";
         mac_button(D2D1::RectF(mx + pad, cy_m, mx + pad + 136.0f, cy_m + 34.0f),
@@ -2226,7 +2253,16 @@ bool MainWindow::share_key_down(WPARAM vk)
             return true;
         }
         if (vk == VK_TAB) {
-            share_contact_field_ = (share_contact_field_ == 0) ? 3 : 0;
+            static const int kOrder[4] = { 0, 3, 1, 2 };
+            int pos = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (kOrder[i] == share_contact_field_) {
+                    pos = i;
+                    break;
+                }
+            }
+            bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            share_contact_field_ = kOrder[(pos + (shift ? 3 : 1)) % 4];
             InvalidateRect(hwnd_, nullptr, FALSE);
             return true;
         }
@@ -2253,6 +2289,7 @@ bool MainWindow::share_key_down(WPARAM vk)
                 share_draft_device_.clear();
                 share_draft_photo_.clear();
                 share_editing_contact_ = -1;
+                share_contact_field_ = 0;
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return true;

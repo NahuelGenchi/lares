@@ -440,6 +440,7 @@ struct Receiver::Impl {
     unsigned next_id = 0;
     bool contacts_only = false;
     std::set<std::string> contact_hashes;
+    std::vector<Bytes> test_roots;
     std::thread acceptor;
     struct Worker {
         std::thread thread;
@@ -752,16 +753,22 @@ struct Conn {
     std::string match_sender_record(const Value& req, bool& contacts_only_out)
     {
         std::set<std::string> allowed;
+        std::vector<Bytes> custom_roots;
         {
             std::lock_guard<std::mutex> lock(r->mu);
             contacts_only_out = r->contacts_only;
             allowed = r->contact_hashes;
+            custom_roots = r->test_roots;
         }
         if (allowed.empty()) return {};
         const Value* rec = req.is(Value::Type::Dict) ? req.find("SenderRecordData", Value::Type::Data) : nullptr;
         if (!rec || rec->get_data().empty()) return {};
         std::vector<std::string> hashes;
-        if (!airdrop_extract_record_hashes(rec->get_data().data(), rec->get_data().size(), hashes)) return {};
+        bool ok = custom_roots.empty()
+                      ? airdrop_extract_record_hashes(rec->get_data().data(), rec->get_data().size(), hashes)
+                      : airdrop_extract_record_hashes_with_roots(rec->get_data().data(), rec->get_data().size(),
+                                                                 custom_roots, hashes);
+        if (!ok) return {};
         for (const std::string& h : hashes) {
             if (allowed.count(h)) return h;
         }
@@ -1263,6 +1270,12 @@ void Receiver::set_policy(bool contacts_only, std::set<std::string> contact_hash
     std::lock_guard<std::mutex> lock(impl_->mu);
     impl_->contacts_only = contacts_only;
     impl_->contact_hashes = std::move(contact_hashes);
+}
+
+void Receiver::set_trusted_roots_for_test(std::vector<std::vector<uint8_t>> roots_der)
+{
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    impl_->test_roots = std::move(roots_der);
 }
 
 // ================================================================== sender
