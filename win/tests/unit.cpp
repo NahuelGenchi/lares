@@ -817,8 +817,21 @@ static void test_share()
           cback[0].phone == "+1 555-0100" && cback[0].photo == "C:\\Pics\\cat.png");
     CHECK(share_contact_hashes(cback).size() == 3);
     CHECK(share_find_contact(cback, "Unknown", share_sha256_hex("susuin@example.com")) != nullptr);
+    CHECK(share_find_contact(cback, "Unknown", share_sha256_hex("+15550100")) != nullptr);
     CHECK(share_find_contact(cback, "susuin") != nullptr);
     CHECK(share_find_contact(cback, "Nobody") == nullptr);
+
+    /* Contact without email or phone yields no Contacts Only hashes until edited. */
+    std::vector<ShareContact> dev_only = { { "Alex", "Alex's iPhone", "", "", "" } };
+    CHECK(share_contact_hashes(dev_only).empty());
+    dev_only[0].email = "Alex@Example.com";
+    dev_only[0].phone = "+1 (555) 010-9999";
+    auto edited = parse_contacts_ini(serialize_contacts_ini(dev_only));
+    CHECK(edited.size() == 1 && edited[0].email == "Alex@Example.com" && edited[0].phone == "+1 (555) 010-9999");
+    auto edited_hashes = share_contact_hashes(edited);
+    CHECK(edited_hashes.size() == 3);
+    CHECK(share_find_contact(edited, "Unknown", share_sha256_hex("alex@example.com")) != nullptr);
+    CHECK(share_find_contact(edited, "Unknown", share_sha256_hex("15550109999")) != nullptr);
 
     /* iOS curly apostrophe (U+2019) and possessive owner-prefix matching. */
     std::vector<ShareContact> apost = {

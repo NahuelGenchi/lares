@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Validation-record parsing for AirDrop's Contacts Only mode (SPEC §7, ID-1
- * to ID-3): unwraps an Apple CMS SignedData blob and reads its
- * ValidatedEmailHashes and ValidatedPhoneHashes from either an XML plist or
- * a binary plist. Hashes are never logged (SEC-5). */
+/* Validation-record verification and parsing for AirDrop's Contacts Only mode
+ * (SPEC §7, ID-1 to ID-3, issue #113): verifies a DER-encoded CMS SignedData
+ * blob with Windows CryptoAPI, checks that its signer certificate chains
+ * exclusively to Apple's embedded Root CAs (never trusting Windows' system
+ * roots or accepting unsigned plists), and extracts ValidatedEmailHashes and
+ * ValidatedPhoneHashes from the signed XML or binary plist payload. Hashes are
+ * never logged (SEC-5). */
 #include "formats.h"
+#include "apple_ca.h"
 
 #include <algorithm>
 #include <cctype>
@@ -21,6 +25,7 @@ namespace {
 
 constexpr size_t kMaxRecordBytes = 256 * 1024;
 constexpr size_t kMaxHashes = 64;
+constexpr DWORD kMaxSignersToCheck = 8;
 
 bool is_hex64(const std::string& s)
 {
@@ -94,7 +99,6 @@ void collect_xml_array(const std::string& xml, const char* key, std::vector<std:
         size_t s1 = xml.find("</string>", s0);
         if (s1 == std::string::npos || s1 > arr_end) break;
         std::string val = xml.substr(s0, s1 - s0);
-        // Trim whitespace around the hex digest
         size_t a = 0, b = val.size();
         while (a < b && std::isspace(static_cast<unsigned char>(val[a]))) ++a;
         while (b > a && std::isspace(static_cast<unsigned char>(val[b - 1]))) --b;
@@ -102,137 +106,6 @@ void collect_xml_array(const std::string& xml, const char* key, std::vector<std:
         cur = s1 + 9;
     }
 }
-
-/* Minimal DER TLV reader for extracting encapsulated OCTET STRING content
- * inside a CMS SignedData envelope when CryptoAPI isn't used or has no signer. */
-bool der_read_tlv(const uint8_t* buf, size_t len, size_t& pos, uint8_t& tag, const uint8_t*& val, size_t& vlen)
-{
-    if (pos >= len) return false;
-    tag = buf[pos++];
-    if (pos >= len) return false;
-    uint8_t first = buf[pos++];
-    if (first < 0x80) {
-        vlen = first;
-    } else {
-        size_t nbytes = first & 0x7f;
-        if (nbytes == 0 || nbytes > 4 || pos + nbytes > len) return false;
-        vlen = 0;
-        for (size_t i = 0; i < nbytes; ++i) vlen = (vlen << 8) | buf[pos++];
-    }
-    if (pos + vlen > len) return false;
-    val = buf + pos;
-    pos += vlen;
-    return true;
-}
-
-/* Walks CMS ContentInfo -> SignedData -> encapContentInfo -> [0] OCTET STRING. */
-bool extract_der_cms_content(const uint8_t* data, size_t len, Bytes& out)
-{
-    static const uint8_t kOidSignedData[] = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02 };
-    size_t pos = 0;
-    uint8_t tag = 0;
-    const uint8_t* v = nullptr;
-    size_t vl = 0;
-    if (!der_read_tlv(data, len, pos, tag, v, vl) || tag != 0x30) return false;
-
-    size_t p1 = 0;
-    const uint8_t* oid = nullptr;
-    size_t oid_len = 0;
-    if (!der_read_tlv(v, vl, p1, tag, oid, oid_len) || tag != 0x06) return false;
-    if (oid_len != sizeof(kOidSignedData) || std::memcmp(oid, kOidSignedData, oid_len) != 0) return false;
-
-    // [0] EXPLICIT SignedData
-    const uint8_t* ctx0 = nullptr;
-    size_t ctx0_len = 0;
-    if (!der_read_tlv(v, vl, p1, tag, ctx0, ctx0_len) || tag != 0xa0) return false;
-
-    size_t p2 = 0;
-    const uint8_t* sd = nullptr;
-    size_t sd_len = 0;
-    if (!der_read_tlv(ctx0, ctx0_len, p2, tag, sd, sd_len) || tag != 0x30) return false;
-
-    // SignedData ::= SEQUENCE { version, digestAlgorithms, encapContentInfo, ... }
-    size_t p3 = 0;
-    const uint8_t* skip = nullptr;
-    size_t skip_len = 0;
-    if (!der_read_tlv(sd, sd_len, p3, tag, skip, skip_len) || tag != 0x02) return false; // version
-    if (!der_read_tlv(sd, sd_len, p3, tag, skip, skip_len) || tag != 0x31) return false; // digestAlgorithms
-    const uint8_t* eci = nullptr;
-    size_t eci_len = 0;
-    if (!der_read_tlv(sd, sd_len, p3, tag, eci, eci_len) || tag != 0x30) return false;   // encapContentInfo
-
-    // encapContentInfo ::= SEQUENCE { eContentType OID, [0] EXPLICIT OCTET STRING }
-    size_t p4 = 0;
-    if (!der_read_tlv(eci, eci_len, p4, tag, skip, skip_len) || tag != 0x06) return false;
-    const uint8_t* ec0 = nullptr;
-    size_t ec0_len = 0;
-    if (!der_read_tlv(eci, eci_len, p4, tag, ec0, ec0_len) || tag != 0xa0) return false;
-
-    size_t p5 = 0;
-    const uint8_t* oct = nullptr;
-    size_t oct_len = 0;
-    if (!der_read_tlv(ec0, ec0_len, p5, tag, oct, oct_len) || tag != 0x04) return false;
-    out.assign(oct, oct + oct_len);
-    return true;
-}
-
-#ifdef _WIN32
-/* Unwraps a CMS SignedData message with Windows CryptoAPI and verifies any
- * embedded signer's cryptographic signature over the content. Sets `sig_failed`
- * if a signer was present and its signature failed verification. */
-bool extract_win_cms_content(const uint8_t* data, size_t len, Bytes& out, bool& sig_failed)
-{
-    sig_failed = false;
-    HCRYPTMSG msg = CryptMsgOpenToDecode(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, 0, 0, nullptr, nullptr);
-    if (!msg) return false;
-    bool ok = false;
-    if (CryptMsgUpdate(msg, data, static_cast<DWORD>(len), TRUE)) {
-        DWORD content_len = 0;
-        if (CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, nullptr, &content_len) && content_len > 0 &&
-            content_len <= kMaxRecordBytes) {
-            Bytes payload(content_len);
-            if (CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, payload.data(), &content_len)) {
-                payload.resize(content_len);
-                DWORD signer_count = 0;
-                DWORD sc_size = sizeof(signer_count);
-                bool sig_ok = true;
-                if (CryptMsgGetParam(msg, CMSG_SIGNER_COUNT_PARAM, 0, &signer_count, &sc_size) && signer_count > 0) {
-                    DWORD cert_count = 0;
-                    DWORD cc_size = sizeof(cert_count);
-                    if (CryptMsgGetParam(msg, CMSG_CERT_COUNT_PARAM, 0, &cert_count, &cc_size) && cert_count > 0) {
-                        HCERTSTORE store = CertOpenStore(CERT_STORE_PROV_MSG, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                                                         0, 0, msg);
-                        if (store) {
-                            DWORD si_size = 0;
-                            if (CryptMsgGetParam(msg, CMSG_SIGNER_CERT_INFO_PARAM, 0, nullptr, &si_size) && si_size > 0) {
-                                Bytes si_buf(si_size);
-                                if (CryptMsgGetParam(msg, CMSG_SIGNER_CERT_INFO_PARAM, 0, si_buf.data(), &si_size)) {
-                                    PCCERT_CONTEXT cert = CertGetSubjectCertificateFromStore(
-                                        store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                                        reinterpret_cast<PCERT_INFO>(si_buf.data()));
-                                    if (cert) {
-                                        sig_ok = CryptMsgControl(msg, 0, CMSG_CTRL_VERIFY_SIGNATURE, cert->pCertInfo) != FALSE;
-                                        CertFreeCertificateContext(cert);
-                                    }
-                                }
-                            }
-                            CertCloseStore(store, 0);
-                        }
-                    }
-                }
-                if (sig_ok) {
-                    out = std::move(payload);
-                    ok = true;
-                } else {
-                    sig_failed = true;
-                }
-            }
-        }
-    }
-    CryptMsgClose(msg);
-    return ok;
-}
-#endif
 
 bool parse_payload_hashes(const uint8_t* payload, size_t len, std::vector<std::string>& out)
 {
@@ -244,7 +117,6 @@ bool parse_payload_hashes(const uint8_t* payload, size_t len, std::vector<std::s
         collect_bplist_array(v, "ValidatedPhoneHashes", out);
         return !out.empty();
     }
-    // Check for XML plist
     std::string text(reinterpret_cast<const char*>(payload), len);
     if (text.find("<plist") != std::string::npos || text.find("ValidatedEmailHashes") != std::string::npos ||
         text.find("ValidatedPhoneHashes") != std::string::npos) {
@@ -255,27 +127,318 @@ bool parse_payload_hashes(const uint8_t* payload, size_t len, std::vector<std::s
     return false;
 }
 
+#ifdef _WIN32
+
+bool is_known_standard_critical_oid(const char* oid)
+{
+    static const char* const kKnown[] = {
+        szOID_KEY_USAGE,
+        szOID_BASIC_CONSTRAINTS,
+        szOID_BASIC_CONSTRAINTS2,
+        szOID_CERT_POLICIES,
+        szOID_ENHANCED_KEY_USAGE,
+        szOID_SUBJECT_ALT_NAME,
+        szOID_SUBJECT_ALT_NAME2,
+        szOID_NAME_CONSTRAINTS,
+        szOID_POLICY_CONSTRAINTS,
+        szOID_INHIBIT_ANY_POLICY,
+        szOID_SUBJECT_KEY_IDENTIFIER,
+        szOID_AUTHORITY_KEY_IDENTIFIER,
+        szOID_AUTHORITY_KEY_IDENTIFIER2,
+        szOID_CRL_DIST_POINTS,
+    };
+    if (!oid) return false;
+    for (const char* k : kKnown) {
+        if (std::strcmp(oid, k) == 0) return true;
+    }
+    return false;
+}
+
+bool is_apple_private_oid(const char* oid)
+{
+    static constexpr char kAppleArc[] = "1.2.840.113635.";
+    return oid && std::strncmp(oid, kAppleArc, sizeof(kAppleArc) - 1) == 0;
+}
+
+/* Apple PKI leaf/intermediate certificates can mark proprietary marker OIDs
+ * under 1.2.840.113635.* as critical. Allow ignoring unsupported critical
+ * extensions only when every unrecognized critical extension in the chain is
+ * under Apple's OID arc (never for arbitrary unknown critical extensions). */
+bool chain_has_only_apple_unknown_critical_exts(PCCERT_SIMPLE_CHAIN simple)
+{
+    if (!simple) return false;
+    bool saw_apple_critical = false;
+    for (DWORD i = 0; i < simple->cElement; ++i) {
+        PCCERT_CONTEXT c = simple->rgpElement[i]->pCertContext;
+        if (!c || !c->pCertInfo) return false;
+        for (DWORD e = 0; e < c->pCertInfo->cExtension; ++e) {
+            const CERT_EXTENSION& ext = c->pCertInfo->rgExtension[e];
+            if (!ext.fCritical) continue;
+            if (is_known_standard_critical_oid(ext.pszObjId)) continue;
+            if (is_apple_private_oid(ext.pszObjId)) {
+                saw_apple_critical = true;
+                continue;
+            }
+            return false;
+        }
+    }
+    return saw_apple_critical;
+}
+
+/* Verifies `cert` against an exclusive trust-anchor store (`roots`) using an
+ * isolated CryptoAPI chain engine: Windows' system Root and TrustedPeople
+ * stores are excluded, AIA network fetches are disabled, and the chain must
+ * have length >= 2 (a CA-issued certificate, never a bare self-signed cert)
+ * terminating at a certificate present in `roots`. */
+bool verify_cert_chain(PCCERT_CONTEXT cert, HCERTSTORE msg_store,
+                       const DerCertSpan* roots, size_t root_count,
+                       const DerCertSpan* intermediates, size_t inter_count)
+{
+    if (!cert || !roots || root_count == 0) return false;
+
+    HCERTSTORE root_store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, nullptr);
+    if (!root_store) return false;
+    bool any_root = false;
+    for (size_t i = 0; i < root_count; ++i) {
+        if (roots[i].data && roots[i].len > 0 &&
+            CertAddEncodedCertificateToStore(root_store, X509_ASN_ENCODING, roots[i].data,
+                                             static_cast<DWORD>(roots[i].len), CERT_STORE_ADD_USE_EXISTING, nullptr)) {
+            any_root = true;
+        }
+    }
+    if (!any_root) {
+        CertCloseStore(root_store, 0);
+        return false;
+    }
+
+    HCERTSTORE inter_store = nullptr;
+    if (intermediates && inter_count > 0) {
+        inter_store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, nullptr);
+        if (inter_store) {
+            for (size_t i = 0; i < inter_count; ++i) {
+                if (intermediates[i].data && intermediates[i].len > 0) {
+                    CertAddEncodedCertificateToStore(inter_store, X509_ASN_ENCODING, intermediates[i].data,
+                                                     static_cast<DWORD>(intermediates[i].len),
+                                                     CERT_STORE_ADD_USE_EXISTING, nullptr);
+                }
+            }
+        }
+    }
+
+    CERT_CHAIN_ENGINE_CONFIG cfg{};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hExclusiveRoot = root_store;
+    if (inter_store) {
+        cfg.cAdditionalStore = 1;
+        cfg.rghAdditionalStore = &inter_store;
+    }
+    cfg.dwFlags = CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL | CERT_CHAIN_DISABLE_AIA;
+
+    HCERTCHAINENGINE engine = nullptr;
+    bool verified = false;
+    if (CertCreateCertificateChainEngine(&cfg, &engine) && engine) {
+        CERT_CHAIN_PARA para{};
+        para.cbSize = sizeof(para);
+        PCCERT_CHAIN_CONTEXT chain = nullptr;
+        DWORD flags = CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL |
+                      CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE |
+                      CERT_CHAIN_DISABLE_MY_PEER_TRUST |
+                      CERT_CHAIN_DISABLE_AIA;
+        if (CertGetCertificateChain(engine, cert, nullptr, msg_store, &para, flags, nullptr, &chain) && chain) {
+            if (chain->cChain >= 1 && chain->rgpChain[0] && chain->rgpChain[0]->cElement >= 2) {
+                PCCERT_SIMPLE_CHAIN simple = chain->rgpChain[0];
+                PCCERT_CONTEXT top = simple->rgpElement[simple->cElement - 1]->pCertContext;
+                PCCERT_CONTEXT anchor = top ? CertFindCertificateInStore(root_store, X509_ASN_ENCODING, 0,
+                                                                         CERT_FIND_EXISTING, top, nullptr)
+                                            : nullptr;
+                if (anchor) {
+                    CertFreeCertificateContext(anchor);
+                    DWORD err = chain->TrustStatus.dwErrorStatus;
+                    DWORD policy_flags = 0;
+                    bool status_ok = (err == CERT_TRUST_NO_ERROR);
+                    if (!status_ok && (err & ~static_cast<DWORD>(CERT_TRUST_HAS_NOT_SUPPORTED_CRITICAL_EXT |
+                                                                 CERT_TRUST_INVALID_EXTENSION)) == 0 &&
+                        chain_has_only_apple_unknown_critical_exts(simple)) {
+                        policy_flags = CERT_CHAIN_POLICY_IGNORE_NOT_SUPPORTED_CRITICAL_EXT_FLAG;
+                        status_ok = true;
+                    }
+                    if (status_ok) {
+                        CERT_CHAIN_POLICY_PARA ppara{};
+                        ppara.cbSize = sizeof(ppara);
+                        ppara.dwFlags = policy_flags;
+                        CERT_CHAIN_POLICY_STATUS pstatus{};
+                        pstatus.cbSize = sizeof(pstatus);
+                        BOOL pol_ok = CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_BASE, chain, &ppara, &pstatus);
+                        if (pol_ok && pstatus.dwError == static_cast<DWORD>(CERT_E_CRITICAL) && policy_flags == 0 &&
+                            chain_has_only_apple_unknown_critical_exts(simple)) {
+                            ppara.dwFlags = CERT_CHAIN_POLICY_IGNORE_NOT_SUPPORTED_CRITICAL_EXT_FLAG;
+                            pstatus = {};
+                            pstatus.cbSize = sizeof(pstatus);
+                            pol_ok = CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_BASE, chain, &ppara, &pstatus);
+                        }
+                        if (pol_ok && pstatus.dwError == 0) {
+                            verified = true;
+                        }
+                    }
+                }
+            }
+            CertFreeCertificateChain(chain);
+        }
+        CertFreeCertificateChainEngine(engine);
+    }
+
+    if (inter_store) CertCloseStore(inter_store, 0);
+    CertCloseStore(root_store, 0);
+    return verified;
+}
+
+/* Decodes a CMS SignedData message, requires at least one signer with a valid
+ * cryptographic signature over the encapsulated content (CMSG_CTRL_VERIFY_SIGNATURE_EX),
+ * and requires the signer certificate to chain cleanly to `roots`. */
+bool extract_verified_cms_content(const uint8_t* data, size_t len,
+                                  const DerCertSpan* roots, size_t root_count,
+                                  const DerCertSpan* intermediates, size_t inter_count,
+                                  Bytes& out)
+{
+    if (!data || len == 0 || len > kMaxRecordBytes || !roots || root_count == 0) return false;
+    HCRYPTMSG msg = CryptMsgOpenToDecode(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, 0, 0, nullptr, nullptr);
+    if (!msg) return false;
+
+    bool ok = false;
+    do {
+        if (!CryptMsgUpdate(msg, data, static_cast<DWORD>(len), TRUE)) break;
+
+        DWORD msg_type = 0;
+        DWORD mt_size = sizeof(msg_type);
+        if (!CryptMsgGetParam(msg, CMSG_TYPE_PARAM, 0, &msg_type, &mt_size) || msg_type != CMSG_SIGNED) break;
+
+        DWORD content_len = 0;
+        if (!CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, nullptr, &content_len) ||
+            content_len == 0 || content_len > kMaxRecordBytes) {
+            break;
+        }
+        Bytes payload(content_len);
+        if (!CryptMsgGetParam(msg, CMSG_CONTENT_PARAM, 0, payload.data(), &content_len) || content_len == 0) break;
+        payload.resize(content_len);
+
+        DWORD signer_count = 0;
+        DWORD sc_size = sizeof(signer_count);
+        if (!CryptMsgGetParam(msg, CMSG_SIGNER_COUNT_PARAM, 0, &signer_count, &sc_size) || signer_count == 0) break;
+
+        HCERTSTORE msg_store = CertOpenStore(CERT_STORE_PROV_MSG, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                                             0, 0, msg);
+        if (!msg_store) break;
+
+        DWORD check_limit = std::min<DWORD>(signer_count, kMaxSignersToCheck);
+        for (DWORD idx = 0; idx < check_limit && !ok; ++idx) {
+            PCCERT_CONTEXT cert = nullptr;
+
+            /* Prefer CMSG_SIGNER_CERT_ID_PARAM (handles both IssuerAndSerialNumber
+             * and SubjectKeyIdentifier SignerIdentifiers per RFC 5652). */
+            DWORD id_size = 0;
+            if (CryptMsgGetParam(msg, CMSG_SIGNER_CERT_ID_PARAM, idx, nullptr, &id_size) && id_size > 0) {
+                Bytes id_buf(id_size);
+                if (CryptMsgGetParam(msg, CMSG_SIGNER_CERT_ID_PARAM, idx, id_buf.data(), &id_size)) {
+                    cert = CertFindCertificateInStore(msg_store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                                                      0, CERT_FIND_CERT_ID, id_buf.data(), nullptr);
+                }
+            }
+            if (!cert) {
+                DWORD si_size = 0;
+                if (CryptMsgGetParam(msg, CMSG_SIGNER_CERT_INFO_PARAM, idx, nullptr, &si_size) && si_size > 0) {
+                    Bytes si_buf(si_size);
+                    if (CryptMsgGetParam(msg, CMSG_SIGNER_CERT_INFO_PARAM, idx, si_buf.data(), &si_size)) {
+                        cert = CertGetSubjectCertificateFromStore(
+                            msg_store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                            reinterpret_cast<PCERT_INFO>(si_buf.data()));
+                    }
+                }
+            }
+            if (!cert) continue;
+
+            CMSG_CTRL_VERIFY_SIGNATURE_EX_PARA vpara{};
+            vpara.cbSize = sizeof(vpara);
+            vpara.dwSignerIndex = idx;
+            vpara.dwSignerType = CMSG_VERIFY_SIGNER_CERT;
+            vpara.pvSigner = const_cast<PCERT_CONTEXT>(cert);
+
+            bool sig_ok = CryptMsgControl(msg, 0, CMSG_CTRL_VERIFY_SIGNATURE_EX, &vpara) != FALSE;
+            if (sig_ok && verify_cert_chain(cert, msg_store, roots, root_count, intermediates, inter_count)) {
+                out = std::move(payload);
+                ok = true;
+            }
+            CertFreeCertificateContext(cert);
+        }
+
+        CertCloseStore(msg_store, 0);
+    } while (false);
+
+    CryptMsgClose(msg);
+    return ok;
+}
+
+#endif // _WIN32
+
 } // namespace
 
 bool airdrop_extract_record_hashes(const uint8_t* data, size_t len, std::vector<std::string>& out_hashes)
 {
     out_hashes.clear();
-    if (!data || len == 0 || len > kMaxRecordBytes) return false;
-
-    // 1. Try CMS SignedData unwrap first (what Apple sends in SenderRecordData).
-    Bytes payload;
 #ifdef _WIN32
-    bool sig_failed = false;
-    if (extract_win_cms_content(data, len, payload, sig_failed)) {
-        return parse_payload_hashes(payload.data(), payload.size(), out_hashes);
+    Bytes payload;
+    if (!extract_verified_cms_content(data, len, kAppleRootCerts, std::size(kAppleRootCerts),
+                                      kAppleIntermediateCerts, std::size(kAppleIntermediateCerts), payload)) {
+        return false;
     }
-    if (sig_failed) return false;
+    return parse_payload_hashes(payload.data(), payload.size(), out_hashes);
+#else
+    (void)data;
+    (void)len;
+    return false;
 #endif
-    if (extract_der_cms_content(data, len, payload)) {
-        return parse_payload_hashes(payload.data(), payload.size(), out_hashes);
+}
+
+bool airdrop_extract_record_hashes_with_roots(const uint8_t* data, size_t len,
+                                              const std::vector<Bytes>& trusted_roots_der,
+                                              std::vector<std::string>& out_hashes)
+{
+    out_hashes.clear();
+#ifdef _WIN32
+    if (trusted_roots_der.empty()) return false;
+    std::vector<DerCertSpan> spans;
+    spans.reserve(trusted_roots_der.size());
+    for (const Bytes& r : trusted_roots_der) {
+        if (!r.empty()) spans.push_back({ r.data(), r.size() });
     }
-    // 2. Fallback: raw inner plist (for direct/synthetic validation records).
-    return parse_payload_hashes(data, len, out_hashes);
+    if (spans.empty()) return false;
+    Bytes payload;
+    if (!extract_verified_cms_content(data, len, spans.data(), spans.size(), nullptr, 0, payload)) {
+        return false;
+    }
+    return parse_payload_hashes(payload.data(), payload.size(), out_hashes);
+#else
+    (void)data;
+    (void)len;
+    (void)trusted_roots_der;
+    return false;
+#endif
+}
+
+bool airdrop_verify_apple_cert(const uint8_t* cert_der, size_t len)
+{
+#ifdef _WIN32
+    if (!cert_der || len == 0 || len > kMaxRecordBytes) return false;
+    PCCERT_CONTEXT cert = CertCreateCertificateContext(X509_ASN_ENCODING, cert_der, static_cast<DWORD>(len));
+    if (!cert) return false;
+    bool ok = verify_cert_chain(cert, nullptr, kAppleRootCerts, std::size(kAppleRootCerts),
+                                kAppleIntermediateCerts, std::size(kAppleIntermediateCerts));
+    CertFreeCertificateContext(cert);
+    return ok;
+#else
+    (void)cert_der;
+    (void)len;
+    return false;
+#endif
 }
 
 } // namespace lares::airdrop

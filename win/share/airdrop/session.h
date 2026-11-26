@@ -83,6 +83,9 @@ public:
     void answer(unsigned id, bool accept);
     /* Updates Contacts Only filtering and allowed contact SHA-256 hashes live (ID-3). */
     void set_policy(bool contacts_only, std::set<std::string> contact_hashes);
+    /* Overrides trusted CA roots for CMS SenderRecordData verification in
+     * loopback unit tests. Empty (the default) uses Apple's embedded Root CAs. */
+    void set_trusted_roots_for_test(std::vector<std::vector<uint8_t>> roots_der);
 
     struct Impl;
 

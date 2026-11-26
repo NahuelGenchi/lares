@@ -12,7 +12,9 @@
  * Python's plistlib, which lays a plist out as Core Foundation does,
  * sharing repeated values. Every other input is built here by hand. */
 #include "share_check.h"
+#include "share_cms_test.h"
 
+#include "apple_ca.h"
 #include "formats.h"
 #include "zlib.h"
 
@@ -2838,17 +2840,45 @@ void test_record_hashes()
 {
     const std::string h1 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const std::string h2 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const std::string h1_upper = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
 
-    /* 1. XML plist inside a minimal DER CMS SignedData envelope. */
     std::string xml =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<plist version=\"1.0\"><dict>"
-        "<key>ValidatedEmailHashes</key><array><string>" + h1 + "</string><string>not-a-hash</string></array>"
+        "<key>ValidatedEmailHashes</key><array><string>" + h1_upper + "</string><string>not-a-hash</string></array>"
         "<key>ValidatedPhoneHashes</key><array><string>" + h2 + "</string></array>"
         "</dict></plist>";
-    Bytes oct = wrap_der(0x04, Bytes(xml.begin(), xml.end()));
+    Bytes xml_bytes(xml.begin(), xml.end());
+
+    Value root = Value::dict();
+    Value emails = Value::array();
+    emails.push(Value::string(h1));
+    root.add("ValidatedEmailHashes", std::move(emails));
+    Bytes h2_raw(32);
+    for (size_t i = 0; i < 32; ++i) {
+        auto hexval = [](char c) -> uint8_t {
+            return static_cast<uint8_t>(c >= 'a' ? c - 'a' + 10 : c - '0');
+        };
+        h2_raw[i] = static_cast<uint8_t>((hexval(h2[i * 2]) << 4) | hexval(h2[i * 2 + 1]));
+    }
+    Value phones = Value::array();
+    phones.push(Value::data(h2_raw));
+    root.add("ValidatedPhoneHashes", std::move(phones));
+    Error err;
+    Bytes bp;
+    CHECK(bplist_encode(root, bp, &err));
+
+    std::vector<std::string> got;
+
+    /* 1. Unsigned raw XML plist and unsigned raw binary plist MUST be rejected. */
+    CHECK(!airdrop_extract_record_hashes(xml_bytes.data(), xml_bytes.size(), got));
+    CHECK(got.empty());
+    CHECK(!airdrop_extract_record_hashes(bp.data(), bp.size(), got));
+    CHECK(got.empty());
+
+    /* 2. Unsigned CMS SignedData (signerInfos = {}) MUST be rejected. */
+    Bytes oct = wrap_der(0x04, xml_bytes);
     Bytes ctx0 = wrap_der(0xA0, oct);
-    /* OID 1.2.840.113549.1.7.1 (id-data) */
     Bytes oid_data = { 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01 };
     Bytes encap = oid_data;
     encap.insert(encap.end(), ctx0.begin(), ctx0.end());
@@ -2862,27 +2892,115 @@ void test_record_hashes()
     Bytes ci_body = oid_sd;
     Bytes sd_ctx = wrap_der(0xA0, signed_seq);
     ci_body.insert(ci_body.end(), sd_ctx.begin(), sd_ctx.end());
-    Bytes cms = wrap_der(0x30, ci_body);
+    Bytes unsigned_cms = wrap_der(0x30, ci_body);
+    CHECK(!airdrop_extract_record_hashes(unsigned_cms.data(), unsigned_cms.size(), got));
+    CHECK(got.empty());
 
-    std::vector<std::string> got;
-    CHECK(airdrop_extract_record_hashes(cms.data(), cms.size(), got));
+    /* 3. Self-signed CMS SignedData MUST be rejected by both Apple-pinned and test-root paths. */
+    test_cms::EphemeralCert self_cert;
+    CHECK(test_cms::make_cert({ L"CN=Forged Self-Signed", false, false, -1, 7, nullptr }, nullptr, self_cert));
+    Bytes self_cms;
+    CHECK(test_cms::sign_cms(self_cert, { &self_cert }, xml_bytes.data(), xml_bytes.size(), self_cms));
+    CHECK(!airdrop_extract_record_hashes(self_cms.data(), self_cms.size(), got));
+    CHECK(got.empty());
+    CHECK(!airdrop_extract_record_hashes_with_roots(self_cms.data(), self_cms.size(), { self_cert.der }, got));
+    CHECK(got.empty());
+
+    /* 4. Valid ECDSA Root -> Intermediate -> Leaf chain: rejected against Apple CA, accepted against its own Root. */
+    test_cms::EphemeralCert ec_root, ec_inter, ec_leaf;
+    CHECK(test_cms::make_cert({ L"CN=Test Root EC", true, false, -1, 30, nullptr }, nullptr, ec_root));
+    CHECK(test_cms::make_cert({ L"CN=Test Inter EC", true, false, -1, 15, nullptr }, &ec_root, ec_inter));
+    CHECK(test_cms::make_cert({ L"CN=Test Leaf EC", false, false, -1, 7, nullptr }, &ec_inter, ec_leaf));
+    Bytes ec_cms_xml, ec_cms_bp;
+    CHECK(test_cms::sign_cms(ec_leaf, { &ec_leaf, &ec_inter }, xml_bytes.data(), xml_bytes.size(), ec_cms_xml));
+    CHECK(test_cms::sign_cms(ec_leaf, { &ec_leaf, &ec_inter }, bp.data(), bp.size(), ec_cms_bp));
+
+    /* Untrusted CA chain MUST be rejected by production Apple CA verifier. */
+    CHECK(!airdrop_extract_record_hashes(ec_cms_xml.data(), ec_cms_xml.size(), got));
+    CHECK(got.empty());
+    CHECK(!airdrop_extract_record_hashes(ec_cms_bp.data(), ec_cms_bp.size(), got));
+    CHECK(got.empty());
+    /* Unsigned plist still rejected even when a test root is supplied. */
+    CHECK(!airdrop_extract_record_hashes_with_roots(xml_bytes.data(), xml_bytes.size(), { ec_root.der }, got));
+    CHECK(!airdrop_extract_record_hashes_with_roots(unsigned_cms.data(), unsigned_cms.size(), { ec_root.der }, got));
+
+    /* Verified against its own test root: both XML and binary plist payloads succeed. */
+    CHECK(airdrop_extract_record_hashes_with_roots(ec_cms_xml.data(), ec_cms_xml.size(), { ec_root.der }, got));
     CHECK(got.size() == 2);
     CHECK(std::find(got.begin(), got.end(), h1) != got.end());
     CHECK(std::find(got.begin(), got.end(), h2) != got.end());
 
-    /* 2. Binary plist payload. */
-    Value root = Value::dict();
-    Value emails = Value::array();
-    emails.push(Value::string(h1));
-    root.add("ValidatedEmailHashes", std::move(emails));
-    Error err;
-    Bytes bp;
-    CHECK(bplist_encode(root, bp, &err));
-    got.clear();
-    CHECK(airdrop_extract_record_hashes(bp.data(), bp.size(), got));
-    CHECK(got.size() == 1 && got[0] == h1);
+    CHECK(airdrop_extract_record_hashes_with_roots(ec_cms_bp.data(), ec_cms_bp.size(), { ec_root.der }, got));
+    CHECK(got.size() == 2);
+    CHECK(std::find(got.begin(), got.end(), h1) != got.end());
+    CHECK(std::find(got.begin(), got.end(), h2) != got.end());
 
-    /* 3. Empty and garbage inputs rejected cleanly. */
+    /* 5. RSA-2048 CA -> Leaf chain also verifies cleanly. */
+    test_cms::EphemeralCert rsa_root, rsa_leaf;
+    CHECK(test_cms::make_cert({ L"CN=Test Root RSA", true, true, -1, 30, nullptr }, nullptr, rsa_root));
+    CHECK(test_cms::make_cert({ L"CN=Test Leaf RSA", false, true, -1, 7, nullptr }, &rsa_root, rsa_leaf));
+    Bytes rsa_cms;
+    CHECK(test_cms::sign_cms(rsa_leaf, { &rsa_leaf }, xml_bytes.data(), xml_bytes.size(), rsa_cms));
+    CHECK(!airdrop_extract_record_hashes(rsa_cms.data(), rsa_cms.size(), got));
+    CHECK(!airdrop_extract_record_hashes_with_roots(rsa_cms.data(), rsa_cms.size(), { ec_root.der }, got));
+    CHECK(airdrop_extract_record_hashes_with_roots(rsa_cms.data(), rsa_cms.size(), { rsa_root.der }, got));
+    CHECK(got.size() == 2);
+
+    /* 6. Tampered CMS payload or signature MUST be rejected. */
+    Bytes tampered = ec_cms_xml;
+    size_t pos = std::string(reinterpret_cast<const char*>(tampered.data()), tampered.size()).find(h1_upper);
+    CHECK(pos != std::string::npos);
+    if (pos != std::string::npos) {
+        tampered[pos] = (tampered[pos] == 'B') ? 'A' : 'B';
+        CHECK(!airdrop_extract_record_hashes_with_roots(tampered.data(), tampered.size(), { ec_root.der }, got));
+        CHECK(got.empty());
+    }
+
+    /* 7. Expired leaf certificate MUST be rejected. */
+    test_cms::EphemeralCert exp_leaf;
+    CHECK(test_cms::make_cert({ L"CN=Expired Leaf", false, false, -10, -1, nullptr }, &ec_inter, exp_leaf));
+    Bytes exp_cms;
+    CHECK(test_cms::sign_cms(exp_leaf, { &exp_leaf, &ec_inter }, xml_bytes.data(), xml_bytes.size(), exp_cms));
+    CHECK(!airdrop_extract_record_hashes_with_roots(exp_cms.data(), exp_cms.size(), { ec_root.der }, got));
+    CHECK(got.empty());
+
+    /* 8. Leaf signed by a non-CA leaf MUST be rejected (BasicConstraints CA:FALSE). */
+    test_cms::EphemeralCert fake_sub;
+    CHECK(test_cms::make_cert({ L"CN=Fake Sub", false, false, -1, 7, nullptr }, &ec_leaf, fake_sub));
+    Bytes fake_sub_cms;
+    CHECK(test_cms::sign_cms(fake_sub, { &fake_sub, &ec_leaf, &ec_inter }, xml_bytes.data(), xml_bytes.size(),
+                             fake_sub_cms));
+    CHECK(!airdrop_extract_record_hashes_with_roots(fake_sub_cms.data(), fake_sub_cms.size(), { ec_root.der }, got));
+    CHECK(got.empty());
+
+    /* 9. Critical extension handling: Apple marker OID (1.2.840.113635.*) allowed,
+     * arbitrary unknown critical OID rejected. */
+    test_cms::EphemeralCert apple_ext_leaf, foreign_ext_leaf;
+    CHECK(test_cms::make_cert({ L"CN=Apple Ext Leaf", false, false, -1, 7, "1.2.840.113635.100.6.25" },
+                              &ec_inter, apple_ext_leaf));
+    CHECK(test_cms::make_cert({ L"CN=Foreign Ext Leaf", false, false, -1, 7, "1.3.6.1.4.1.99999.1" },
+                              &ec_inter, foreign_ext_leaf));
+    Bytes apple_ext_cms, foreign_ext_cms;
+    CHECK(test_cms::sign_cms(apple_ext_leaf, { &apple_ext_leaf, &ec_inter }, xml_bytes.data(), xml_bytes.size(),
+                             apple_ext_cms));
+    CHECK(test_cms::sign_cms(foreign_ext_leaf, { &foreign_ext_leaf, &ec_inter }, xml_bytes.data(), xml_bytes.size(),
+                             foreign_ext_cms));
+    CHECK(airdrop_extract_record_hashes_with_roots(apple_ext_cms.data(), apple_ext_cms.size(), { ec_root.der }, got));
+    CHECK(got.size() == 2);
+    CHECK(!airdrop_extract_record_hashes_with_roots(foreign_ext_cms.data(), foreign_ext_cms.size(), { ec_root.der },
+                                                    got));
+    CHECK(got.empty());
+
+    /* 10. Official Apple AAI intermediates verify cleanly against Apple's embedded Root CAs
+     * under Windows CryptoAPI, while untrusted/self-signed certs do not. */
+    CHECK(airdrop_verify_apple_cert(kAppleAai2Ca, sizeof(kAppleAai2Ca)));
+    CHECK(airdrop_verify_apple_cert(kAppleAaiCaG3, sizeof(kAppleAaiCaG3)));
+    CHECK(airdrop_verify_apple_cert(kAppleAaiCa5G1, sizeof(kAppleAaiCa5G1)));
+    CHECK(airdrop_verify_apple_cert(kAppleAaiCa7G1, sizeof(kAppleAaiCa7G1)));
+    CHECK(!airdrop_verify_apple_cert(self_cert.der.data(), self_cert.der.size()));
+    CHECK(!airdrop_verify_apple_cert(ec_leaf.der.data(), ec_leaf.der.size()));
+
+    /* 11. Empty and garbage inputs rejected cleanly. */
     got.clear();
     CHECK(!airdrop_extract_record_hashes(nullptr, 0, got));
     const uint8_t junk[] = { 0x01, 0x02, 0x03, 0x04 };

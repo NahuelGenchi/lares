@@ -140,9 +140,22 @@ bool bplist_decode(const uint8_t *data, size_t len, Value &out, Error *error = n
 bool bplist_encode(const Value &value, Bytes &out, Error *error = nullptr);
 
 /* Extracts lowercase SHA-256 hex hashes from ValidatedEmailHashes and
- * ValidatedPhoneHashes inside a SenderRecordData / ReceiverRecordData CMS
- * SignedData envelope (or raw XML/binary validation plist). SPEC §7, ID-2. */
+ * ValidatedPhoneHashes inside an Apple-signed SenderRecordData /
+ * ReceiverRecordData CMS SignedData envelope (SPEC §7, ID-1 to ID-3).
+ * Requires a valid CMS signature whose signer certificate chains exclusively
+ * to Apple's embedded Root CAs; unsigned plists and untrusted or self-signed
+ * CMS blobs are rejected. Never logs hashes (SEC-5). */
 bool airdrop_extract_record_hashes(const uint8_t *data, size_t len, std::vector<std::string> &out_hashes);
+
+/* Same CMS SignedData signature and exclusive CA chain verification against
+ * explicit DER-encoded root CA certificates (for unit and loopback tests). */
+bool airdrop_extract_record_hashes_with_roots(const uint8_t *data, size_t len,
+                                              const std::vector<Bytes> &trusted_roots_der,
+                                              std::vector<std::string> &out_hashes);
+
+/* Verifies that a DER-encoded X.509 certificate chains cleanly to Apple's
+ * embedded Root CAs using the same exclusive chain engine. */
+bool airdrop_verify_apple_cert(const uint8_t *cert_der, size_t len);
 
 /* ---- CPIO archives, UP-2 ----
  *

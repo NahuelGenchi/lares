@@ -23,6 +23,7 @@ extern "C" {
 }
 #include "loop.h"
 #include "session.h"
+#include "share_cms_test.h"
 #include "tls.h"
 
 namespace {
@@ -439,22 +440,57 @@ void test_session(bool accept)
         "<key>ValidatedEmailHashes</key><array><string>" + allowed_hash + "</string></array>"
         "</dict></plist>";
     std::vector<uint8_t> rec_bytes(xml_rec.begin(), xml_rec.end());
-    {
-        std::lock_guard<std::mutex> lock(h.mu);
-        h.discovered = false;
-        h.peer.clear();
-    }
-    ad::discover(
-        loop, there, receiver->port(), cancel,
-        [&](std::optional<ad::Peer> p, const std::string& e) {
+
+    auto discover_with_record = [&](const std::vector<uint8_t>& record) {
+        {
             std::lock_guard<std::mutex> lock(h.mu);
-            h.discovered = true;
-            h.peer = p ? p->name + "/" + p->model : "none: " + e;
-            h.cv.notify_all();
-        },
-        rec_bytes);
-    CHECK(h.wait([&] { return h.discovered; }, 20));
+            h.discovered = false;
+            h.peer.clear();
+        }
+        ad::discover(
+            loop, there, receiver->port(), cancel,
+            [&](std::optional<ad::Peer> p, const std::string& e) {
+                std::lock_guard<std::mutex> lock(h.mu);
+                h.discovered = true;
+                h.peer = p ? p->name + "/" + p->model : "none: " + e;
+                h.cv.notify_all();
+            },
+            record);
+        CHECK(h.wait([&] { return h.discovered; }, 20));
+    };
+
+    /* Unsigned raw plist MUST be rejected (401) by live Contacts Only receiver. */
+    discover_with_record(rec_bytes);
+    CHECK(h.peer == "none: ");
+
+    /* Self-signed CMS SignedData MUST be rejected (401). */
+    ad::test_cms::EphemeralCert self_cert;
+    CHECK(ad::test_cms::make_cert({ L"CN=Forged Self-Signed", false, false, -1, 7, nullptr }, nullptr, self_cert));
+    ad::Bytes self_cms;
+    CHECK(ad::test_cms::sign_cms(self_cert, { &self_cert }, rec_bytes.data(), rec_bytes.size(), self_cms));
+    discover_with_record(self_cms);
+    CHECK(h.peer == "none: ");
+
+    /* Valid CA-chained CMS SignedData: rejected when CA is not Apple, accepted once CA is trusted for test. */
+    ad::test_cms::EphemeralCert test_ca, test_leaf;
+    CHECK(ad::test_cms::make_cert({ L"CN=Loopback Test CA", true, false, -1, 30, nullptr }, nullptr, test_ca));
+    CHECK(ad::test_cms::make_cert({ L"CN=Loopback Test Leaf", false, false, -1, 7, nullptr }, &test_ca, test_leaf));
+    ad::Bytes signed_cms;
+    CHECK(ad::test_cms::sign_cms(test_leaf, { &test_leaf }, rec_bytes.data(), rec_bytes.size(), signed_cms));
+    discover_with_record(signed_cms);
+    CHECK(h.peer == "none: ");
+
+    receiver->set_trusted_roots_for_test({ test_ca.der });
+    /* Unsigned and self-signed records stay rejected even with a test root installed. */
+    discover_with_record(rec_bytes);
+    CHECK(h.peer == "none: ");
+    discover_with_record(self_cms);
+    CHECK(h.peer == "none: ");
+    /* Trusted CA-chained CMS record succeeds and returns the receiver identity. */
+    discover_with_record(signed_cms);
     CHECK(h.peer == "Test PC/Windows");
+
+    receiver->set_trusted_roots_for_test({});
     receiver->set_policy(false, {});
 
     ad::SendRequest req;
