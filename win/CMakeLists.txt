@@ -194,6 +194,7 @@ target_link_libraries(lares-share PRIVATE lares_share_link)
 
 add_executable(lares-share-unit
     tests/share_unit.cpp
+    tests/share_driver.cpp
     tests/share_rtl.cpp
     tests/share_formats.cpp
     tests/share_net.cpp)

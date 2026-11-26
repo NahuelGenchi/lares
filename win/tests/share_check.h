@@ -14,6 +14,7 @@ extern int share_failures;
     } \
 } while (0)
 
+void run_driver_tests();
 void run_rtl_tests();
 void run_format_tests();
 void run_net_tests();
