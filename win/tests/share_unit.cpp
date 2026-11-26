@@ -11,6 +11,8 @@ int main()
 {
     /* Each part says when it starts: a crash then names its part. */
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::fprintf(stderr, "driver\n");
+    run_driver_tests();
     std::fprintf(stderr, "rtl\n");
     run_rtl_tests();
     std::fprintf(stderr, "formats\n");
