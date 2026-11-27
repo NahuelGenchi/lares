@@ -49,14 +49,16 @@ public:
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINTL pt, DWORD* effect) override
     {
         has_files_ = data && has_hdrop(data);
-        if (effect) *effect = (has_files_ && win_ && win_->is_share_section_active()) ? DROPEFFECT_COPY : DROPEFFECT_NONE;
-        if (has_files_ && win_ && win_->is_share_section_active()) win_->on_ole_drag(true, POINT{ pt.x, pt.y });
+        has_url_ = !has_files_ && data && !extract_url(data).empty();
+        bool ok = (has_files_ || has_url_) && win_ && win_->is_share_section_active();
+        if (effect) *effect = ok ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        if (ok) win_->on_ole_drag(true, POINT{ pt.x, pt.y });
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL pt, DWORD* effect) override
     {
-        bool ok = has_files_ && win_ && win_->is_share_section_active();
+        bool ok = (has_files_ || has_url_) && win_ && win_->is_share_section_active();
         if (effect) *effect = ok ? DROPEFFECT_COPY : DROPEFFECT_NONE;
         if (ok) win_->on_ole_drag(true, POINT{ pt.x, pt.y });
         return S_OK;
@@ -65,19 +67,28 @@ public:
     HRESULT STDMETHODCALLTYPE DragLeave() override
     {
         has_files_ = false;
+        has_url_ = false;
         if (win_) win_->on_ole_drag(false, POINT{ 0, 0 });
         return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL pt, DWORD* effect) override
     {
-        bool ok = has_files_ && data && win_ && win_->is_share_section_active();
+        bool ok = (has_files_ || has_url_) && data && win_ && win_->is_share_section_active();
+        bool files_mode = has_files_;
         has_files_ = false;
+        has_url_ = false;
         if (effect) *effect = ok ? DROPEFFECT_COPY : DROPEFFECT_NONE;
         if (ok) {
-            std::vector<std::wstring> paths = extract_hdrop(data);
-            if (!paths.empty()) win_->on_ole_drop(POINT{ pt.x, pt.y }, paths);
-            else win_->on_ole_drag(false, POINT{ 0, 0 });
+            if (files_mode) {
+                std::vector<std::wstring> paths = extract_hdrop(data);
+                if (!paths.empty()) win_->on_ole_drop(POINT{ pt.x, pt.y }, paths);
+                else win_->on_ole_drag(false, POINT{ 0, 0 });
+            } else {
+                std::string url = extract_url(data);
+                if (!url.empty()) win_->on_ole_drop_url(POINT{ pt.x, pt.y }, url);
+                else win_->on_ole_drag(false, POINT{ 0, 0 });
+            }
         } else if (win_) {
             win_->on_ole_drag(false, POINT{ 0, 0 });
         }
@@ -91,6 +102,32 @@ private:
     {
         FORMATETC fmt = { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
         return data->QueryGetData(&fmt) == S_OK;
+    }
+
+    static std::string extract_url(IDataObject* data)
+    {
+        FORMATETC fmt = { CF_UNICODETEXT, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        STGMEDIUM med = {};
+        if (FAILED(data->GetData(&fmt, &med))) return {};
+        std::string url;
+        if (med.tymed == TYMED_HGLOBAL && med.hGlobal) {
+            const wchar_t* ws = static_cast<const wchar_t*>(GlobalLock(med.hGlobal));
+            if (ws) {
+                size_t len = wcsnlen(ws, 2048);
+                int n = WideCharToMultiByte(CP_UTF8, 0, ws, static_cast<int>(len), nullptr, 0, nullptr, nullptr);
+                if (n > 0) {
+                    url.resize(static_cast<size_t>(n));
+                    WideCharToMultiByte(CP_UTF8, 0, ws, static_cast<int>(len), url.data(), n, nullptr, nullptr);
+                }
+                GlobalUnlock(med.hGlobal);
+            }
+        }
+        ReleaseStgMedium(&med);
+        size_t a = 0, b = url.size();
+        while (a < b && (url[a] == ' ' || url[a] == '\t' || url[a] == '\r' || url[a] == '\n')) ++a;
+        while (b > a && (url[b - 1] == ' ' || url[b - 1] == '\t' || url[b - 1] == '\r' || url[b - 1] == '\n')) --b;
+        url = url.substr(a, b - a);
+        return share_link_opens(url) ? url : std::string();
     }
 
     static std::vector<std::wstring> extract_hdrop(IDataObject* data)
@@ -120,6 +157,7 @@ private:
     volatile LONG refs_ = 1;
     MainWindow* win_ = nullptr;
     bool has_files_ = false;
+    bool has_url_ = false;
 };
 
 } // namespace
@@ -170,6 +208,7 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
     mode_target_ = mode_t_;
     devices_.set_live_key_light(key_light_from_name(pad_prefs_.key_light), pad_prefs_.key_rgb);
     dev_list_ = devices_.list();
+    share_.set_original_media(pad_prefs_.share_original_media);
     share_view_ = share_.view();
 
     sections_ = {

@@ -52,8 +52,9 @@ struct Offer {
     std::string sender;                     /* untrusted: shown escaped (SEC-4) */
     std::string sender_model;               /* SenderModelName, e.g. "iPhone17,1" */
     std::string matched_hash;               /* matched contact SHA-256 hash when SenderRecordData matched */
-    bool links = false;                     /* `names` holds URLs, never opened unasked */
-    std::vector<std::string> names;
+    bool links = false;                     /* true for link-only offers (no /Upload follows); `names` holds URLs */
+    std::vector<std::string> names;         /* file names, or URLs when `links` is true */
+    std::vector<std::string> items;         /* offered URLs (populated for link-only and mixed offers) */
     std::vector<uint8_t> file_icon;         /* FileIcon preview bytes from /Ask, bounded */
     uint64_t total = 0;
 };
@@ -83,6 +84,9 @@ public:
     void answer(unsigned id, bool accept);
     /* Updates Contacts Only filtering and allowed contact SHA-256 hashes live (ID-3). */
     void set_policy(bool contacts_only, std::set<std::string> contact_hashes);
+    /* Chooses between compatibility transcoding (false: JPEG/H.264, DISC-3) and
+     * original iOS media formats (true: HEIC/HEVC) in ReceiverMediaCapabilities. */
+    void set_original_media(bool original);
     /* Overrides trusted CA roots for CMS SenderRecordData verification in
      * loopback unit tests. Empty (the default) uses Apple's embedded Root CAs. */
     void set_trusted_roots_for_test(std::vector<std::vector<uint8_t>> roots_der);
@@ -98,6 +102,7 @@ private:
 
 struct Peer {
     std::string name, model;
+    std::string media_capabilities;         /* ReceiverMediaCapabilities JSON, when present */
 };
 
 /* POST /Discover on a connection of its own (§6.3). `done` runs on `loop`
@@ -115,11 +120,13 @@ struct SendRequest {
     std::string name;                       /* our SenderComputerName */
     std::string id;                         /* our service ID, as SenderID (MDNS-3) */
     std::vector<std::wstring> paths;        /* files and folders to send */
+    std::vector<std::string> items;         /* URLs to send in Items (http/https) */
+    std::vector<uint8_t> file_icon;         /* optional explicit FileIcon preview bytes (bounded) */
 };
 
-/* /Ask and, once accepted, /Upload on one fresh connection (HTTP-1), the
- * archive compressed into a temporary file first so the upload carries a
- * Content-Length. `progress` and `done` run on `loop`, never once
+/* /Ask and, once accepted, streamed chunked /Upload on one fresh connection
+ * (HTTP-1, UP-1a) with no pre-/Ask disk spooling. Link-only shares complete
+ * on /Ask 200 OK (ASK-4). `progress` and `done` run on `loop`, never once
  * cancelled; `declined` when the receiver said no or didn't answer. */
 void send(Loop& loop, const SendRequest& req, std::shared_ptr<Cancel> cancel,
           std::function<void(bool accepted, uint64_t sent, uint64_t total)> progress,

@@ -144,10 +144,11 @@ struct Session {
             auto d = std::chrono::duration_cast<std::chrono::seconds>(st.receive_until - lares::Loop::Clock::now());
             left = d.count() > 0 ? d.count() : 0;
         }
-        char head[320];
+        char head[360];
         std::snprintf(head, sizeof head,
-                      "state setup=%s link=%s mode=%s receiving=%d left=%lld browsing=%d sending=%d wake=%d quiet=%d\n",
-                      setup_name(st.setup), link_name(st.link), mode_name(st.mode), st.receiving ? 1 : 0, left,
+                      "state setup=%s link=%s mode=%s media=%s receiving=%d left=%lld browsing=%d sending=%d wake=%d quiet=%d\n",
+                      setup_name(st.setup), link_name(st.link), mode_name(st.mode),
+                      st.original_media ? "original" : "compatible", st.receiving ? 1 : 0, left,
                       st.browsing ? 1 : 0, st.sending ? 1 : 0,
                       st.browsing || st.sending || share.looking() ? 1 : 0, st.quiet ? 1 : 0);
         std::string out = head;
@@ -166,6 +167,7 @@ struct Session {
             put(out, "incoming-thumb", in.thumb_path);
             put(out, "incoming-contact", in.matched_hash);
             for (const std::string& n : in.names) put(out, "incoming-name", n);
+            for (const std::string& u : in.offered_links) put(out, "incoming-link", u);
             for (const std::string& n : in.saved) put(out, "incoming-saved", n);
             put(out, "incoming-message", in.message);
         }
@@ -198,6 +200,8 @@ struct Session {
         if (c == "mode off") share.set_mode(DiscoverMode::Off);
         else if (c == "mode contacts") share.set_mode(DiscoverMode::ContactsOnly);
         else if (c == "mode everyone") share.set_mode(DiscoverMode::Everyone);
+        else if (c == "media-format original") share.set_original_media(true);
+        else if (c == "media-format compatible") share.set_original_media(false);
         else if (c == "receive on") share.set_receiving(true);
         else if (c == "receive off") share.set_receiving(false);
         else if (c == "browse on" || c == "browse off") share.set_browsing(c == "browse on");
@@ -220,6 +224,16 @@ struct Session {
             for (size_t i = 2; i < a.size(); i++)
                 if (!a[i].empty()) paths.push_back(wide(a[i]));
             share.send_files_to(a[1], paths);
+        } else if (c == "send-url" && a.size() > 1) {
+            std::vector<std::string> urls;
+            for (size_t i = 1; i < a.size(); i++)
+                if (!a[i].empty()) urls.push_back(a[i]);
+            share.set_sending_urls(urls);
+        } else if (c == "send-url-to" && a.size() > 2) {
+            std::vector<std::string> urls;
+            for (size_t i = 2; i < a.size(); i++)
+                if (!a[i].empty()) urls.push_back(a[i]);
+            share.send_urls_to(a[1], urls);
         } else if (c == "send-stop") share.set_sending({});
         else if (c == "to" && a.size() > 1) share.send_to(a[1]);
         else if (c == "device-dismiss" && a.size() > 1) share.dismiss_device(a[1]);

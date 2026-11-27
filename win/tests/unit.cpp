@@ -113,6 +113,15 @@ static void test_config()
     CHECK(def.topbar_hide == false);
     CHECK(def.background == true);
     CHECK(def.key_light == "own");
+    CHECK(def.share_original_media == false);
+    CHECK(lares::serialize_pad_ini(def).find("[share]") == std::string::npos);
+
+    lares::PadPrefs media_orig;
+    media_orig.share_original_media = true;
+    std::string media_ini = lares::serialize_pad_ini(media_orig);
+    CHECK(media_ini.find("[share]\nmedia-format=original\n") != std::string::npos);
+    CHECK(lares::parse_pad_ini(media_ini).share_original_media == true);
+    CHECK(lares::parse_pad_ini("[share]\nmedia-format=compatible\n").share_original_media == false);
 
     // Round-trip custom settings + clamping
     lares::PadPrefs custom;
@@ -844,6 +853,35 @@ static void test_share()
     CHECK(hit_maya != nullptr && hit_maya->name == "Maya");
     const ShareContact* hit_alex_mac = share_find_contact(apost, "Alex\xE2\x80\x99s MacBook Air");
     CHECK(hit_alex_mac != nullptr && hit_alex_mac->name == "Alex");
+
+    /* Issue #117: media format state field, mixed Files+Items incoming-link, and URL send lines. */
+    std::vector<std::string> mixed_block = {
+        "state setup=ready link=up mode=everyone media=original receiving=1 left=420 browsing=1 sending=0 wake=1 quiet=0",
+        "name Studio PC",
+        "incoming id=9 state=done done=2048 total=2048 links=0",
+        "incoming-sender Susuin",
+        "incoming-name photo.heic",
+        "incoming-link https://example.com/album",
+        "incoming-saved C:\\Users\\me\\Downloads\\photo.heic",
+    };
+    CHECK(share_parse_block(mixed_block, s));
+    CHECK(s.original_media == true);
+    CHECK(s.has_incoming && !s.incoming.links);
+    CHECK(s.incoming.names.size() == 1 && s.incoming.names[0] == "photo.heic");
+    CHECK(s.incoming.offered_links.size() == 1 && s.incoming.offered_links[0] == "https://example.com/album");
+    CHECK(share_offer_text(s.incoming) == "photo.heic and 1 link");
+    s.incoming.names.push_back("clip.mov");
+    CHECK(share_offer_text(s.incoming) == "photo.heic and 2 more");
+
+    std::vector<std::string> ok_urls;
+    CHECK(share_send_url_line({ "https://example.com/a", "javascript:alert(1)", "http://example.org/b" }, &ok_urls) ==
+          "send-url\thttps://example.com/a\thttp://example.org/b");
+    CHECK(ok_urls.size() == 2);
+    ok_urls.clear();
+    CHECK(share_send_url_to_line("k1", { "https://example.com/x" }, &ok_urls) == "send-url-to\tk1\thttps://example.com/x");
+    CHECK(ok_urls.size() == 1 && ok_urls[0] == "https://example.com/x");
+    CHECK(share_send_url_to_line("bad\tkey", { "https://example.com/x" }).empty());
+    CHECK(share_send_url_line({ "file:///C:/Windows/win.ini", "https://example.com/a b" }).empty());
 }
 
 int main()

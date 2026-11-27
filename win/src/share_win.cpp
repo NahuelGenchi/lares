@@ -99,6 +99,7 @@ bool share_parse_block(const std::vector<std::string>& lines, ShareSession& out)
             s.receiving = field(line, "receiving") == "1";
             s.mode = mode_from(field(line, "mode"), s.receiving);
             if (s.mode != ShareDiscoverMode::Off) s.receiving = true;
+            s.original_media = field(line, "media") == "original";
             s.left = static_cast<int>(std::min<uint64_t>(number(field(line, "left")), 24 * 3600));
             s.browsing = field(line, "browsing") == "1";
             s.sending = field(line, "sending") == "1";
@@ -127,6 +128,8 @@ bool share_parse_block(const std::vector<std::string>& lines, ShareSession& out)
             s.incoming.matched_hash = rest(line);
         } else if (starts(line, "incoming-name ")) {
             s.incoming.names.push_back(rest(line));
+        } else if (starts(line, "incoming-link ")) {
+            s.incoming.offered_links.push_back(rest(line));
         } else if (starts(line, "incoming-saved ")) {
             s.incoming.saved.push_back(rest(line));
         } else if (starts(line, "incoming-message ")) {
@@ -228,13 +231,47 @@ std::string share_send_to_line(const std::string& key, const std::vector<std::ws
     return any ? line : std::string();
 }
 
+std::string share_send_url_line(const std::vector<std::string>& urls, std::vector<std::string>* accepted)
+{
+    std::string line = "send-url";
+    bool any = false;
+    for (const std::string& u : urls) {
+        if (u.empty() || u.size() > 2048 || !share_link_opens(u) ||
+            u.find_first_of("\t\r\n") != std::string::npos)
+            continue;
+        line += "\t" + u;
+        if (accepted) accepted->push_back(u);
+        any = true;
+    }
+    return any ? line : std::string();
+}
+
+std::string share_send_url_to_line(const std::string& key, const std::vector<std::string>& urls,
+                                   std::vector<std::string>* accepted)
+{
+    if (key.empty() || key.find_first_of("\t\r\n") != std::string::npos) return {};
+    std::string line = "send-url-to\t" + key;
+    bool any = false;
+    for (const std::string& u : urls) {
+        if (u.empty() || u.size() > 2048 || !share_link_opens(u) ||
+            u.find_first_of("\t\r\n") != std::string::npos)
+            continue;
+        line += "\t" + u;
+        if (accepted) accepted->push_back(u);
+        any = true;
+    }
+    return any ? line : std::string();
+}
+
 std::string share_offer_text(const ShareIncoming& in)
 {
     size_t n = in.names.size();
     if (in.links) return n == 1 ? "a link" : "links";
     std::string first = n ? in.names[0] : "files";
-    if (n <= 1) return first;
-    return first + " and " + std::to_string(n - 1) + " more";
+    size_t extra = (n > 1 ? n - 1 : 0) + in.offered_links.size();
+    if (extra == 0) return first;
+    if (n == 1 && in.offered_links.size() == 1) return first + " and 1 link";
+    return first + " and " + std::to_string(extra) + " more";
 }
 
 std::string share_format_size(uint64_t bytes)
@@ -1052,8 +1089,10 @@ bool ShareManager::start_session()
     view_.error.clear();
     view_.s = ShareSession();
     view_.s.link = ShareLink::Starting;
-    /* Hand lares-share.exe the current saved contact hashes right away. */
+    view_.s.original_media = original_media_;
+    /* Hand lares-share.exe the current saved contact hashes and media format right away. */
     write_line(to_child_, contacts_command_locked());
+    write_line(to_child_, original_media_ ? "media-format original\n" : "media-format compatible\n");
     HANDLE from = from_child_, proc = proc_;
     reader_ = std::thread([this, from, proc] { read_loop(from, proc); });
     return true;
@@ -1098,6 +1137,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
             if (!view_.s.sending) {
                 view_.files.clear();
                 view_.file_paths.clear();
+                view_.send_urls.clear();
             }
             if (!view_.s.idle()) armed_ = true;
             /* Used and idle again, with nothing waiting: the session ends,
@@ -1123,6 +1163,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
         quitting_ = false;
         view_.running = false;
         view_.s = ShareSession();
+        view_.s.original_media = original_media_;
         if (!heard && !closing_) {
             view_.error = "lares-share.exe stopped as it started.";
             pending_.clear();
@@ -1133,6 +1174,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
         if (pending_.empty()) {
             view_.files.clear();
             view_.file_paths.clear();
+            view_.send_urls.clear();
         }
         /* The window starts the session that what's waiting asks for: this
          * thread is the one that session would have to join. */
@@ -1171,7 +1213,8 @@ void ShareManager::command(const std::string& line)
         /* Only what turns something on starts a session, or waits for the next. */
         bool starts_one = line == "receive on" || line == "mode contacts" || line == "mode everyone" ||
                           line == "browse on" || line == "look on" ||
-                          line.compare(0, 5, "send\t") == 0 || line.compare(0, 8, "send-to\t") == 0;
+                          line.compare(0, 5, "send\t") == 0 || line.compare(0, 8, "send-to\t") == 0 ||
+                          line.compare(0, 9, "send-url\t") == 0 || line.compare(0, 12, "send-url-to\t") == 0;
         if (proc_ && !quitting_) {
             write_line(to_child_, out);
         } else if (proc_) {
@@ -1225,6 +1268,20 @@ void ShareManager::set_discover_mode(ShareDiscoverMode mode)
 }
 
 void ShareManager::set_receiving(bool on) { set_discover_mode(on ? ShareDiscoverMode::Everyone : ShareDiscoverMode::Off); }
+
+void ShareManager::set_original_media(bool original)
+{
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        original_media_ = original;
+        view_.s.original_media = original;
+        if (!dry_run_ && proc_ && !quitting_) {
+            write_line(to_child_, original ? "media-format original\n" : "media-format compatible\n");
+        }
+    }
+    notify();
+}
+
 void ShareManager::set_browsing(bool on) { command(on ? "browse on" : "browse off"); }
 void ShareManager::answer(bool accept) { command(accept ? "accept" : "decline"); }
 void ShareManager::dismiss_incoming() { command("dismiss"); }
@@ -1250,6 +1307,7 @@ void ShareManager::send(const std::vector<std::wstring>& paths)
         std::lock_guard<std::mutex> lock(mu_);
         view_.files = names;
         view_.file_paths = paths;
+        view_.send_urls.clear();
         view_.error.clear();
     }
     command(line);
@@ -1269,6 +1327,48 @@ void ShareManager::send_files_to(const std::string& key, const std::vector<std::
         std::lock_guard<std::mutex> lock(mu_);
         view_.files = names;
         view_.file_paths = paths;
+        view_.send_urls.clear();
+        view_.xfer_start_ms = GetTickCount64();
+        view_.error.clear();
+    }
+    command(line);
+}
+
+void ShareManager::send_urls(const std::vector<std::string>& urls)
+{
+    std::vector<std::string> ok_urls;
+    std::string line = share_send_url_line(urls, &ok_urls);
+    if (line.empty()) {
+        std::lock_guard<std::mutex> lock(mu_);
+        view_.error = "Enter a valid http:// or https:// link.";
+        notify();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        view_.files.clear();
+        view_.file_paths.clear();
+        view_.send_urls = std::move(ok_urls);
+        view_.error.clear();
+    }
+    command(line);
+}
+
+void ShareManager::send_urls_to(const std::string& key, const std::vector<std::string>& urls)
+{
+    std::vector<std::string> ok_urls;
+    std::string line = share_send_url_to_line(key, urls, &ok_urls);
+    if (line.empty()) {
+        std::lock_guard<std::mutex> lock(mu_);
+        view_.error = "Enter a valid http:// or https:// link.";
+        notify();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        view_.files.clear();
+        view_.file_paths.clear();
+        view_.send_urls = std::move(ok_urls);
         view_.xfer_start_ms = GetTickCount64();
         view_.error.clear();
     }
@@ -1395,10 +1495,36 @@ void ShareManager::dry_command(const std::string& line)
                 d.message.clear();
             }
         }
+    } else if (line.compare(0, 9, "send-url\t") == 0) {
+        s.sending = true;
+        s.wake = true;
+        s.link = ShareLink::Up;
+        if (s.devices.empty()) {
+            ShareDevice d;
+            d.key = "a";
+            d.name = "Ana's iPhone";
+            d.model = "iPhone16,2";
+            s.devices = { d };
+        }
+    } else if (line.compare(0, 12, "send-url-to\t") == 0) {
+        size_t tab = line.find('\t', 12);
+        std::string key = line.substr(12, tab == std::string::npos ? std::string::npos : tab - 12);
+        s.sending = true;
+        s.wake = true;
+        s.link = ShareLink::Up;
+        for (ShareDevice& d : s.devices) {
+            if (d.key == key) {
+                d.state = ShareDeviceState::Sent;
+                d.sent = 1;
+                d.total = 1;
+                d.message.clear();
+            }
+        }
     } else if (line == "send-stop" || line == "look off") {
         s.sending = false;
         view_.files.clear();
         view_.file_paths.clear();
+        view_.send_urls.clear();
         if (!s.browsing) {
             s.wake = false;
             s.devices.clear();
@@ -1407,9 +1533,9 @@ void ShareManager::dry_command(const std::string& line)
     } else if (line.compare(0, 3, "to\t") == 0) {
         for (ShareDevice& d : s.devices)
             if (d.key == line.substr(3)) {
-                d.state = ShareDeviceState::Sending;
-                d.sent = 4200000;
-                d.total = 9600000;
+                d.state = view_.send_urls.empty() ? ShareDeviceState::Sending : ShareDeviceState::Sent;
+                d.sent = view_.send_urls.empty() ? 4200000 : 1;
+                d.total = view_.send_urls.empty() ? 9600000 : 1;
             }
     } else if (line.compare(0, 15, "device-dismiss\t") == 0) {
         std::string key = line.substr(15);
@@ -1422,6 +1548,7 @@ void ShareManager::dry_command(const std::string& line)
         s.sending = false;
         view_.files.clear();
         view_.file_paths.clear();
+        view_.send_urls.clear();
     } else if (line == "cancel") {
         for (ShareDevice& d : s.devices)
             if (d.state == ShareDeviceState::Asking || d.state == ShareDeviceState::Sending) d.state = ShareDeviceState::Found;

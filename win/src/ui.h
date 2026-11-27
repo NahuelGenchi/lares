@@ -100,6 +100,7 @@ private:
         PickDiscoverMode,
         CloseOverlays,
         DeviceClick,
+        DeviceSendLink,
         DeviceAddContact,
         DeviceSetPhoto,
         Accept,
@@ -113,8 +114,12 @@ private:
         ClearStagedFiles,
         ToggleContacts,
         ToggleAdapter,
+        SetMediaFormat,
         GiveBack,
         OpenBluetoothSettings,
+        LinkSheetNoop,
+        LinkPaste,
+        LinkSubmit,
         ContactFocusField,
         ContactPickPhoto,
         ContactAdd,
@@ -230,6 +235,7 @@ private:
     bool share_char(wchar_t ch);
     void share_drag_update(bool active, float lx, float ly);
     void share_drop_files(float lx, float ly, const std::vector<std::wstring>& paths);
+    void share_drop_url(float lx, float ly, const std::string& url);
     ID2D1Bitmap* load_share_bitmap(const std::wstring& path);
     void release_share_bitmaps();
     void on_share_updated();
@@ -242,6 +248,7 @@ public:
     float layout_scale() const { return scale_; }
     void on_ole_drag(bool active, POINT screen_pt);
     void on_ole_drop(POINT screen_pt, const std::vector<std::wstring>& paths);
+    void on_ole_drop_url(POINT screen_pt, const std::string& url);
 
 private:
     void draw_devices_page(ID2D1RenderTarget* rt, const Palette& pal, float x, float y, float w, DevKind kind);
@@ -382,6 +389,11 @@ private:
     int share_mode_menu_focus_ = -1;
     bool share_adapter_open_ = false;
     bool share_contacts_open_ = false;
+    bool share_link_open_ = false;
+    std::string share_link_key_;
+    std::string share_link_target_name_;
+    std::string share_link_draft_;
+    std::string share_link_error_;
     bool share_ctx_open_ = false;
     float share_ctx_x_ = 0.0f;
     float share_ctx_y_ = 0.0f;

@@ -952,6 +952,18 @@ static void service(struct awdl_node *n, awdl_time now)
 
 /* ---------------------------------------------------------- inputs */
 
+void awdl_node_set_name(struct awdl_node *n, const char *name)
+{
+    if (!n || !name)
+        return;
+    size_t len = strlen(name);
+    if (len > AWDL_NAME_MAX)
+        len = AWDL_NAME_MAX;
+    memset(n->cfg.name, 0, sizeof n->cfg.name);
+    memcpy(n->cfg.name, name, len);
+    n->cfg.name_len = len;
+}
+
 void awdl_node_frame(struct awdl_node *n, awdl_time now, bool has_rssi, int8_t rssi,
                      const uint8_t *bytes, size_t len)
 {

@@ -44,6 +44,7 @@ struct Incoming {
     std::string matched_hash;          /* matched contact SHA-256 hash, if any */
     bool links = false;
     std::vector<std::string> names;    /* file names, or URLs */
+    std::vector<std::string> offered_links; /* URLs offered alongside files in mixed /Ask */
     std::vector<std::string> saved;    /* saved paths, once done */
     uint64_t done = 0, total = 0;
     std::string message;
@@ -58,11 +59,13 @@ struct ShareState {
     std::string name;           /* how others see this PC */
     DiscoverMode mode = DiscoverMode::Off;
     bool receiving = false;     /* mode != DiscoverMode::Off */
+    bool original_media = false; /* ReceiverMediaCapabilities: false=JPEG/H.264, true=HEIC/HEVC */
     Loop::Clock::time_point receive_until{};
     std::unique_ptr<Incoming> incoming;
     bool browsing = false;      /* continuously finding nearby devices while page is open */
     bool sending = false;
     std::vector<std::wstring> paths;
+    std::vector<std::string> send_urls;
     std::vector<Device> devices;
 };
 
@@ -78,14 +81,17 @@ public:
     void refresh();
     void set_mode(DiscoverMode mode);
     void set_receiving(bool on);
+    void set_original_media(bool original);
     void set_contact_hashes(std::set<std::string> hashes);
     void set_browsing(bool on);
     void answer(bool accept);
     void dismiss_incoming();
     void set_looking(bool on);
     void set_sending(const std::vector<std::wstring>& paths);
+    void set_sending_urls(const std::vector<std::string>& urls);
     void send_to(const std::string& key);
     void send_files_to(const std::string& key, const std::vector<std::wstring>& paths);
+    void send_urls_to(const std::string& key, const std::vector<std::string>& urls);
     void dismiss_device(const std::string& key);
     void cancel_send();
     /* Ends the link now, rather than after its minute. */

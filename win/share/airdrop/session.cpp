@@ -23,6 +23,7 @@
 #include <bcrypt.h>
 
 #include "formats.h"
+#include "thumb.h"
 
 extern "C" {
 #include "lwip/sockets.h"
@@ -439,6 +440,7 @@ struct Receiver::Impl {
     std::map<unsigned, int> answers;    /* 0 waiting, 1 accept, 2 decline */
     unsigned next_id = 0;
     bool contacts_only = false;
+    bool original_media = false;
     std::set<std::string> contact_hashes;
     std::vector<Bytes> test_roots;
     std::thread acceptor;
@@ -617,7 +619,7 @@ struct Conn {
         }
         if (owner->dir && tn == 1) return refuse(e, "A listed folder arrived as a file.");
         if (!owner->dir && tn != 1) return refuse(e, "Bad file entry.");
-        if (written + size > kMaxUpload) {
+        if (size > kMaxUpload || written > kMaxUpload - size) {
             e.assign(ErrorCode::Limit, "The transfer is too large.");
             return false;
         }
@@ -798,12 +800,26 @@ struct Conn {
             return;
         }
         /* Everyone (100) or matched Contact (200) (ID-3, ID-4). */
-        static const char kCaps[] = "{\"Version\":1}"; /* DISC-3: JPEG rather than HEIC */
+        bool original_media = false;
+        {
+            std::lock_guard<std::mutex> lock(r->mu);
+            original_media = r->original_media;
+        }
+        /* DISC-3: compatible mode leaves out Codecs/ContainerFormats so iOS sends
+         * JPEG/H.264; original mode advertises HEVC and HEIF/HEIC support. */
+        static const char kCompatCaps[] = "{\"Version\":1}";
+        static const char kOrigCaps[] =
+            "{\"Version\":1,\"Codecs\":{\"hvc1\":{\"Profiles\":{\"VTPerProfileSupport\":{"
+            "\"1\":{\"VTMaxPlaybackLevel\":120},\"2\":{\"VTMaxPlaybackLevel\":120},\"3\":{}},"
+            "\"VTSupportedProfiles\":[1,2,3]}}},"
+            "\"ContainerFormats\":{\"public.heif-standard\":{\"HeifSubtypes\":[\"public.avci\",\"public.heic\",\"public.heif\"]}}}";
+        const char* caps = original_media ? kOrigCaps : kCompatCaps;
+        size_t caps_len = original_media ? (sizeof kOrigCaps - 1) : (sizeof kCompatCaps - 1);
         Value b = Value::dict();
         b.add("StatusCode", Value::integer(matched.empty() ? 100 : 200));
         b.add("ReceiverComputerName", Value::string(r->name));
         b.add("ReceiverModelName", Value::string(kModel));
-        b.add("ReceiverMediaCapabilities", Value::data(kCaps, sizeof kCaps - 1));
+        b.add("ReceiverMediaCapabilities", Value::data(caps, caps_len));
         Bytes out;
         if (bplist_encode(b, out)) {
             send_response(200, &out, false);
@@ -881,6 +897,24 @@ struct Conn {
         return answer;
     }
 
+    /* Extracts one bounded URL/text item from /Ask Items[] safely (SEC-3, SEC-4). */
+    static bool extract_item_url(const Value& it, std::string& out)
+    {
+        if (it.is(Value::Type::String)) {
+            out = it.get_string();
+        } else if (it.is(Value::Type::Dict)) {
+            out = lookup_str(it, "URL");
+            if (out.empty()) out = lookup_str(it, "url");
+        } else {
+            return false;
+        }
+        if (out.empty() || out.size() > 4096) return false;
+        for (unsigned char c : out) {
+            if (c < 0x20 || c == 0x7f) return false;
+        }
+        return true;
+    }
+
     void on_ask()
     {
         sock->set_timeout(kIoTimeout);
@@ -896,7 +930,7 @@ struct Conn {
         const Value* items = req.find("Items", Value::Type::Array);
         size_t nfiles = files ? files->size() : 0, nitems = items ? items->size() : 0;
         Offer offer;
-        bool bad = (nfiles == 0) == (nitems == 0) || nfiles > CPIO_MAX_ENTRIES || nitems > 64;
+        bool bad = (nfiles == 0 && nitems == 0) || nfiles > CPIO_MAX_ENTRIES || nitems > 64;
         for (size_t i = 0; i < nfiles && !bad; i++) {
             const Value& f = files->at(i);
             Listed l;
@@ -904,8 +938,14 @@ struct Conn {
                 bad = true;
                 break;
             }
-            if (const Value* size = f.find("FileSize", Value::Type::Integer); size && size->get_integer() > 0)
-                total += static_cast<uint64_t>(size->get_integer());
+            if (const Value* size = f.find("FileSize", Value::Type::Integer); size && size->get_integer() > 0) {
+                uint64_t sz = static_cast<uint64_t>(size->get_integer());
+                if (sz > UINT64_MAX - total) {
+                    bad = true;
+                    break;
+                }
+                total += sz;
+            }
             /* Two items saved under one name would collide in staging, and
              * Windows' names differ by more than case. */
             for (const Listed& x : listed)
@@ -915,9 +955,13 @@ struct Conn {
             listed.push_back(std::move(l));
         }
         for (size_t i = 0; i < nitems && !bad; i++) {
-            const Value& it = items->at(i);
-            if (it.is(Value::Type::String)) offer.names.push_back(it.get_string());
-            else bad = true;
+            std::string u;
+            if (!extract_item_url(items->at(i), u)) {
+                bad = true;
+                break;
+            }
+            offer.items.push_back(u);
+            if (nfiles == 0) offer.names.push_back(u);
         }
         std::string sender = lookup_str(req, "SenderComputerName");
         std::string sender_model = lookup_str(req, "SenderModelName");
@@ -935,7 +979,9 @@ struct Conn {
             trace("receiver: /Ask rejected (400, %zu files, %zu items)", nfiles, nitems);
             return fail(400);
         }
-        links = nitems > 0;
+        /* Pure link shares finish on /Ask 200 OK; mixed Files + Items shares
+         * keep the connection open for /Upload of the listed files. */
+        links = (nfiles == 0 && nitems > 0);
         {
             std::lock_guard<std::mutex> lock(r->mu);
             id = ++r->next_id;
@@ -970,9 +1016,9 @@ struct Conn {
         bplist_encode(b, out);
         send_response(200, &out, links);
         accepted = true;
-        if (links) { /* ASK-4: a link share is complete here */
+        if (links) { /* ASK-4: a link-only share is complete here */
             unsigned i = id;
-            std::vector<std::string> urls = offer.names;
+            std::vector<std::string> urls = offer.items;
             r->note([rr, i, urls] {
                 if (rr->cb.received) rr->cb.received(i, true, urls);
             });
@@ -1272,6 +1318,12 @@ void Receiver::set_policy(bool contacts_only, std::set<std::string> contact_hash
     impl_->contact_hashes = std::move(contact_hashes);
 }
 
+void Receiver::set_original_media(bool original)
+{
+    std::lock_guard<std::mutex> lock(impl_->mu);
+    impl_->original_media = original;
+}
+
 void Receiver::set_trusted_roots_for_test(std::vector<std::vector<uint8_t>> roots_der)
 {
     std::lock_guard<std::mutex> lock(impl_->mu);
@@ -1353,12 +1405,40 @@ bool read_response(tls::Stream& t, Response& resp, std::string& err)
     return true;
 }
 
-/* The archive, written into a compressor that writes into the spool file. */
-struct Spool {
-    HANDLE fd = INVALID_HANDLE_VALUE;
+/* Live archive streaming straight into TLS chunked transfer encoding:
+ * CpioWriter -> Deflater -> http_chunk -> tls::Stream::write, with no
+ * pre-/Ask temporary file on disk (issue #117). */
+struct Streamer {
     std::unique_ptr<CpioWriter> cpio;
     std::unique_ptr<Deflater> z;
     std::shared_ptr<Cancel> cancel;
+    Loop* loop = nullptr;
+    std::function<void(bool, uint64_t, uint64_t)> progress;
+    uint64_t sent = 0;
+    uint64_t total = 0;
+    Clock::time_point last{};
+    bool write_failed = false;
+
+    void note_progress(bool force)
+    {
+        auto now = Clock::now();
+        if (!force && now - last < kProgressEvery) return;
+        last = now;
+        uint64_t done = sent > total ? total : sent;
+        uint64_t tot = total;
+        auto fn = progress;
+        auto c = cancel;
+        loop->post([c, fn, done, tot]() mutable {
+            if (!c->cancelled() && fn) fn(true, done, tot);
+        });
+    }
+};
+
+struct TopEntry {
+    std::wstring path;
+    std::string name;
+    std::string entry;
+    bool isdir = false;
 };
 
 int64_t unix_time(const FILETIME& ft)
@@ -1367,7 +1447,69 @@ int64_t unix_time(const FILETIME& ft)
     return static_cast<int64_t>((t.QuadPart - 116444736000000000ull) / 10000000ull);
 }
 
-bool spool_file(Spool& s, const std::wstring& path, const std::string& entry, uint64_t& size, Error& e)
+bool valid_send_url(const std::string& url)
+{
+    if (url.size() > 4096) return false;
+    auto has_scheme = [&](const char* scheme) {
+        size_t n = std::strlen(scheme);
+        if (url.size() <= n) return false;
+        for (size_t i = 0; i < n; i++)
+            if ((url[i] | 0x20) != scheme[i]) return false;
+        return true;
+    };
+    if (!has_scheme("https://") && !has_scheme("http://")) return false;
+    for (unsigned char c : url) {
+        if (c <= 0x20 || c == 0x7f || c == '"') return false;
+    }
+    return true;
+}
+
+/* Metadata-only pre-/Ask folder scan: computes FileSize and max single-file
+ * size without reading file contents into %TEMP%. */
+bool scan_tree(const std::wstring& path, uint64_t& size, uint64_t& max_file, unsigned& entries,
+               const std::shared_ptr<Cancel>& cancel, Error& e)
+{
+    if (cancel->cancelled()) {
+        e.assign(ErrorCode::Failed, "Cancelled.");
+        return false;
+    }
+    if (++entries > CPIO_MAX_ENTRIES) {
+        e.assign(ErrorCode::Limit, "Too many files to send at once.");
+        return false;
+    }
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((long_path(path) + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return true;
+    bool ok = true;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        std::string name = utf8(fd.cFileName);
+        if (!airdrop_safe_name(name) || name.compare(0, 2, "._") == 0) continue;
+        std::wstring child = path + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            ok = scan_tree(child, size, max_file, entries, cancel, e);
+        } else {
+            if (++entries > CPIO_MAX_ENTRIES) {
+                e.assign(ErrorCode::Limit, "Too many files to send at once.");
+                ok = false;
+                break;
+            }
+            uint64_t fsz = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+            if (fsz > UINT64_MAX - size) {
+                e.assign(ErrorCode::Limit, "The files are too large to send.");
+                ok = false;
+                break;
+            }
+            size += fsz;
+            if (fsz > max_file) max_file = fsz;
+        }
+    } while (ok && FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+bool stream_file(Streamer& s, const std::wstring& path, const std::string& entry, Error& e)
 {
     HANDLE f = CreateFileW(long_path(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
@@ -1395,14 +1537,15 @@ bool spool_file(Spool& s, const std::wstring& path, const std::string& entry, ui
         }
         ok = s.cpio->file_data(buf.data(), got, &e);
         left -= got;
+        s.sent += got;
+        if (ok) s.note_progress(false);
     }
     CloseHandle(f);
-    size += length;
     return ok;
 }
 
 /* A folder and what it holds: folders and regular files only, no links. */
-bool spool_tree(Spool& s, const std::wstring& path, const std::string& entry, uint64_t& size, Error& e)
+bool stream_tree(Streamer& s, const std::wstring& path, const std::string& entry, Error& e)
 {
     if (!s.cpio->dir(entry, &e)) return false;
     WIN32_FIND_DATAW fd;
@@ -1416,8 +1559,8 @@ bool spool_tree(Spool& s, const std::wstring& path, const std::string& entry, ui
         if (!airdrop_safe_name(name) || name.compare(0, 2, "._") == 0) continue;
         std::wstring child = path + L"\\" + fd.cFileName;
         std::string child_entry = entry + "/" + name;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ok = spool_tree(s, child, child_entry, size, e);
-        else ok = spool_file(s, child, child_entry, size, e);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ok = stream_tree(s, child, child_entry, e);
+        else ok = stream_file(s, child, child_entry, e);
     } while (ok && FindNextFileW(h, &fd));
     FindClose(h);
     return ok;
@@ -1463,8 +1606,15 @@ void discover(Loop& loop, const Address& addr, uint16_t port, std::shared_ptr<Ca
                 Value v;
                 if (bplist_decode(resp.body.data(), resp.body.size(), v)) {
                     std::string name = lookup_str(v, "ReceiverComputerName");
-                    if (!name.empty()) /* DISC-1 */
-                        peer = Peer{ name, lookup_str(v, "ReceiverModelName") };
+                    if (!name.empty()) { /* DISC-1 */
+                        Peer found{ name, lookup_str(v, "ReceiverModelName"), {} };
+                        if (const Value* caps = v.find("ReceiverMediaCapabilities", Value::Type::Data);
+                            caps && caps->get_data().size() <= 8192) {
+                            found.media_capabilities.assign(
+                                reinterpret_cast<const char*>(caps->get_data().data()), caps->get_data().size());
+                        }
+                        peer = std::move(found);
+                    }
                 }
             }
             t->close();
@@ -1481,88 +1631,132 @@ void send(Loop& loop, const SendRequest& request, std::shared_ptr<Cancel> cancel
         Error e;
         std::string err;
         bool declined = false, ok = false;
-        Spool s;
-        s.cancel = cancel;
         std::string tid = uuid_upper();
         bool dvzip = use_dvzip(request.flags);
         auto finish = [&] {
-            if (s.fd != INVALID_HANDLE_VALUE) CloseHandle(s.fd);
             std::string message = ok ? std::string() : !err.empty() ? err : e.message;
             post_unless_cancelled(loop, cancel, [done, ok, declined, message] { done(ok, declined, message); });
         };
 
-        /* The offer and its archive (UP-2a: the root entry first), in a
-         * temporary file that goes when it's closed. */
-        wchar_t dir[MAX_PATH], tmp[MAX_PATH];
-        if (!GetTempPathW(MAX_PATH, dir) || !GetTempFileNameW(dir, L"lar", 0, tmp)) {
-            err = "No room for the files' archive.";
+        if (request.paths.empty() && request.items.empty()) {
+            err = "Nothing to send.";
             return finish();
         }
-        s.fd = CreateFileW(tmp, GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
-        if (s.fd == INVALID_HANDLE_VALUE) {
-            err = "No room for the files' archive.";
+        if (request.items.size() > 64) {
+            err = "Too many links to send at once.";
             return finish();
         }
-        HANDLE spool = s.fd;
-        s.z = std::make_unique<Deflater>(dvzip, [spool](const uint8_t* buf, size_t len, Error& er) {
-            while (len) {
-                DWORD n = 0;
-                DWORD chunk = len > (1u << 30) ? (1u << 30) : static_cast<DWORD>(len);
-                if (!WriteFile(spool, buf, chunk, &n, nullptr) || !n) {
-                    er.assign(ErrorCode::Failed, "No room for the files' archive.");
-                    return false;
-                }
-                buf += n;
-                len -= n;
-            }
-            return true;
-        });
-        Deflater* z = s.z.get();
-        s.cpio = std::make_unique<CpioWriter>([z](const uint8_t* buf, size_t len, Error& er) { return z->feed(buf, len, &er); });
-        if (!s.cpio->dir(".", &e)) return finish();
+
+        /* Pre-/Ask metadata scan only: zero %TEMP% spooling so the receiver's
+         * prompt appears right away even on multi-gigabyte videos. */
         Value files = Value::array();
+        Value items = Value::array();
+        std::vector<TopEntry> top;
         std::set<std::string> names;
+        std::vector<std::wstring> win_names;
+        std::wstring icon_source;
+        uint64_t total_bytes = 0;
+        uint64_t max_file = 0;
+        unsigned entries = 1; /* root "." entry */
         bool good = true;
+
         for (const std::wstring& p : request.paths) {
             if (!good) break;
             std::wstring base = p.substr(p.find_last_of(L"\\/") + 1);
             std::string name = utf8(base);
-            DWORD attr = GetFileAttributesW(long_path(p).c_str());
-            if (name.empty() || !airdrop_safe_name(name) || names.count(name)) {
+            std::wstring wname = windows_name(name);
+            bool dup = names.count(name) != 0;
+            for (const std::wstring& wn : win_names)
+                if (_wcsicmp(wn.c_str(), wname.c_str()) == 0) dup = true;
+            WIN32_FILE_ATTRIBUTE_DATA fad{};
+            if (name.empty() || !airdrop_safe_name(name) || dup) {
                 err = "Can't send " + name + " under its name.";
                 good = false;
-            } else if (attr == INVALID_FILE_ATTRIBUTES) {
+                break;
+            }
+            if (!GetFileAttributesExW(long_path(p).c_str(), GetFileExInfoStandard, &fad)) {
                 err = name + " isn't a file or folder.";
                 good = false;
-            } else {
-                std::string entry = "./" + name;
-                uint64_t size = 0;
-                bool isdir = (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                good = isdir ? spool_tree(s, p, entry, size, e) : spool_file(s, p, entry, size, e);
-                Value f = Value::dict();
-                f.add("FileBomPath", Value::string(entry));
-                f.add("FileIsDirectory", Value::boolean(isdir));
-                f.add("FileName", Value::string(name));
-                f.add("FileSize", Value::integer(static_cast<int64_t>(size)));
-                f.add("FileType", Value::string(airdrop_uti(name, isdir)));
-                f.add("ShouldConvertMediaFormats", Value::boolean(false));
-                files.push(std::move(f));
-                names.insert(name);
+                break;
             }
+            bool isdir = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            std::string entry = "./" + name;
+            uint64_t size = 0;
+            if (isdir) {
+                good = scan_tree(p, size, max_file, entries, cancel, e);
+            } else {
+                if (++entries > CPIO_MAX_ENTRIES) {
+                    e.assign(ErrorCode::Limit, "Too many files to send at once.");
+                    good = false;
+                    break;
+                }
+                if (fad.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    HANDLE f = CreateFileW(long_path(p).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                           FILE_ATTRIBUTE_NORMAL, nullptr);
+                    LARGE_INTEGER fsz{};
+                    if (f == INVALID_HANDLE_VALUE || !GetFileSizeEx(f, &fsz)) {
+                        if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+                        err = "Couldn't read " + name + ".";
+                        good = false;
+                        break;
+                    }
+                    CloseHandle(f);
+                    size = static_cast<uint64_t>(fsz.QuadPart);
+                } else {
+                    size = (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+                }
+                if (size > max_file) max_file = size;
+                if (icon_source.empty() && file_icon_supported(p)) icon_source = p;
+            }
+            if (!good) break;
+            if (size > UINT64_MAX - total_bytes) {
+                err = "The files are too large to send.";
+                good = false;
+                break;
+            }
+            total_bytes += size;
+
+            Value f = Value::dict();
+            f.add("FileBomPath", Value::string(entry));
+            f.add("FileIsDirectory", Value::boolean(isdir));
+            f.add("FileName", Value::string(name));
+            f.add("FileSize", Value::integer(static_cast<int64_t>(size)));
+            f.add("FileType", Value::string(airdrop_uti(name, isdir)));
+            f.add("ShouldConvertMediaFormats", Value::boolean(false));
+            files.push(std::move(f));
+            names.insert(name);
+            win_names.push_back(std::move(wname));
+            top.push_back(TopEntry{ p, name, entry, isdir });
         }
-        if (!good || !s.cpio->finish(&e) || !s.z->finish(&e)) return finish();
-        LARGE_INTEGER zero{}, end{};
-        SetFilePointerEx(s.fd, zero, &end, FILE_CURRENT);
-        uint64_t total = static_cast<uint64_t>(end.QuadPart);
-        SetFilePointerEx(s.fd, zero, nullptr, FILE_BEGIN);
+
+        for (const std::string& url : request.items) {
+            if (!good) break;
+            if (!valid_send_url(url)) {
+                err = "That link can't be sent.";
+                good = false;
+                break;
+            }
+            items.push(Value::string(url));
+        }
+        if (!good) return finish();
+
+        /* Bounded preview thumbnail for photo/video shares (or explicit caller icon). */
+        Bytes icon;
+        if (!request.file_icon.empty() && request.file_icon.size() <= 512 * 1024) {
+            icon = request.file_icon;
+        } else if (!icon_source.empty()) {
+            make_file_icon(icon_source, icon);
+        }
+
+        bool links_only = top.empty() && !request.items.empty();
 
         /* ASK-7: the current form, keys in the order Finder's come. */
         Value b = Value::dict();
-        b.add("BundleID", Value::string("com.apple.finder"));
+        b.add("BundleID", Value::string(links_only ? "com.apple.Safari" : "com.apple.finder"));
         b.add("ConvertMediaFormats", Value::boolean(false));
+        if (!icon.empty()) b.add("FileIcon", Value::data(icon));
         b.add("Files", std::move(files));
-        b.add("Items", Value::array());
+        b.add("Items", std::move(items));
         b.add("SenderComputerName", Value::string(request.name));
         b.add("SenderID", Value::string(request.id));
         b.add("SenderModelName", Value::string(kModel));
@@ -1570,11 +1764,11 @@ void send(Loop& loop, const SendRequest& request, std::shared_ptr<Cancel> cancel
         idv.add("id", Value::string(tid));
         b.add("TransferID", std::move(idv));
         Value tt = Value::dict();
-        tt.add("files", Value::dict());
+        tt.add(links_only ? "links" : "files", Value::dict());
         b.add("TransferType", std::move(tt));
         Bytes ask;
         if (!plist_request("/Ask", b, ask)) {
-            err = "Couldn't describe the files.";
+            err = "Couldn't describe the transfer.";
             return finish();
         }
 
@@ -1604,37 +1798,85 @@ void send(Loop& loop, const SendRequest& request, std::shared_ptr<Cancel> cancel
             declined = true;
             return finish();
         }
-        post_unless_cancelled(loop, cancel, [progress, total] { progress(true, 0, total); });
+
+        /* ASK-4: link-only shares finish on /Ask 200 OK with no /Upload. */
+        if (links_only) {
+            post_unless_cancelled(loop, cancel, [progress] {
+                if (progress) progress(true, 1, 1);
+            });
+            t->close();
+            ok = true;
+            return finish();
+        }
+
+        post_unless_cancelled(loop, cancel, [progress, total_bytes] {
+            if (progress) progress(true, 0, total_bytes);
+        });
         sock.set_timeout(kIoTimeout);
 
-        /* UP-1a, UP-9, UP-10. */
+        /* UP-1a, UP-9, UP-10: stream the archive with Transfer-Encoding: chunked
+         * directly after /Ask acceptance, keeping memory and temp disk near zero. */
         char head[512];
         int hn = std::snprintf(head, sizeof head,
-                               "POST /Upload HTTP/1.1\r\nUser-Agent: AirDrop/1.0\r\nTransferID: %s\r\nTotalBytes: 0\r\n"
-                               "Content-Type: %s\r\nConnection: keep-alive\r\nContent-Length: %llu\r\n\r\n",
-                               tid.c_str(), dvzip ? "application/x-dvzip" : "application/x-cpio",
-                               static_cast<unsigned long long>(total));
+                               "POST /Upload HTTP/1.1\r\nUser-Agent: AirDrop/1.0\r\nTransferID: %s\r\n"
+                               "TotalBytes: %llu\r\nContent-Type: %s\r\nConnection: keep-alive\r\n"
+                               "Transfer-Encoding: chunked\r\n\r\n",
+                               tid.c_str(), static_cast<unsigned long long>(total_bytes),
+                               dvzip ? "application/x-dvzip" : "application/x-cpio");
         bool wrote = t->write(reinterpret_cast<const uint8_t*>(head), static_cast<size_t>(hn));
-        std::vector<uint8_t> buf(kReadChunk);
-        uint64_t sent = 0;
-        auto last = Clock::time_point{};
-        while (wrote && sent < total) {
-            DWORD got = 0;
-            if (!ReadFile(s.fd, buf.data(), static_cast<DWORD>(buf.size()), &got, nullptr) || !got) {
-                err = "The spool file ended early.";
-                wrote = false;
-                break;
+
+        Streamer s;
+        s.cancel = cancel;
+        s.loop = &loop;
+        s.progress = progress;
+        s.total = total_bytes;
+        tls::Stream* tls_ptr = t.get();
+        s.z = std::make_unique<Deflater>(dvzip, [tls_ptr, &s](const uint8_t* buf, size_t len, Error& er) {
+            if (!len) return true;
+            if (s.cancel->cancelled()) {
+                er.assign(ErrorCode::Failed, "Cancelled.");
+                return false;
             }
-            wrote = t->write(buf.data(), got);
-            sent += got;
-            auto now = Clock::now();
-            if (wrote && (now - last >= kProgressEvery || sent == total)) {
-                last = now;
-                post_unless_cancelled(loop, cancel, [progress, sent, total] { progress(true, sent, total); });
+            Bytes chunk = http_chunk(buf, len);
+            if (!tls_ptr->write(chunk.data(), chunk.size())) {
+                s.write_failed = true;
+                er.assign(ErrorCode::Failed, "The receiver stopped answering.");
+                return false;
             }
+            return true;
+        });
+        Deflater* z = s.z.get();
+        CpioFormat fmt = max_file > CPIO_ODC_MAX_SIZE ? CpioFormat::AfioLarge : CpioFormat::Odc;
+        s.cpio = std::make_unique<CpioWriter>(
+            [z](const uint8_t* buf, size_t len, Error& er) { return z->feed(buf, len, &er); }, fmt);
+
+        if (wrote) {
+            wrote = s.cpio->dir(".", &e);
+            for (const TopEntry& item : top) {
+                if (!wrote) break;
+                wrote = item.isdir ? stream_tree(s, item.path, item.entry, e)
+                                   : stream_file(s, item.path, item.entry, e);
+            }
+            if (wrote) wrote = s.cpio->finish(&e) && s.z->finish(&e);
+            if (wrote) {
+                Bytes tail = http_chunk(nullptr, 0);
+                if (!t->write(tail.data(), tail.size())) {
+                    s.write_failed = true;
+                    wrote = false;
+                }
+            }
+        } else {
+            s.write_failed = true;
         }
-        /* The receiver may have refused and closed; its response, if any,
-         * says why. */
+        if (wrote) s.note_progress(true);
+
+        /* If a local read failed or the user cancelled, fail immediately; if
+         * the network write failed, check whether the receiver sent an error
+         * response before closing. */
+        if (!wrote && !s.write_failed) {
+            t->close();
+            return finish();
+        }
         err.clear();
         Response done_resp;
         sock.set_timeout(kUploadResponseTimeout);

@@ -16,7 +16,14 @@
 
 #include "apple_ca.h"
 #include "formats.h"
+#include "thumb.h"
 #include "zlib.h"
+
+extern "C" {
+#include "awdl.h"
+}
+
+#include <windows.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -3007,6 +3014,228 @@ void test_record_hashes()
     CHECK(!airdrop_extract_record_hashes(junk, sizeof(junk), got));
 }
 
+void test_cpio_afiol()
+{
+    Error error;
+    /* 1. Round-trip afiol (070727) archive in 1-byte pieces. */
+    Bytes out;
+    CpioWriter w(collect(out), CpioFormat::AfioLarge);
+    CHECK(w.dir(".", &error));
+    CHECK(w.file("./hello.txt", 12, MTIME, &error));
+    CHECK(w.file_data(reinterpret_cast<const uint8_t *>("hello "), 6, &error));
+    CHECK(w.file_data(reinterpret_cast<const uint8_t *>("world\n"), 6, &error));
+    CHECK(w.finish(&error));
+    CHECK_NO_ERROR(error);
+    CHECK(out.size() > 116 && std::memcmp(out.data(), "070727", 6) == 0);
+    std::string log;
+    CHECK(read_cpio(out.data(), out.size(), 1, nullptr, error, &log));
+    CHECK_NO_ERROR(error);
+    CHECK(log == "dir . 0\n|end\nfile ./hello.txt 12\nhello world\n|end\n");
+
+    /* 2. Lifts odc's 8 GiB - 1 single-file cap: write and parse a 10 GiB header without allocating 10 GiB. */
+    constexpr uint64_t kHugeSize = (10ull << 30) + 12345ull;
+    Bytes huge_hdr;
+    CpioWriter hw(collect(huge_hdr), CpioFormat::AfioLarge);
+    CHECK(hw.dir(".", &error));
+    CHECK(hw.file("./movie.mov", kHugeSize, MTIME, &error));
+    CHECK_NO_ERROR(error);
+
+    bool saw_huge = false;
+    CpioCallbacks hcb;
+    hcb.begin = [&](const std::string &path, CpioType type, uint64_t size, Error &e) {
+        if (path == "./movie.mov") {
+            CHECK(type == CpioType::File);
+            CHECK(size == kHugeSize);
+            saw_huge = true;
+            e.assign(ErrorCode::Refused, "header verified");
+            return false;
+        }
+        return true;
+    };
+    CpioReader hr(hcb);
+    bool done = false;
+    CHECK(!hr.feed(huge_hdr.data(), huge_hdr.size(), &done, &error));
+    CHECK(saw_huge);
+    CHECK_FAILED(error, REFUSED);
+
+    /* 3. SEC-1 rejections on afiol: paths, symlinks, hardlinks, devices, bad markers, xsize, high-bit size. */
+    auto afiol_entry = [](Bytes &dst, const std::string &name, unsigned mode, unsigned nlink, uint64_t size,
+                          const char *data = nullptr) {
+        char hdr[128];
+        std::snprintf(hdr, sizeof hdr, "070727%08x%016llxm%06o%08x%08x%08x%08x%016llxn%04x00000000s%016llx:",
+                      0u, 1ull, mode, 501u, 20u, nlink, 0u, 0ull, static_cast<unsigned>(name.size() + 1),
+                      static_cast<unsigned long long>(size));
+        dst.insert(dst.end(), reinterpret_cast<const uint8_t *>(hdr), reinterpret_cast<const uint8_t *>(hdr) + 116);
+        dst.insert(dst.end(), name.begin(), name.end());
+        dst.push_back(0);
+        if (data && size) dst.insert(dst.end(), reinterpret_cast<const uint8_t *>(data),
+                                     reinterpret_cast<const uint8_t *>(data) + size);
+    };
+    static const struct {
+        const char *name;
+        unsigned mode, nlink, size;
+        ErrorCode code;
+    } bad_cases[] = {
+        { "/etc/passwd", 0100644, 1, 1, REFUSED },
+        { "../x", 0100644, 1, 1, REFUSED },
+        { "./link", 0120777, 1, 1, REFUSED },
+        { "./hard", 0100644, 2, 1, REFUSED },
+        { "./tty", 020644, 1, 0, REFUSED },
+        { "./dir", 040755, 2, 1, INVALID },
+    };
+    for (const auto &k : bad_cases) {
+        Bytes a;
+        afiol_entry(a, ".", 040755, 2, 0);
+        afiol_entry(a, k.name, k.mode, k.nlink, k.size, "x");
+        afiol_entry(a, "TRAILER!!!", 0, 0, 0);
+        CHECK(!read_cpio(a.data(), a.size(), 0, nullptr, error));
+        CHECK_FAILED(error, k.code);
+    }
+
+    /* Corrupted afiol markers, non-zero xsize, high-bit filesize, and format change midway. */
+    static const struct {
+        unsigned at;
+        uint8_t c;
+    } bad_edits[] = {
+        { 30, 'x' },  /* 'm' marker */
+        { 85, 'x' },  /* 'n' marker */
+        { 98, 'x' },  /* 's' marker */
+        { 115, 'x' }, /* ':' marker */
+        { 97, '1' },  /* non-zero xsize */
+        { 99, '8' },  /* negative signed 64-bit size */
+        { 32, '9' },  /* non-octal digit in mode */
+    };
+    for (const auto &e : bad_edits) {
+        Bytes a = out;
+        a[e.at] = e.c;
+        CHECK(!read_cpio(a.data(), a.size(), 0, nullptr, error));
+        CHECK_FAILED(error, INVALID);
+    }
+    Bytes mixed;
+    afiol_entry(mixed, "./a", 0100644, 1, 1, "x");
+    odc_entry(mixed, "./b", 0100644, 1, "y", 1);
+    afiol_entry(mixed, "TRAILER!!!", 0, 0, 0);
+    CHECK(!read_cpio(mixed.data(), mixed.size(), 0, nullptr, error));
+    CHECK_FAILED(error, INVALID);
+}
+
+void test_awdl_name_sync()
+{
+    struct Capture {
+        std::string last_mif_name;
+        unsigned mifs = 0;
+    } cap;
+
+    auto node = std::make_unique<awdl_node>();
+    awdl_mac own{ { 0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee } };
+    awdl_config cfg{};
+    awdl_config_init(&cfg, &own, "lares-111111111111", 6, AWDL_PRESENCE_FIXED);
+    awdl_host host{};
+    host.ctx = &cap;
+    host.transmit = [](void *ctx, const awdl_tx *tx) -> awdl_tx_result {
+        auto *c = static_cast<Capture *>(ctx);
+        awdl_rx_frame rx{};
+        if (awdl_frame_parse(tx->bytes, tx->len, &rx) == 0 && rx.kind == AWDL_RX_ACTION &&
+            rx.subtype == AWDL_SUBTYPE_MIF) {
+            awdl_advert adv{};
+            if (awdl_advert_parse(rx.tlvs, rx.tlvs_len, &adv) == 0 && adv.has_name) {
+                c->last_mif_name.assign(reinterpret_cast<const char *>(adv.name), adv.name_len);
+                c->mifs++;
+            }
+        }
+        return AWDL_TX_SENT;
+    };
+    host.peer_up = [](void *, const awdl_peer *) {};
+    host.peer_down = [](void *, const awdl_peer *) {};
+    host.deliver = [](void *, const awdl_mac *, const awdl_mac *, const uint8_t *, size_t) {};
+
+    awdl_time t = 1000000;
+    awdl_node_init(node.get(), &cfg, &host, t);
+    for (int i = 0; i < 10 && cap.mifs == 0; i++) {
+        t = awdl_node_deadline(node.get(), t);
+        awdl_node_timer(node.get(), t);
+    }
+    CHECK(cap.mifs > 0);
+    CHECK(cap.last_mif_name == "lares-111111111111");
+
+    unsigned before = cap.mifs;
+    awdl_node_set_name(node.get(), "lares-222222222222");
+    for (int i = 0; i < 10 && cap.mifs == before; i++) {
+        t = awdl_node_deadline(node.get(), t);
+        awdl_node_timer(node.get(), t);
+    }
+    CHECK(cap.mifs > before);
+    CHECK(cap.last_mif_name == "lares-222222222222");
+
+    /* Overlong names truncate safely to AWDL_NAME_MAX. */
+    std::string long_name(AWDL_NAME_MAX + 20, 'z');
+    awdl_node_set_name(node.get(), long_name.c_str());
+    CHECK(node->cfg.name_len == AWDL_NAME_MAX);
+}
+
+void test_file_icon()
+{
+    CHECK(file_icon_supported(L"C:\\Users\\me\\IMG_0001.JPG"));
+    CHECK(file_icon_supported(L"C:\\Users\\me\\photo.png"));
+    CHECK(file_icon_supported(L"C:\\Users\\me\\clip.mov"));
+    CHECK(file_icon_supported(L"C:\\Users\\me\\video.mp4"));
+    CHECK(!file_icon_supported(L"C:\\Users\\me\\notes.txt"));
+    CHECK(!file_icon_supported(L"C:\\Users\\me\\archive.zip"));
+    CHECK(!file_icon_supported(L"C:\\Users\\me\\README"));
+
+    /* Build a small valid 64x64 24-bit BMP in %TEMP% and generate a bounded FileIcon. */
+    wchar_t dir[MAX_PATH];
+    CHECK(GetTempPathW(MAX_PATH, dir) > 0);
+    std::wstring bmp_path = std::wstring(dir) + L"lares-icon-test-" + std::to_wstring(GetCurrentProcessId()) + L".bmp";
+    constexpr uint32_t w = 64, h = 64, dsz = w * h * 3, fsz = 54 + dsz;
+    std::vector<uint8_t> b(fsz, 0);
+    b[0] = 'B';
+    b[1] = 'M';
+    b[2] = static_cast<uint8_t>(fsz & 0xff);
+    b[3] = static_cast<uint8_t>((fsz >> 8) & 0xff);
+    b[10] = 54;
+    b[14] = 40;
+    b[18] = w;
+    b[22] = h;
+    b[26] = 1;
+    b[28] = 24;
+    b[34] = static_cast<uint8_t>(dsz & 0xff);
+    b[35] = static_cast<uint8_t>((dsz >> 8) & 0xff);
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            size_t p = 54 + (y * w + x) * 3;
+            b[p + 0] = static_cast<uint8_t>(x * 4);
+            b[p + 1] = static_cast<uint8_t>(y * 4);
+            b[p + 2] = static_cast<uint8_t>((x + y) * 2);
+        }
+    }
+    HANDLE f = CreateFileW(bmp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    CHECK(f != INVALID_HANDLE_VALUE);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD wrote = 0;
+        WriteFile(f, b.data(), static_cast<DWORD>(b.size()), &wrote, nullptr);
+        CloseHandle(f);
+    }
+
+    Bytes icon;
+    CHECK(make_file_icon(bmp_path, icon, kFileIconMaxBytes, kFileIconMaxDim));
+    CHECK(!icon.empty() && icon.size() <= kFileIconMaxBytes);
+    if (icon.size() >= 4) {
+        bool jpeg = icon[0] == 0xff && icon[1] == 0xd8 && icon[2] == 0xff;
+        bool png = icon[0] == 0x89 && icon[1] == 0x50 && icon[2] == 0x4e && icon[3] == 0x47;
+        CHECK(jpeg || png);
+    }
+
+    /* Missing files and unsupported types return false without modifying `out`. */
+    Bytes untouched = { 0xde, 0xad };
+    CHECK(!make_file_icon(bmp_path + L".missing.jpg", untouched));
+    CHECK(untouched.size() == 2 && untouched[0] == 0xde);
+    CHECK(!make_file_icon(L"C:\\notes.txt", untouched));
+    CHECK(untouched.size() == 2 && untouched[0] == 0xde);
+
+    DeleteFileW(bmp_path.c_str());
+}
+
 } // namespace
 
 void run_format_tests()
@@ -3026,6 +3255,9 @@ void run_format_tests()
     test_cpio_limits();
     test_cpio_writer();
     test_cpio_writer_errors();
+    test_cpio_afiol();
+    test_awdl_name_sync();
+    test_file_icon();
     test_compress_round_trip();
     test_gzip_members();
     test_compress_bombs();

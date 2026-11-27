@@ -779,7 +779,8 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
     const ShareView& v = share_view_;
     const ShareSession& s = v.s;
     const AirDropPalette ap = airdrop_palette(dark_);
-    const bool overlay_open = share_mode_menu_open_ || share_adapter_open_ || share_contacts_open_ || share_ctx_open_;
+    const bool overlay_open = share_mode_menu_open_ || share_adapter_open_ || share_contacts_open_ ||
+                              share_link_open_ || share_ctx_open_;
 
     auto hover_bg = [&](const D2D1_RECT_F& rc) {
         return !overlay_open && mouse_in_ && drop_open_.empty() && point_in_rect(mouse_x_, mouse_y_, rc);
@@ -983,10 +984,15 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
     toolbar_pill(contacts_rc, contacts_lbl.c_str(), share_contacts_open_, ShareActionKind::ToggleContacts);
     toolbar_pill(adapter_rc, adapter_lbl, share_adapter_open_, ShareActionKind::ToggleAdapter);
 
-    // Top-left staged files pill (when files are queued for click-to-send)
-    if (s.sending && !v.files.empty()) {
-        std::wstring pill_txt = L"Ready to send: " + v.files[0];
-        if (v.files.size() > 1) pill_txt += L" +" + std::to_wstring(v.files.size() - 1);
+    // Top-left staged files or link pill (when items are queued for click-to-send)
+    if (s.sending && (!v.files.empty() || !v.send_urls.empty())) {
+        std::wstring pill_txt;
+        if (!v.files.empty()) {
+            pill_txt = L"Ready to send: " + v.files[0];
+            if (v.files.size() > 1) pill_txt += L" +" + std::to_wstring(v.files.size() - 1);
+        } else {
+            pill_txt = L"Ready to send link: " + utf8_to_wide(v.send_urls[0]);
+        }
         float max_pw = std::max(140.0f, contacts_rc.left - x - 48.0f);
         float pw = std::min(max_pw, text_width(pill_txt.c_str(), fonts_.ui_sub()) + 40.0f);
         D2D1_RECT_F prc = D2D1::RectF(x + 16.0f, pill_y, x + 16.0f + pw, pill_y + pill_h);
@@ -1340,23 +1346,30 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
             }
         } else {
             const ShareDevice& d = n.dev;
-            std::wstring what = v.files.empty() ? std::wstring(L"files") : v.files[0];
-            if (v.files.size() > 1) what += L" and " + std::to_wstring(v.files.size() - 1) + L" more";
-            if (!v.file_paths.empty()) {
-                is_image = looks_like_image_name(wide_to_utf8(v.files[0]));
-                if (is_image) thumb_path = v.file_paths[0];
+            bool sending_link = v.files.empty() && !v.send_urls.empty();
+            is_link = sending_link;
+            std::wstring what;
+            if (sending_link) {
+                what = v.send_urls.size() > 1 ? L"links" : L"a link";
+            } else {
+                what = v.files.empty() ? std::wstring(L"files") : v.files[0];
+                if (v.files.size() > 1) what += L" and " + std::to_wstring(v.files.size() - 1) + L" more";
+                if (!v.file_paths.empty()) {
+                    is_image = looks_like_image_name(wide_to_utf8(v.files[0]));
+                    if (is_image) thumb_path = v.file_paths[0];
+                }
             }
             switch (d.state) {
             case ShareDeviceState::Asking:
                 title = L"Waiting for " + utf8_to_wide(n.display_name) + L"…";
-                detail = L"Sending “" + what + L"”";
+                detail = sending_link ? utf8_to_wide(v.send_urls[0]) : (L"Sending “" + what + L"”");
                 show_bar = true;
                 bar_frac = 0.14;
                 show_cancel_x = true;
                 x_action = ShareActionKind::CancelSend;
                 break;
             case ShareDeviceState::Sending: {
-                title = L"Sending “" + what + L"”.";
+                title = sending_link ? L"Sending link." : (L"Sending “" + what + L"”.");
                 show_bar = true;
                 bar_frac = fraction(d.sent, d.total);
                 show_cancel_x = true;
@@ -1370,8 +1383,8 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                 break;
             }
             case ShareDeviceState::Sent:
-                title = L"Sent “" + what + L"”.";
-                detail = L"Delivered to " + utf8_to_wide(n.display_name);
+                title = sending_link ? L"Sent link." : (L"Sent “" + what + L"”.");
+                detail = sending_link ? utf8_to_wide(v.send_urls[0]) : (L"Delivered to " + utf8_to_wide(n.display_name));
                 break;
             case ShareDeviceState::Declined:
                 title = utf8_to_wide(n.display_name) + L" declined.";
@@ -1472,6 +1485,9 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                 } else if (n.inc.state == ShareIncomingState::Done) {
                     right_btn(L"Show in Folder", true, ShareActionKind::ShowFolder,
                               n.inc.saved.empty() ? std::string() : n.inc.saved[0]);
+                    if (!n.inc.offered_links.empty() && share_link_opens(n.inc.offered_links[0])) {
+                        right_btn(L"Open Link", false, ShareActionKind::OpenLink, n.inc.offered_links[0]);
+                    }
                     right_btn(L"OK", false, ShareActionKind::Dismiss);
                 } else if (n.inc.state == ShareIncomingState::Failed) {
                     right_btn(L"OK", false, ShareActionKind::Dismiss);
@@ -1488,7 +1504,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
 
     // --------------------------------------------------------- Overlay backdrop + menus/modals
     if (overlay_open) {
-        if (share_contacts_open_) fill(rt, stage, ap.backdrop, stage_r);
+        if (share_contacts_open_ || share_link_open_) fill(rt, stage, ap.backdrop, stage_r);
         share_hits_.push_back({ stage, ShareActionKind::CloseOverlays, {} });
     }
 
@@ -1527,16 +1543,16 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         }
     }
 
-    // 2) Compact Adapter details popover
+    // 2) Compact Adapter & Media Format popover
     if (share_adapter_open_) {
-        const float aw = 316.0f;
+        const float aw = 336.0f;
         BleWakeState wake_state = opts_.dry_run
                                       ? (GetEnvironmentVariableW(L"LARES_DRY_BLUETOOTH", nullptr, 0) > 0 ? BleWakeState::RadioOff
                                                                                                          : BleWakeState::Off)
                                       : ble_.state();
         bool show_bt_btn = s.wake && wake_state == BleWakeState::RadioOff;
         bool show_giveback = !v.running;
-        float ah = 148.0f + (show_bt_btn ? 52.0f : 0.0f) + (show_giveback ? 42.0f : 0.0f);
+        float ah = 246.0f + (show_bt_btn ? 52.0f : 0.0f) + (show_giveback ? 42.0f : 0.0f);
         float ax = std::clamp(adapter_rc.right - aw, x + 12.0f, x + w - aw - 12.0f);
         float ay = adapter_rc.bottom + 8.0f;
         D2D1_RECT_F arc = D2D1::RectF(ax, ay, ax + aw, ay + ah);
@@ -1569,7 +1585,44 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
             rt->DrawTextLayout(D2D1::Point2F(std::round(ax + 16.0f), std::round(cy_p)), nl, brush_);
             nl->Release();
         }
-        cy_p += 46.0f;
+        cy_p += 44.0f;
+
+        // Media format preference (ReceiverMediaCapabilities: Compatible JPEG/H.264 vs Original HEIC/HEVC)
+        fill(rt, D2D1::RectF(ax + 16.0f, cy_p, ax + aw - 16.0f, cy_p + 1.0f), ap.stage_border);
+        cy_p += 12.0f;
+        label(rt, L"Received Media Format", fonts_.ui_sub_semibold(), ax + 16.0f, cy_p, aw - 32.0f, ap.text);
+        cy_p += 22.0f;
+
+        const float seg_w = aw - 32.0f;
+        const float seg_h = 28.0f;
+        D2D1_RECT_F seg_rc = D2D1::RectF(ax + 16.0f, cy_p, ax + 16.0f + seg_w, cy_p + seg_h);
+        Rgba seg_bg = dark_ ? Rgba{ 1.0f, 1.0f, 1.0f, 0.08f } : Rgba{ 0.0f, 0.0f, 0.0f, 0.06f };
+        fill(rt, seg_rc, seg_bg, 8.0f);
+        float half_seg = (seg_w - 4.0f) * 0.5f;
+        D2D1_RECT_F compat_rc = D2D1::RectF(seg_rc.left + 2.0f, seg_rc.top + 2.0f,
+                                            seg_rc.left + 2.0f + half_seg, seg_rc.bottom - 2.0f);
+        D2D1_RECT_F orig_rc = D2D1::RectF(seg_rc.right - 2.0f - half_seg, seg_rc.top + 2.0f,
+                                          seg_rc.right - 2.0f, seg_rc.bottom - 2.0f);
+        bool orig = pad_prefs_.share_original_media;
+        auto draw_seg = [&](const D2D1_RECT_F& rc, const wchar_t* txt, bool active, const char* val) {
+            bool hov = hover_top(rc);
+            if (active) {
+                fill(rt, rc, ap.blue, 6.5f);
+            } else if (hov) {
+                fill(rt, rc, ap.btn_hover, 6.5f);
+            }
+            Rgba fg = active ? Rgba{ 1.0f, 1.0f, 1.0f, 1.0f } : ap.text;
+            draw_centered_text(rt, fonts_.factory(), brush_, txt, fonts_.ui_sub_semibold(), rc, fg,
+                               DWRITE_TEXT_ALIGNMENT_CENTER);
+            share_hits_.push_back({ rc, ShareActionKind::SetMediaFormat, val });
+        };
+        draw_seg(compat_rc, L"Compatible", !orig, "compatible");
+        draw_seg(orig_rc, L"Original", orig, "original");
+        cy_p += seg_h + 6.0f;
+
+        label(rt, orig ? L"Keeps original iOS HEIC & HEVC files." : L"Converts iOS HEIC & HEVC to JPEG & H.264.",
+              fonts_.ui_sub(), ax + 16.0f, cy_p, aw - 32.0f, ap.sub);
+        cy_p += 24.0f;
 
         if (show_bt_btn) {
             label(rt, L"Bluetooth is off (needed to wake iPhones).", fonts_.ui_sub(), ax + 16.0f, cy_p, aw - 32.0f, ap.red);
@@ -1793,7 +1846,61 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
                    share_editing_contact_ >= 0 ? L"Save Contact" : L"Add Contact", true, true, ShareActionKind::ContactAdd);
     }
 
-    // 4) macOS right-click context menu on a nearby device
+    // 4) Inline macOS Send Link modal sheet
+    if (share_link_open_) {
+        const float pad = 24.0f;
+        const float mw = std::round(std::min(430.0f, w - 48.0f));
+        const float mh = share_link_error_.empty() ? 182.0f : 204.0f;
+        const float mx = std::round(cx - mw * 0.5f);
+        const float my = std::round(y + std::max(24.0f, (h - mh) * 0.5f));
+        D2D1_RECT_F mrc = D2D1::RectF(mx, my, mx + mw, my + mh);
+
+        fill(rt, D2D1::RectF(mx, my + 8.0f, mx + mw, my + mh + 8.0f), ap.shadow, 14.0f);
+        fill(rt, mrc, ap.popover_bg, 14.0f);
+        brush_->SetColor(to_d2d(ap.popover_border));
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(mrc, 14.0f, 14.0f), brush_, 1.0f);
+        share_hits_.push_back({ mrc, ShareActionKind::LinkSheetNoop, {} });
+
+        float cy_l = my + 20.0f;
+        std::wstring hdr = share_link_target_name_.empty()
+                               ? std::wstring(L"Send Link")
+                               : (L"Send Link to " + utf8_to_wide(share_link_target_name_));
+        draw_centered_text(rt, fonts_.factory(), brush_, hdr.c_str(), fonts_.ui_title(),
+                           D2D1::RectF(mx + pad, cy_l, mx + mw - pad, cy_l + 28.0f),
+                           ap.text, DWRITE_TEXT_ALIGNMENT_LEADING);
+        cy_l += 36.0f;
+
+        draw_centered_text(rt, fonts_.factory(), brush_, L"Web Address (http or https)", fonts_.ui_sub_semibold(),
+                           D2D1::RectF(mx + pad + 2.0f, cy_l, mx + mw - pad, cy_l + 16.0f),
+                           ap.sub, DWRITE_TEXT_ALIGNMENT_LEADING);
+        cy_l += 22.0f;
+
+        D2D1_RECT_F frc = D2D1::RectF(mx + pad, cy_l, mx + mw - pad, cy_l + 34.0f);
+        fill(rt, frc, ap.field_bg, 8.0f);
+        brush_->SetColor(to_d2d(ap.blue));
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(frc, 8.0f, 8.0f), brush_, 1.6f);
+        std::wstring shown = share_link_draft_.empty() ? std::wstring(L"https://example.com")
+                                                       : (utf8_to_wide(share_link_draft_) + L"|");
+        draw_centered_text(rt, fonts_.factory(), brush_, shown.c_str(), fonts_.ui_sub(),
+                           D2D1::RectF(frc.left + 12.0f, frc.top, frc.right - 12.0f, frc.bottom),
+                           share_link_draft_.empty() ? ap.sub : ap.text, DWRITE_TEXT_ALIGNMENT_LEADING);
+        cy_l += 42.0f;
+
+        if (!share_link_error_.empty()) {
+            label(rt, utf8_to_wide(share_link_error_).c_str(), fonts_.ui_sub(), mx + pad + 2.0f, cy_l - 2.0f,
+                  mw - pad * 2.0f, ap.red);
+            cy_l += 22.0f;
+        }
+
+        mac_button(D2D1::RectF(mx + pad, cy_l, mx + pad + 82.0f, cy_l + 32.0f),
+                   L"Paste", false, true, ShareActionKind::LinkPaste);
+        mac_button(D2D1::RectF(mx + mw - pad - 188.0f, cy_l, mx + mw - pad - 112.0f, cy_l + 32.0f),
+                   L"Cancel", false, true, ShareActionKind::CloseOverlays);
+        mac_button(D2D1::RectF(mx + mw - pad - 102.0f, cy_l, mx + mw - pad, cy_l + 32.0f),
+                   L"Send Link", true, true, ShareActionKind::LinkSubmit);
+    }
+
+    // 5) macOS right-click context menu on a nearby device
     if (share_ctx_open_) {
         struct CtxItem {
             const wchar_t* label;
@@ -1804,6 +1911,7 @@ void MainWindow::draw_share_page(ID2D1RenderTarget* rt, const Palette&, float x,
         std::vector<CtxItem> items;
         if (share_ctx_has_device_) {
             items.push_back({ L"Send Files…", ShareActionKind::DeviceClick, share_ctx_key_ });
+            items.push_back({ L"Send Link…", ShareActionKind::DeviceSendLink, share_ctx_key_ });
         }
         items.push_back({ known ? L"Edit Contact…" : L"Add to Contacts",
                           ShareActionKind::DeviceAddContact, share_ctx_raw_name_ });
@@ -1928,6 +2036,7 @@ bool MainWindow::share_click(float lx, float ly)
             share_mode_menu_focus_ = -1;
             share_adapter_open_ = false;
             share_contacts_open_ = false;
+            share_link_open_ = false;
             share_ctx_open_ = false;
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
@@ -1947,6 +2056,8 @@ bool MainWindow::share_click(float lx, float ly)
             share_mode_menu_focus_ = -1;
             share_adapter_open_ = false;
             share_contacts_open_ = false;
+            share_link_open_ = false;
+            share_link_error_.clear();
             share_ctx_open_ = false;
             share_editing_contact_ = -1;
             share_contact_field_ = -1;
@@ -1959,7 +2070,7 @@ bool MainWindow::share_click(float lx, float ly)
             break;
         case ShareActionKind::DeviceClick: {
             share_ctx_open_ = false;
-            if (share_view_.s.sending && !share_view_.files.empty()) {
+            if (share_view_.s.sending && (!share_view_.files.empty() || !share_view_.send_urls.empty())) {
                 share_.send_to(value);
             } else {
                 std::wstring title = L"Choose files to send";
@@ -1971,6 +2082,93 @@ bool MainWindow::share_click(float lx, float ly)
                 }
                 std::vector<std::wstring> files = pick_files_to_send(title.c_str());
                 if (!files.empty()) share_.send_files_to(value, files);
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            break;
+        }
+        case ShareActionKind::DeviceSendLink: {
+            share_ctx_open_ = false;
+            share_mode_menu_open_ = false;
+            share_adapter_open_ = false;
+            share_contacts_open_ = false;
+            share_link_open_ = true;
+            share_link_key_ = value;
+            share_link_target_name_.clear();
+            for (const auto& c : share_circles_) {
+                if (c.key == value) {
+                    share_link_target_name_ = c.name;
+                    break;
+                }
+            }
+            share_link_draft_.clear();
+            share_link_error_.clear();
+            /* Pre-fill if the clipboard already holds a valid http/https URL. */
+            if (!opts_.dry_run && OpenClipboard(hwnd_)) {
+                HANDLE h = GetClipboardData(CF_UNICODETEXT);
+                if (h) {
+                    const wchar_t* ws = static_cast<const wchar_t*>(GlobalLock(h));
+                    if (ws) {
+                        std::string clip = wide_to_utf8(std::wstring(ws, wcsnlen(ws, 2048)));
+                        size_t a = 0, b = clip.size();
+                        while (a < b && (clip[a] == ' ' || clip[a] == '\t' || clip[a] == '\r' || clip[a] == '\n')) ++a;
+                        while (b > a && (clip[b - 1] == ' ' || clip[b - 1] == '\t' || clip[b - 1] == '\r' || clip[b - 1] == '\n')) --b;
+                        clip = clip.substr(a, b - a);
+                        if (share_link_opens(clip)) share_link_draft_ = clip;
+                        GlobalUnlock(h);
+                    }
+                }
+                CloseClipboard();
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            break;
+        }
+        case ShareActionKind::LinkSheetNoop:
+            return true;
+        case ShareActionKind::LinkPaste: {
+            if (OpenClipboard(hwnd_)) {
+                HANDLE h = GetClipboardData(CF_UNICODETEXT);
+                if (h) {
+                    const wchar_t* ws = static_cast<const wchar_t*>(GlobalLock(h));
+                    if (ws) {
+                        std::string clip = wide_to_utf8(std::wstring(ws, wcsnlen(ws, 2048)));
+                        size_t a = 0, b = clip.size();
+                        while (a < b && (clip[a] == ' ' || clip[a] == '\t' || clip[a] == '\r' || clip[a] == '\n')) ++a;
+                        while (b > a && (clip[b - 1] == ' ' || clip[b - 1] == '\t' || clip[b - 1] == '\r' || clip[b - 1] == '\n')) --b;
+                        share_link_draft_ = clip.substr(a, b - a);
+                        share_link_error_.clear();
+                        GlobalUnlock(h);
+                    }
+                }
+                CloseClipboard();
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            break;
+        }
+        case ShareActionKind::LinkSubmit: {
+            std::string url = share_link_draft_;
+            size_t a = 0, b = url.size();
+            while (a < b && (url[a] == ' ' || url[a] == '\t' || url[a] == '\r' || url[a] == '\n')) ++a;
+            while (b > a && (url[b - 1] == ' ' || url[b - 1] == '\t' || url[b - 1] == '\r' || url[b - 1] == '\n')) --b;
+            url = url.substr(a, b - a);
+            if (!share_link_opens(url)) {
+                share_link_error_ = "Enter a valid http:// or https:// web address.";
+            } else {
+                std::string key = share_link_key_;
+                share_link_open_ = false;
+                share_link_draft_.clear();
+                share_link_error_.clear();
+                if (!key.empty()) share_.send_urls_to(key, { url });
+                else share_.send_urls({ url });
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            break;
+        }
+        case ShareActionKind::SetMediaFormat: {
+            bool orig = (value == "original");
+            if (pad_prefs_.share_original_media != orig) {
+                pad_prefs_.share_original_media = orig;
+                save_pad_prefs(pad_path_, pad_prefs_);
+                share_.set_original_media(orig);
             }
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
@@ -2053,6 +2251,7 @@ bool MainWindow::share_click(float lx, float ly)
             share_contacts_open_ = !share_contacts_open_;
             share_mode_menu_open_ = false;
             share_adapter_open_ = false;
+            share_link_open_ = false;
             share_ctx_open_ = false;
             share_editing_contact_ = -1;
             share_draft_name_.clear();
@@ -2068,6 +2267,7 @@ bool MainWindow::share_click(float lx, float ly)
             share_adapter_open_ = !share_adapter_open_;
             share_mode_menu_open_ = false;
             share_contacts_open_ = false;
+            share_link_open_ = false;
             share_ctx_open_ = false;
             InvalidateRect(hwnd_, nullptr, FALSE);
             break;
@@ -2176,7 +2376,7 @@ bool MainWindow::share_click(float lx, float ly)
 
 bool MainWindow::share_right_click(float lx, float ly)
 {
-    if (!is_share_section_active() || share_contacts_open_) return false;
+    if (!is_share_section_active() || share_contacts_open_ || share_link_open_) return false;
     share_mode_menu_open_ = false;
     share_adapter_open_ = false;
     share_ctx_open_ = false;
@@ -2237,6 +2437,65 @@ bool MainWindow::share_key_down(WPARAM vk)
     if (share_adapter_open_ && vk == VK_ESCAPE) {
         share_adapter_open_ = false;
         InvalidateRect(hwnd_, nullptr, FALSE);
+        return true;
+    }
+    if (share_link_open_) {
+        if (vk == VK_ESCAPE) {
+            share_link_open_ = false;
+            share_link_error_.clear();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return true;
+        }
+        if (vk == 'V' && (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+            if (OpenClipboard(hwnd_)) {
+                HANDLE h = GetClipboardData(CF_UNICODETEXT);
+                if (h) {
+                    const wchar_t* ws = static_cast<const wchar_t*>(GlobalLock(h));
+                    if (ws) {
+                        std::string clip = wide_to_utf8(std::wstring(ws, wcsnlen(ws, 2048)));
+                        size_t a = 0, b = clip.size();
+                        while (a < b && (clip[a] == ' ' || clip[a] == '\t' || clip[a] == '\r' || clip[a] == '\n')) ++a;
+                        while (b > a && (clip[b - 1] == ' ' || clip[b - 1] == '\t' || clip[b - 1] == '\r' || clip[b - 1] == '\n')) --b;
+                        share_link_draft_ = clip.substr(a, b - a);
+                        share_link_error_.clear();
+                        GlobalUnlock(h);
+                    }
+                }
+                CloseClipboard();
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return true;
+        }
+        if (vk == VK_RETURN) {
+            std::string url = share_link_draft_;
+            size_t a = 0, b = url.size();
+            while (a < b && (url[a] == ' ' || url[a] == '\t' || url[a] == '\r' || url[a] == '\n')) ++a;
+            while (b > a && (url[b - 1] == ' ' || url[b - 1] == '\t' || url[b - 1] == '\r' || url[b - 1] == '\n')) --b;
+            url = url.substr(a, b - a);
+            if (!share_link_opens(url)) {
+                share_link_error_ = "Enter a valid http:// or https:// web address.";
+            } else {
+                std::string key = share_link_key_;
+                share_link_open_ = false;
+                share_link_draft_.clear();
+                share_link_error_.clear();
+                if (!key.empty()) share_.send_urls_to(key, { url });
+                else share_.send_urls({ url });
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return true;
+        }
+        if (vk == VK_BACK) {
+            if (!share_link_draft_.empty()) {
+                while (!share_link_draft_.empty() &&
+                       (static_cast<unsigned char>(share_link_draft_.back()) & 0xC0) == 0x80)
+                    share_link_draft_.pop_back();
+                if (!share_link_draft_.empty()) share_link_draft_.pop_back();
+                share_link_error_.clear();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return true;
+        }
         return true;
     }
     if (share_contacts_open_) {
@@ -2314,7 +2573,21 @@ bool MainWindow::share_key_down(WPARAM vk)
 
 bool MainWindow::share_char(wchar_t ch)
 {
-    if (!is_share_section_active() || !share_contacts_open_ || share_contact_field_ < 0) return false;
+    if (!is_share_section_active()) return false;
+    if (share_link_open_) {
+        if (ch < 32 || ch == 127) return true;
+        if (share_link_draft_.size() >= 2048) return true;
+        wchar_t ws[2] = { ch, L'\0' };
+        char utf8[8] = {};
+        int n = WideCharToMultiByte(CP_UTF8, 0, ws, 1, utf8, sizeof(utf8) - 1, nullptr, nullptr);
+        if (n > 0) {
+            share_link_draft_.append(utf8, static_cast<size_t>(n));
+            share_link_error_.clear();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return true;
+    }
+    if (!share_contacts_open_ || share_contact_field_ < 0) return false;
     if (ch < 32 || ch == 127) return true;
     std::string* f = share_contact_field_ == 0 ? &share_draft_name_
                      : share_contact_field_ == 1 ? &share_draft_email_
@@ -2357,6 +2630,14 @@ void MainWindow::on_ole_drop(POINT screen_pt, const std::vector<std::wstring>& p
     share_drop_files(static_cast<float>(pt.x) / scale_, static_cast<float>(pt.y) / scale_, paths);
 }
 
+void MainWindow::on_ole_drop_url(POINT screen_pt, const std::string& url)
+{
+    if (!hwnd_) return;
+    POINT pt = screen_pt;
+    if (!ScreenToClient(hwnd_, &pt)) return;
+    share_drop_url(static_cast<float>(pt.x) / scale_, static_cast<float>(pt.y) / scale_, url);
+}
+
 void MainWindow::share_drag_update(bool active, float lx, float ly)
 {
     std::string hit_key;
@@ -2397,6 +2678,26 @@ void MainWindow::share_drop_files(float lx, float ly, const std::vector<std::wst
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void MainWindow::share_drop_url(float lx, float ly, const std::string& url)
+{
+    std::string hit_key;
+    for (const auto& c : share_circles_) {
+        float dx = lx - c.cx;
+        float dy = ly - c.cy;
+        if (dx * dx + dy * dy <= (c.r + 14.0f) * (c.r + 14.0f)) {
+            hit_key = c.key;
+            break;
+        }
+    }
+    share_drag_active_ = false;
+    share_drag_key_.clear();
+    if (share_view_.setup == ShareSetup::Ready && share_link_opens(url)) {
+        if (!hit_key.empty()) share_.send_urls_to(hit_key, { url });
+        else share_.send_urls({ url });
+    }
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 // --------------------------------------------------------------- Share lifecycle & ticks
 
 void MainWindow::on_share_updated()
@@ -2412,6 +2713,7 @@ void MainWindow::on_share_updated()
         share_adapter_open_ = false;
         share_ctx_open_ = false;
         share_contacts_open_ = false;
+        share_link_open_ = false;
         share_contact_field_ = -1;
     }
     bool wake = share_view_.running && share_view_.s.wake && !opts_.dry_run;

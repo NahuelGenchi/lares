@@ -186,8 +186,9 @@ add_library(lares_share_link STATIC
     share/tls.cpp
     share/model.cpp
     share/airdrop/session.cpp
+    share/airdrop/thumb.cpp
     share/airdrop/mdns_io.cpp)
-target_link_libraries(lares_share_link PUBLIC lares_share_core newdev)
+target_link_libraries(lares_share_link PUBLIC lares_share_core newdev windowscodecs gdi32)
 
 add_executable(lares-share share/main.cpp share/firmware.rc)
 target_link_libraries(lares-share PRIVATE lares_share_link)

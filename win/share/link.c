@@ -59,6 +59,10 @@ struct link {
     uint8_t raw[8][512];
     size_t raw_len[8];
     unsigned raw_n;
+
+    /* Pending ARPA TLV hostname update from another thread (under out_lock). */
+    char pending_name[AWDL_NAME_MAX + 1];
+    bool name_dirty;
 };
 
 /* ------------------------------------------------------------ time and log */
@@ -339,6 +343,32 @@ void link_send(struct link *l, const awdl_mac *dst, const awdl_mac *src, const u
     SetEvent(l->out_event);
 }
 
+static void apply_pending_name(struct link *l)
+{
+    char next[AWDL_NAME_MAX + 1];
+    bool dirty = false;
+    AcquireSRWLockExclusive(&l->out_lock);
+    if (l->name_dirty) {
+        memcpy(next, l->pending_name, sizeof next);
+        l->name_dirty = false;
+        dirty = true;
+    }
+    ReleaseSRWLockExclusive(&l->out_lock);
+    if (!dirty) return;
+    snprintf(l->cfg.name, sizeof l->cfg.name, "%s", next);
+    if (l->node) awdl_node_set_name(l->node, l->cfg.name);
+}
+
+void link_set_name(struct link *l, const char *name)
+{
+    if (!l || !name) return;
+    AcquireSRWLockExclusive(&l->out_lock);
+    snprintf(l->pending_name, sizeof l->pending_name, "%s", name);
+    l->name_dirty = true;
+    ReleaseSRWLockExclusive(&l->out_lock);
+    SetEvent(l->out_event);
+}
+
 static void log_stats(struct link *l)
 {
     struct link_counts c;
@@ -456,12 +486,14 @@ static DWORD WINAPI link_main(LPVOID p)
     awdl_time now = now_us();
     calibrate(l, now);
     l->next_stats = now + STATS_US;
+    apply_pending_name(l);
     if (l->node) start_node(l);
     awdl_log("link: up");
     if (l->cb.ready) l->cb.ready(l->cb.ctx, l->cfg.channel, &l->cfg.addr);
 
     while (!l->failed) {
         now = now_us();
+        apply_pending_name(l);
         send_raw(l);
         if (l->node) {
             drain_outbound(l);

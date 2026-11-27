@@ -519,6 +519,7 @@ struct Share::Impl {
             in->thumb_path = write_thumb(o.id, o.file_icon);
             in->links = o.links;
             in->names = o.names;
+            if (!o.links) in->offered_links = o.items;
             in->total = o.total;
             st().incoming = std::move(in);
             changed();
@@ -591,10 +592,15 @@ struct Share::Impl {
                 receiver = airdrop::Receiver::start(loop(), a, st().name, download_folder(), cert, receiver_callbacks(), err);
             else
                 err = "Bad address " + address;
-            if (receiver) receiver->set_policy(st().mode == DiscoverMode::ContactsOnly, contact_hashes);
-            else st().link_error = err;
+            if (receiver) {
+                receiver->set_policy(st().mode == DiscoverMode::ContactsOnly, contact_hashes);
+                receiver->set_original_media(st().original_media);
+            } else {
+                st().link_error = err;
+            }
         } else if (receiver && (st().receiving || incoming_on)) {
             receiver->set_policy(st().mode == DiscoverMode::ContactsOnly, contact_hashes);
+            receiver->set_original_media(st().original_media);
         } else if (!st().receiving && !incoming_on && receiver) {
             receiver.reset();
         }
@@ -841,6 +847,13 @@ struct Share::Impl {
         quiet_watch();
     }
 
+    void rotate_label()
+    {
+        service_id = random_id();
+        label = "lares-" + service_id;
+        if (link) ::link_set_name(link, label.c_str());
+    }
+
     void check_setup()
     {
         /* While the link has it, the adapter is ours and ready. */
@@ -890,13 +903,13 @@ void Share::set_mode(DiscoverMode mode)
     if (mode == DiscoverMode::Everyone && st_.mode != DiscoverMode::Everyone) d_->prev_mode = st_.mode;
     st_.mode = mode;
     st_.receiving = mode != DiscoverMode::Off;
-    /* Rotate our mDNS service instance and host label when discoverability
-     * changes while the link is up so Apple senders don't reuse a cached 401
-     * from Contacts Only, and the old service's goodbye doesn't flush the new
-     * host's AAAA record. */
-    if (mode != old_mode && mode != DiscoverMode::Off && st_.link == LinkState::Up) {
-        d_->service_id = random_id();
-        d_->label = "lares-" + d_->service_id;
+    /* Rotate our mDNS service instance, host label and AWDL ARPA TLV hostname
+     * when discoverability changes while the link is active so Apple senders
+     * don't reuse a cached 401 from Contacts Only, and the old service's
+     * goodbye doesn't flush the new host's AAAA record. */
+    if (mode != old_mode && mode != DiscoverMode::Off &&
+        (st_.link == LinkState::Up || st_.link == LinkState::Starting)) {
+        d_->rotate_label();
     }
     loop_.cancel(d_->receive_timer);
     if (mode == DiscoverMode::Everyone) {
@@ -924,15 +937,27 @@ void Share::set_receiving(bool on)
     set_mode(on ? DiscoverMode::Everyone : DiscoverMode::Off);
 }
 
+void Share::set_original_media(bool original)
+{
+    if (original == st_.original_media) return;
+    st_.original_media = original;
+    if (d_->receiver) d_->receiver->set_original_media(original);
+    if (st_.receiving && (st_.link == LinkState::Up || st_.link == LinkState::Starting)) {
+        d_->rotate_label();
+        if (st_.link == LinkState::Up) d_->parts_apply();
+    }
+    d_->changed();
+}
+
 void Share::set_contact_hashes(std::set<std::string> hashes)
 {
     bool diff = (hashes != d_->contact_hashes);
     d_->contact_hashes = std::move(hashes);
     if (d_->receiver) d_->receiver->set_policy(st_.mode == DiscoverMode::ContactsOnly, d_->contact_hashes);
-    if (diff && st_.mode == DiscoverMode::ContactsOnly && st_.link == LinkState::Up) {
-        d_->service_id = random_id();
-        d_->label = "lares-" + d_->service_id;
-        d_->parts_apply();
+    if (diff && st_.mode == DiscoverMode::ContactsOnly &&
+        (st_.link == LinkState::Up || st_.link == LinkState::Starting)) {
+        d_->rotate_label();
+        if (st_.link == LinkState::Up) d_->parts_apply();
     }
 }
 
@@ -997,6 +1022,7 @@ void Share::set_sending(const std::vector<std::wstring>& paths)
     if (on && st_.setup != Setup::Ready) return;
     if (!on) cancel_send();
     st_.paths = paths;
+    st_.send_urls.clear();
     /* What was found while browsing or picking stays. */
     bool keep = (on && (looking_ || st_.browsing)) || st_.browsing;
     looking_ = false;
@@ -1014,15 +1040,54 @@ void Share::set_sending(const std::vector<std::wstring>& paths)
     d_->update_link();
 }
 
+void Share::set_sending_urls(const std::vector<std::string>& urls)
+{
+    bool on = !urls.empty();
+    if (on && st_.setup != Setup::Ready) return;
+    if (!on) cancel_send();
+    st_.paths.clear();
+    st_.send_urls = urls;
+    bool keep = (on && (looking_ || st_.browsing)) || st_.browsing;
+    looking_ = false;
+    st_.sending = on;
+    if (on) {
+        d_->log_session("sending link");
+        d_->wake_candidates();
+    }
+    if (!keep) {
+        st_.devices.clear();
+        d_->candidates.clear();
+    }
+    if (on && st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    d_->changed();
+    d_->update_link();
+}
+
 void Share::send_files_to(const std::string& key, const std::vector<std::wstring>& paths)
 {
     if (paths.empty() || st_.setup != Setup::Ready) return;
     if (!d_->device_find(key)) return;
     if (!d_->send_key.empty()) cancel_send();
     st_.paths = paths;
+    st_.send_urls.clear();
     looking_ = false;
     st_.sending = true;
     d_->log_session("sending to device");
+    if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
+    d_->update_link();
+    send_to(key);
+}
+
+void Share::send_urls_to(const std::string& key, const std::vector<std::string>& urls)
+{
+    if (urls.empty() || st_.setup != Setup::Ready) return;
+    if (!d_->device_find(key)) return;
+    if (!d_->send_key.empty()) cancel_send();
+    st_.paths.clear();
+    st_.send_urls = urls;
+    looking_ = false;
+    st_.sending = true;
+    d_->log_session("sending link to device");
     if (st_.link == LinkState::Failed) st_.link = LinkState::Off;
     d_->update_link();
     send_to(key);
@@ -1051,6 +1116,7 @@ void Share::dismiss_device(const std::string& key)
     if (!any_busy) {
         st_.sending = false;
         st_.paths.clear();
+        st_.send_urls.clear();
     }
     d_->changed();
     d_->update_link();
@@ -1059,7 +1125,7 @@ void Share::dismiss_device(const std::string& key)
 void Share::send_to(const std::string& key)
 {
     Device* d = d_->device_find(key);
-    if (!d || st_.paths.empty() || !d_->send_key.empty()) return;
+    if (!d || (st_.paths.empty() && st_.send_urls.empty()) || !d_->send_key.empty()) return;
     airdrop::SendRequest req;
     if (!airdrop::parse_address(d->address, d_->iface ? net_iface_index(d_->iface) : 0, req.addr)) return;
     d->state = DeviceState::Asking;
@@ -1075,6 +1141,7 @@ void Share::send_to(const std::string& key)
     req.name = st_.name;
     req.id = d_->service_id;
     req.paths = st_.paths;
+    req.items = st_.send_urls;
     Impl* impl = d_.get();
     airdrop::send(
         loop_, req, cancel,
