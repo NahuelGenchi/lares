@@ -9,7 +9,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | Part | Issue | Status |
 | :--- | :--- | :--- |
 | One drawing engine, measured | [#140](https://github.com/NahuelGenchi/lares/issues/140) | confirmed: GDI+ with Lares' own glyph blending |
-| The drawing layer and settings | | planned |
+| The drawing layer and settings | [#141](https://github.com/NahuelGenchi/lares/issues/141) | confirmed by tests: the layer draws into memory, the settings round-trip; nothing on screen yet |
 | `lares-shell.exe`: top bar and dock, under `lares-guard.exe` | | planned |
 | Launcher, popups, clipboard history, process list, screenshot tool | | planned |
 | `lares-files.exe` and `lares-view.exe` | | planned |
@@ -107,3 +107,74 @@ The pictures behind this were looked at zoomed in on the development PC and are 
 What it costs: Direct2D draws the dock and the large opaque list with less processor time (on the runner 0.46 against 1.09 ms for the dock, and 4.6 against 6.3 ms for the list, at 100%), and spreads the work over several threads, so the list is ready sooner. The bar and popups cost about the same with both. The slowest GDI+ frame measured is the full Files-like list at 150% on the runner, 10 ms; the shell draws only when something on screen changes, so its processor time at idle does not depend on the engine.
 
 `lares.exe` keeps drawing with Direct2D for now; moving it to the same engine is planned in issue [#142](https://github.com/NahuelGenchi/lares/issues/142).
+
+## The drawing layer
+
+`win/shell/draw.c` and `win/shell/palette.c` (issue [#141](https://github.com/NahuelGenchi/lares/issues/141)) are the engine above in plain C, for every shell part to use:
+
+- **Surfaces**: a 32-bit bitmap in memory with GDI+ on it. A see-through one holds premultiplied colour and goes on screen with `UpdateLayeredWindow`; an opaque one is copied into a window's paint and released.
+- **Shapes**: rounded rectangles filled or outlined, circles and lines, smoothed.
+- **Text**: one line in a box, aligned and cut with an ellipsis when it does not fit, a measured width, and a word-wrapped paragraph with its height. DirectWrite lays it out in the user's own language and turns it into ClearType coverage; draw.c blends that coverage at gamma 1.8, also on see-through surfaces. The face is Inter when it is installed, else Segoe UI Variable Text, else Segoe UI. Symbols come from Windows' own icon font.
+- **Colours**: a light and a dark palette, picked from Windows' light or dark mode and its accent colour.
+
+DirectWrite's headers are C++ only, so `win/shell/dwrite_c.h` declares the part the shell calls for C, and `gdiplus_c.h` does the same for GDI+'s flat API. `lares-shell-draw-test` draws on both kinds of surface and reads the pixels back: shapes where they were asked, ClearType edges on both kinds of surface, nothing outside a text's box, premultiplied colour kept, wrapping, measuring and both palettes. The Checks workflow runs it.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| Shapes, text, wrapping, measuring and palettes, on see-through and opaque surfaces | `lares-shell-draw-test`, 38 checks, development PC and the Checks workflow | confirmed |
+| Every DirectWrite call draw.c makes goes through `dwrite_c.h` on a real factory | the same test: text that is drawn and measured | confirmed |
+| On screen | | planned with the bar and dock |
+
+## Settings
+
+The shell's settings are Lares' own: `win/src/config.cpp` reads and writes `%APPDATA%\lares\shell.ini`, and a dry run (`LARES_DRY_RUN=1`) uses `shell-dry.ini` instead. Nothing is read from the program's own folder, and no setting holds a fixed path, drive letter or screen size. A missing or empty file means every part is off. The shell's C code reaches them through `win/src/shell_prefs.h`, which reads the file again before each write so that two Lares programs writing at once do not undo each other's setting.
+
+```ini
+[parts]
+top-bar=false
+dock=false
+launcher=false
+launcher-windows-key=false
+clipboard-history=false
+screenshot=false
+files=false
+viewers=false
+
+[top-bar]
+auto-hide=false
+week-starts=sunday
+
+[dock]
+hide=when-covered
+window-counts=true
+middle-click-new-window=true
+media=true
+
+[general]
+animations=true
+
+[dock-pin 1]
+name=Terminal
+app-id=Microsoft.WindowsTerminal_8wekyb3d8bbwe!App
+```
+
+The dock's `hide` is `always-shown` (it reserves its strip of the screen), `auto-hide` or `when-covered`. A pin names a Store app by its AppUserModelID, or a program file with its command line, and may name a picture. A pin that names nothing to start is dropped, and a value cannot start a new line. Until the dock is changed no pins are written, and the shell picks its first set itself; a dock emptied on purpose stays empty.
+
+## Other programs
+
+`win/src/programs.h` finds the programs the shell and Lares work with the way Windows finds them, never at a fixed place, and says when one is missing so that what needs it hides:
+
+| Program | How it is found |
+| :--- | :--- |
+| Tailscale's `tailscale.exe` | next to the program Tailscale's Windows service runs, else on the PATH |
+| A terminal | Windows Terminal through its app alias (`wt.exe`), else PowerShell 7, else Windows PowerShell, else the command prompt Windows names in `ComSpec` |
+| The browser | the program Windows opens `https` links with, and its name |
+| Explorer and Windows' own tools | Windows' own folders, wherever Windows is installed |
+
+Lares' Remote section uses the same lookup: Tailscale through its service, and Sunshine's folder through the program its `SunshineService` runs (in Sunshine's `tools` folder or the folder itself). Before, both were read from one fixed folder.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| A service's program folder from its command line: quoted, unquoted with spaces and arguments, `\??\`, environment variables, broken | unit test | confirmed |
+| A terminal and Explorer are found on any Windows; Tailscale and a browser, when found, exist | unit test, development PC and the Checks workflow | confirmed |
+| Remote finds Tailscale and Sunshine on a PC that has them | | not checked in a window yet |

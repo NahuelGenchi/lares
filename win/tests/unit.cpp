@@ -16,8 +16,10 @@ extern "C" {
 #include "hw.h"
 #include "livelight.h"
 #include "pad.h"
+#include "programs.h"
 #include "remote.h"
 #include "share_win.h"
+#include "shell_prefs.h"
 #include "theme.h"
 
 #include <cmath>
@@ -985,6 +987,117 @@ static void test_share()
     CHECK(share_send_url_line({ "file:///C:/Windows/win.ini", "https://example.com/a b" }).empty());
 }
 
+// The shell's settings (issue #141): everything off when nothing is saved,
+// a round trip, pins, and what a broken file does.
+static void test_shell_prefs()
+{
+    lares::ShellPrefs def = lares::parse_shell_ini("");
+    CHECK(!def.any_part());
+    CHECK(!def.bar && !def.dock && !def.launcher && !def.launcher_windows_key && !def.files && !def.viewers);
+    CHECK(def.dock_hide == lares::DockHide::WhenCovered);
+    CHECK(def.animations && def.dock_window_counts && def.dock_media);
+    CHECK(!def.pins_saved && def.pins.empty());
+    CHECK(lares::serialize_shell_ini(def).find("dock-pin") == std::string::npos);
+    // Unknown groups and keys, and nonsense values, change nothing.
+    lares::ShellPrefs junk = lares::parse_shell_ini("[parts]\ntop-bar=maybe\nnothing=true\n[other]\ndock=true\n");
+    CHECK(!junk.any_part());
+
+    lares::ShellPrefs p;
+    p.bar = true;
+    p.dock = true;
+    p.files = true;
+    p.bar_auto_hide = true;
+    p.week_starts_monday = true;
+    p.dock_hide = lares::DockHide::AlwaysShown;
+    p.dock_media = false;
+    p.animations = false;
+    p.pins_saved = true;
+    p.pins.push_back({ "Terminal", "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App", "", "", "" });
+    p.pins.push_back({ "Editor", "", "C:\\Program Files\\Editor\\editor.exe", "--new-window", "editor.png" });
+    p.pins.push_back({ "Nothing", "", "", "", "" }); // names nothing to start: dropped
+    lares::ShellPrefs back = lares::parse_shell_ini(lares::serialize_shell_ini(p));
+    CHECK(back.bar && back.dock && back.files && !back.launcher && !back.viewers);
+    CHECK(back.bar_auto_hide && back.week_starts_monday);
+    CHECK(back.dock_hide == lares::DockHide::AlwaysShown);
+    CHECK(!back.dock_media && !back.animations);
+    CHECK(back.pins_saved && back.pins.size() == 2);
+    CHECK(back.pins.size() == 2 && back.pins[0].app_id == "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
+    CHECK(back.pins.size() == 2 && back.pins[1].path == "C:\\Program Files\\Editor\\editor.exe" &&
+          back.pins[1].args == "--new-window" && back.pins[1].icon == "editor.png");
+    CHECK(lares::parse_shell_ini("[dock]\nhide=auto-hide\n").dock_hide == lares::DockHide::AutoHide);
+
+    // An emptied dock stays empty instead of getting the first set back.
+    lares::ShellPrefs empty;
+    empty.pins_saved = true;
+    lares::ShellPrefs empty_back = lares::parse_shell_ini(lares::serialize_shell_ini(empty));
+    CHECK(empty_back.pins_saved && empty_back.pins.empty());
+
+    // A value with a line break cannot start a key of its own.
+    lares::ShellPrefs sneaky;
+    sneaky.pins_saved = true;
+    sneaky.pins.push_back({ "A\n[parts]\ntop-bar=true", "", "C:\\a.exe", "", "" });
+    lares::ShellPrefs sneaky_back = lares::parse_shell_ini(lares::serialize_shell_ini(sneaky));
+    CHECK(!sneaky_back.bar && sneaky_back.pins.size() == 1);
+
+    // The C side, on a file of its own through the dry run.
+    wchar_t old_dry[16] = L"";
+    DWORD had_dry = GetEnvironmentVariableW(L"LARES_DRY_RUN", old_dry, 16);
+    SetEnvironmentVariableW(L"LARES_DRY_RUN", L"1");
+    wchar_t file[MAX_PATH];
+    CHECK(lares_shell_dry_run());
+    CHECK(lares_shell_settings_file(file, MAX_PATH) && wcsstr(file, L"shell-dry.ini") != nullptr);
+    std::wstring backup = std::wstring(file) + L".unit-backup";
+    bool had_file = MoveFileExW(file, backup.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    LaresShellPrefs c = {};
+    lares_shell_prefs_load(&c);
+    CHECK(!c.bar && !c.dock && c.animations && c.dock_hide == LARES_DOCK_WHEN_COVERED);
+    CHECK(lares_shell_pins_load(nullptr, 0) == -1);
+    LaresDockPin pin = {};
+    wcscpy_s(pin.name, L"Notes");
+    wcscpy_s(pin.path, L"C:\\Windows\\notepad.exe");
+    CHECK(lares_shell_pins_save(&pin, 1));
+    c.dock = true;
+    c.dock_hide = LARES_DOCK_AUTO_HIDE;
+    CHECK(lares_shell_prefs_save(&c));
+    LaresShellPrefs c2 = {};
+    lares_shell_prefs_load(&c2);
+    CHECK(c2.dock && !c2.bar && c2.dock_hide == LARES_DOCK_AUTO_HIDE);
+    LaresDockPin pins[4] = {};
+    CHECK(lares_shell_pins_load(pins, 4) == 1 && wcscmp(pins[0].name, L"Notes") == 0); // kept by the prefs save
+    DeleteFileW(file);
+    if (had_file) MoveFileExW(backup.c_str(), file, MOVEFILE_REPLACE_EXISTING);
+    SetEnvironmentVariableW(L"LARES_DRY_RUN", had_dry ? old_dry : nullptr);
+}
+
+// Programs found the way Windows finds them (issue #141).
+static void test_programs()
+{
+    wchar_t folder[MAX_PATH];
+    CHECK(lares_service_program_folder(L"\"C:\\Program Files\\Tailscale\\tailscaled.exe\"", folder, MAX_PATH) &&
+          wcscmp(folder, L"C:\\Program Files\\Tailscale") == 0);
+    CHECK(lares_service_program_folder(L"\"D:\\Apps\\Sunshine\\tools\\sunshinesvc.exe\" --flag", folder, MAX_PATH) &&
+          wcscmp(folder, L"D:\\Apps\\Sunshine\\tools") == 0);
+    CHECK(lares_service_program_folder(L"  C:\\Program Files\\Some App\\svc.exe -k run", folder, MAX_PATH) &&
+          wcscmp(folder, L"C:\\Program Files\\Some App") == 0);
+    CHECK(lares_service_program_folder(L"\\??\\E:\\x\\y.exe", folder, MAX_PATH) && wcscmp(folder, L"E:\\x") == 0);
+    CHECK(lares_service_program_folder(L"%SystemRoot%\\System32\\svchost.exe -k netsvcs", folder, MAX_PATH) &&
+          wcschr(folder, L'%') == nullptr);
+    CHECK(!lares_service_program_folder(L"\"unterminated", folder, MAX_PATH));
+    CHECK(!lares_service_program_folder(L"svc.exe", folder, MAX_PATH));
+    wchar_t tiny[4];
+    CHECK(!lares_service_program_folder(L"\"C:\\Program Files\\T\\t.exe\"", tiny, 4));
+
+    wchar_t path[MAX_PATH], name[64];
+    CHECK(lares_windows_program(L"explorer.exe", path, MAX_PATH) && wcsstr(path, L"\\explorer.exe") != nullptr);
+    CHECK(lares_windows_program(L"cmd.exe", path, MAX_PATH));
+    CHECK(!lares_windows_program(L"no-such-program-here.exe", path, MAX_PATH));
+    // Every Windows has at least the command prompt.
+    CHECK(lares_find_terminal(path, MAX_PATH, name, 64) && name[0] != 0);
+    // Tailscale and a browser may be missing; when found, the file exists.
+    if (lares_find_tailscale(path, MAX_PATH)) CHECK(GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES);
+    if (lares_find_browser(path, MAX_PATH, name, 64)) CHECK(GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && name[0]);
+}
+
 int main()
 {
     test_share();
@@ -1004,6 +1117,8 @@ int main()
     test_helper();
     test_hidpp_allowed_matrix();
     test_config_escaping_and_pad_shutdown();
+    test_shell_prefs();
+    test_programs();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;
