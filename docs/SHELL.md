@@ -214,7 +214,7 @@ The dock starts with File Explorer, the browser Windows opens links with, a term
 | :--- | :--- | :--- |
 | A fresh account: nothing on, no shell, no guard, no start-up entry, an empty journal, the taskbar as it was | `lares-shell-test`, stand-in taskbar, development PC; and the Checks workflow | confirmed |
 | Dock on and off; top bar on and off; the dock joining a running bar (same shell); the dock leaving the bar (new shell, taskbar back); start-up entry present and gone | `lares-shell-test`, stand-in taskbar and a shell that hides nothing, once on the development PC (36 checks) | confirmed |
-| The same, ten times in a row, on the real taskbar with a shell that reserves its strips | `lares-shell-test --real --cycles 10`, the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; see its log |
+| The same, ten times in a row, on the real taskbar with a shell that reserves its strips | `lares-shell-test --real --cycles 10`, the Checks workflow on GitHub's Windows runner | confirmed: 278 checks, 0 failed, in the workflow of the pull request that brought the bar and dock in (#146) |
 | Bar and dock drawn, light and dark | `lares-shell --snapshot`, development PC, looked at | confirmed |
 | The Bar and dock card in Settings, light and dark, both off | window check in a dry run, development PC | confirmed |
 | Clicking each button, the menus, dragging, auto-hide and the three dock modes on a real desktop | | **not checked**: on the development PC another bar hides the taskbar and must not be disturbed. Needs a Windows 11 test account |
@@ -227,7 +227,9 @@ The dock starts with File Explorer, the browser Windows opens links with, a term
 | `lares-shell.exe` own memory at rest, bar and dock on | 16.6 MB (working set 7.8 MB) | development PC, a copy that hides nothing, 30 seconds after 5 to settle | confirmed |
 | Its processor time at rest | 62.5 ms in 30 s (0.2% of one core) | same | confirmed |
 | Direct3D, Direct2D, WebView2, Chromium or .NET loaded | none of its own | same; another program loads `d2d1.dll` into every process on that PC | confirmed |
-| The same on a clean Windows | | the Checks workflow prints them on every pull request | see the workflow log |
+| `lares-shell.exe` own memory at rest, bar and dock on | 14.7 MB (working set 8.3 MB) | GitHub's Windows runner, a clean Windows Server, real taskbar, 30 seconds after 5 to settle (#146) | confirmed |
+| Its processor time at rest | 46.9 ms in 30 s (0.16% of one core) | same | confirmed |
+| Direct3D, Direct2D, WebView2, Chromium or .NET loaded | none | same | confirmed |
 
 On the development PC about 2.4 MB of every process's own memory is another program's ([docs/SAFETY.md](SAFETY.md)). The budget is about 25 MB at rest.
 

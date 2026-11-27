@@ -375,11 +375,16 @@ int wmain(int argc, wchar_t** argv)
             return 0;
         }
     }
+    // A guard or shell left by a test that ran just before ends within a
+    // few seconds; one that stays belongs to an installed Lares, which a
+    // test would end. In the Checks workflow nothing else may run: fail.
+    wait_for([] { return count_processes(L"lares-shell.exe") == 0 && count_processes(L"lares-guard.exe") == 0; },
+             15000);
     if (count_processes(L"lares-shell.exe") || count_processes(L"lares-guard.exe")) {
-        // A shell of this user already runs (an installed Lares): a test
-        // would end it. Nothing done.
+        wchar_t ci[8];
+        bool in_ci = GetEnvironmentVariableW(L"CI", ci, 8) > 0;
         std::printf("a Lares shell or guard already runs here: nothing done\n");
-        return 0;
+        return in_ci ? 1 : 0;
     }
 
     // Everything in a folder of the test's own.
