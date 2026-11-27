@@ -16,7 +16,8 @@ namespace lares {
 inline constexpr char kShellFeature[] = "shell-startup";
 inline constexpr wchar_t kShellAutostartTarget[] = L"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run|LaresShell";
 
-// The parts that run in lares-shell.exe; with none of them on, nothing runs.
+// The parts that run in lares-shell.exe (bar, dock, launcher, clipboard
+// history); with none of them on, nothing runs.
 bool shell_needs_process(const ShellPrefs& prefs);
 
 // The start-up entry's command: the guard, told this is the start at sign-in

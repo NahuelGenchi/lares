@@ -94,18 +94,27 @@ static void quit_clean(void) {
     if (g_hHostWnd) DestroyWindow(g_hHostWnd);
 }
 
+static bool any_part_on(void) {
+    return g_cfg.topbar_enabled || g_cfg.dock_enabled || g_cfg.launcher_enabled || g_cfg.clipboard_enabled;
+}
+
 /* Lares' Settings changed something. Parts that come on are made, parts
  * that go off are taken away; with the dock gone the taskbar has to come
  * back, which only a clean end does: Lares starts a new shell for the bar. */
 static void reload(void) {
     bool had_bar = g_cfg.topbar_enabled, had_dock = g_cfg.dock_enabled;
+    bool had_launcher = g_cfg.launcher_enabled, had_clipboard = g_cfg.clipboard_enabled;
     bool isolated = g_cfg.isolated;
     config_load_all();
     g_cfg.isolated = isolated;
-    if ((!g_cfg.topbar_enabled && !g_cfg.dock_enabled) || (g_hiding && !g_cfg.dock_enabled)) {
+    if (!any_part_on() || (g_hiding && !g_cfg.dock_enabled)) {
         quit_clean();
         return;
     }
+    if (g_cfg.launcher_enabled && !had_launcher) launcher_init(g_hInst);
+    else if (!g_cfg.launcher_enabled && had_launcher) launcher_shutdown();
+    if (g_cfg.clipboard_enabled && !had_clipboard) clipboard_init(g_hInst);
+    else if (!g_cfg.clipboard_enabled && had_clipboard) clipboard_shutdown();
     if (g_cfg.topbar_enabled && !had_bar) topbar_create(g_hInst);
     else if (!g_cfg.topbar_enabled && had_bar) topbar_destroy();
     else topbar_apply_settings();
@@ -196,6 +205,25 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         dock_activate_index((int)wParam);
         return 0;
 
+    case WM_LARES_TOGGLE_LAUNCHER:
+        if (!g_cfg.launcher_enabled) return 0;
+        popups_close();
+        if (g_cfg.clipboard_enabled) clipboard_hide();
+        launcher_toggle();
+        return 0;
+
+    case WM_LARES_TOGGLE_CLIPBOARD:
+        if (!g_cfg.clipboard_enabled) return 0;
+        popups_close();
+        if (g_cfg.launcher_enabled) launcher_hide();
+        clipboard_toggle();
+        return 0;
+
+    case WM_HOTKEY:
+        if (wParam == LARES_HOTKEY_LAUNCHER) PostMessageW(hwnd, WM_LARES_TOGGLE_LAUNCHER, 0, 0);
+        else if (wParam == LARES_HOTKEY_CLIPBOARD) PostMessageW(hwnd, WM_LARES_TOGGLE_CLIPBOARD, 0, 0);
+        return 0;
+
     case WM_SETTINGCHANGE:
     case WM_DWMCOLORIZATIONCOLORCHANGED:
     case WM_THEMECHANGED:
@@ -203,6 +231,8 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         topbar_repaint();
         dock_repaint();
         popups_refresh_if_open();
+        if (g_cfg.launcher_enabled) launcher_on_theme_changed();
+        if (g_cfg.clipboard_enabled) clipboard_on_theme_changed();
         return 0;
 
     case WM_DISPLAYCHANGE:
@@ -295,11 +325,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     if (snapshot_dir[0]) {
         g_cfg.topbar_enabled = true;
         g_cfg.dock_enabled = true;
+        g_cfg.launcher_enabled = true;
+        g_cfg.clipboard_enabled = true;
         g_cfg.animations = false;
         g_cfg.topbar_autohide = false;
         g_cfg.dock_hide_mode = HIDE_NEVER;
     }
-    if (!g_cfg.topbar_enabled && !g_cfg.dock_enabled) {
+    if (!any_part_on()) {
         /* Nothing is on: a clean end, so the guard does not start it again. */
         lares_guard_client_quit();
         CoUninitialize();
@@ -354,6 +386,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         g_media_on = true;
     }
     popups_init(hInst);
+    if (g_cfg.launcher_enabled) launcher_init(hInst);
+    if (g_cfg.clipboard_enabled) clipboard_init(hInst);
     if (g_cfg.topbar_enabled) topbar_create(hInst);
     if (g_cfg.dock_enabled) dock_create(hInst);
     if (!g_cfg.isolated) hotkeys_init(g_hHostWnd);
@@ -380,9 +414,22 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
             ok &= popups_snapshot(path);
             popups_close();
         }
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\launcher.png", snapshot_dir);
+        ok &= launcher_snapshot(NULL, path);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\launcher-search.png", snapshot_dir);
+        ok &= launcher_snapshot(L"set", path);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\launcher-sum.png", snapshot_dir);
+        ok &= launcher_snapshot(L"sqrt(144)*2", path);
+        clipboard_add_sample(L"Meeting at ten, room 4", false);
+        clipboard_add_sample(L"https://example.com/notes", false);
+        clipboard_add_sample(L"A pinned note\nwith a second line", true);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\clipboard.png", snapshot_dir);
+        ok &= clipboard_snapshot(path);
         DestroyWindow(g_hHostWnd);
         MSG m;
         while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) DispatchMessageW(&m);
+        clipboard_shutdown();
+        launcher_shutdown();
         popups_shutdown();
         dock_destroy();
         topbar_destroy();
@@ -406,6 +453,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     }
 
     hotkeys_shutdown();
+    if (g_cfg.clipboard_enabled) clipboard_shutdown();
+    if (g_cfg.launcher_enabled) launcher_shutdown();
     popups_shutdown();
     dock_destroy();
     topbar_destroy();
