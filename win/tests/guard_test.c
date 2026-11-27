@@ -136,13 +136,33 @@ static int bars_visible(void)
     return n;
 }
 
+/* Asking the real taskbar waits on Explorer, so it is done on a thread of
+ * its own and given three seconds: an Explorer that does not answer fails
+ * the check instead of hanging the test. */
+static DWORD WINAPI ask_real_autohide(void *answer)
+{
+    APPBARDATA d = { 0 };
+    d.cbSize = sizeof d;
+    d.hWnd = FindWindowW(L"Shell_TrayWnd", NULL);
+    *(volatile LONG *)answer = (SHAppBarMessage(ABM_GETSTATE, &d) & ABS_AUTOHIDE) != 0;
+    return 0;
+}
+
 static int bars_autohide(void)
 {
     if (g_real) {
-        APPBARDATA d = { 0 };
-        d.cbSize = sizeof d;
-        d.hWnd = FindWindowW(L"Shell_TrayWnd", NULL);
-        return (SHAppBarMessage(ABM_GETSTATE, &d) & ABS_AUTOHIDE) != 0;
+        static int told;
+        LONG *answer = (LONG *)calloc(1, sizeof *answer); /* left to a thread that never answers */
+        HANDLE thread = answer ? CreateThread(NULL, 0, ask_real_autohide, answer, 0, NULL) : NULL;
+        int result = -1;
+        if (thread && WaitForSingleObject(thread, 3000) == WAIT_OBJECT_0) {
+            result = (int)*answer;
+            free(answer);
+        } else if (!told++) {
+            note("Explorer did not say whether auto-hide is on within three seconds");
+        }
+        if (thread) CloseHandle(thread);
+        return result;
     }
     return (INT_PTR)GetPropW(FindWindowExW(NULL, NULL, g_class, NULL), AUTOHIDE_PROP) == 2;
 }

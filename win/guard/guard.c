@@ -66,7 +66,9 @@
 
 #define LOOK_MS 4000
 #define MISSED_LOOKS 2
-#define CHILD_WAIT_MS 15000
+#define CHILD_WAIT_MS 5000
+#define COPY_NOT_STARTED 0
+#define COPY_TOO_SLOW 1
 #define EXIT_KEPT_WINDOWS_TASKBAR 3
 #define EXIT_HUNG_SHELL 0xE0000001u
 /* What the short-lived copies answer with. */
@@ -323,35 +325,44 @@ static wchar_t *command_line(const wchar_t *verb, DWORD number, int with_shell)
     return g.scratch;
 }
 
-/* Runs one of the short-lived copies and returns its answer, or 0 when it
- * could not be started or gave none. */
+/* Runs one of the short-lived copies and returns its answer. A copy that
+ * does not finish in time is ended: asking Explorer about its taskbar waits
+ * on Explorer, and an Explorer that has stopped answering must not stop the
+ * guard as well. */
 static DWORD run_copy(const wchar_t *verb, DWORD wait_ms)
 {
-    DWORD answer = 0;
+    DWORD answer = COPY_NOT_STARTED;
     HANDLE copy = start_process(command_line(verb, 0, 0), 0, NULL, NULL);
-    if (!copy) return 0;
-    if (WaitForSingleObject(copy, wait_ms) == WAIT_OBJECT_0) GetExitCodeProcess(copy, &answer);
+    if (!copy) return COPY_NOT_STARTED;
+    if (WaitForSingleObject(copy, wait_ms) == WAIT_OBJECT_0) {
+        GetExitCodeProcess(copy, &answer);
+    } else {
+        TerminateProcess(copy, COPY_TOO_SLOW);
+        answer = COPY_TOO_SLOW;
+    }
     CloseHandle(copy);
     return answer;
 }
 
+/* Only when a copy cannot even be started does the caller do the work
+ * itself, and load user32 for it. */
 static void hide_taskbar(void)
 {
-    if (run_copy(L"do-hide", CHILD_WAIT_MS) != DONE) do_hide();
+    if (run_copy(L"do-hide", CHILD_WAIT_MS) == COPY_NOT_STARTED) do_hide();
 }
 
 /* Gives the taskbar back; nonzero when the session is ending. */
 static int restore_taskbar(void)
 {
     DWORD answer = run_copy(L"do-restore", CHILD_WAIT_MS);
-    if (answer != DONE && answer != DONE_SESSION_ENDING) answer = (DWORD)do_restore();
+    if (answer == COPY_NOT_STARTED) answer = (DWORD)do_restore();
     return answer == DONE_SESSION_ENDING;
 }
 
 static int ask_try_again(void)
 {
     DWORD answer = run_copy(L"do-ask", INFINITE);
-    if (answer != ANSWER_KEEP && answer != ANSWER_TRY_AGAIN) answer = (DWORD)do_ask();
+    if (answer == COPY_NOT_STARTED) answer = (DWORD)do_ask();
     return answer == ANSWER_TRY_AGAIN;
 }
 
@@ -522,7 +533,7 @@ static int run_twin(DWORD guard_pid)
     lares_guard_state_load(g.dir, &g.st);
     if (!g.st.running || g.st.guard_pid != guard_pid) return 0;
 
-    int session_ending = do_restore() == DONE_SESSION_ENDING;
+    int session_ending = restore_taskbar();
     g.st.running = 0;
     g.st.guard_pid = g.st.twin_pid = g.st.shell_pid = 0;
     if (session_ending) {
@@ -532,7 +543,7 @@ static int run_twin(DWORD guard_pid)
     int recent = lares_guard_state_add_crash(&g.st, lares_guard_now());
     save_state();
     if (recent >= LARES_GUARD_CRASH_LIMIT) {
-        if (do_ask() != ANSWER_TRY_AGAIN) return EXIT_KEPT_WINDOWS_TASKBAR;
+        if (!ask_try_again()) return EXIT_KEPT_WINDOWS_TASKBAR;
         g.st.crash_count = 0;
         save_state();
     }
