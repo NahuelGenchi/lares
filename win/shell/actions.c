@@ -59,14 +59,17 @@ void action_open_lares(const wchar_t *section) {
     open_file(exe, args[0] ? args : NULL);
 }
 
+/* Lares' own process list (issue #149). */
 void action_open_processes(void) {
-    wchar_t exe[MAX_PATH];
-    if (lares_windows_program(L"taskmgr.exe", exe, MAX_PATH)) open_file(exe, NULL);
+    procmon_open(PROCMON_SORT_MEM);
 }
 
-/* Windows' own snipping, until Lares' screenshot tool arrives (issue #139,
- * part 4c); it asks for the region, window or screen itself. */
+/* Lares' screenshot tool when it is on (issue #149), else Windows' own
+ * snipping, which asks for the region, window or screen itself. */
 void action_screenshot(int mode) {
-    (void)mode;
+    if (g_cfg.screenshot_enabled) {
+        screenshot_trigger(mode == 1 ? SCREENSHOT_WINDOW : mode == 2 ? SCREENSHOT_FULL : SCREENSHOT_REGION);
+        return;
+    }
     open_file(L"ms-screenclip:", NULL);
 }

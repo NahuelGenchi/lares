@@ -8,6 +8,8 @@
  *   - Alt + Space      -> the launcher
  *   - a lone Win tap   -> the launcher, when its own setting is on
  *   - Alt + V          -> clipboard history (Win+V stays Windows' own)
+ *   - Alt + Shift + S, W, F -> a screenshot of a region, the window, the
+ *     screen (Win+Shift+S and Print Screen stay Windows' own)
  * Every other Windows-key combination (Win+D, Win+R, Win+L, Win+Tab,
  * Win+Shift+S, Win+E, ...) passes through untouched. The keyboard hook is
  * only installed while one of these is on.
@@ -82,6 +84,11 @@ bool hotkeys_init(HWND host_hwnd) {
     g_hk_host = host_hwnd;
     if (g_cfg.launcher_enabled) RegisterHotKey(host_hwnd, LARES_HOTKEY_LAUNCHER, MOD_ALT | MOD_NOREPEAT, VK_SPACE);
     if (g_cfg.clipboard_enabled) RegisterHotKey(host_hwnd, LARES_HOTKEY_CLIPBOARD, MOD_ALT | MOD_NOREPEAT, 'V');
+    if (g_cfg.screenshot_enabled) {
+        RegisterHotKey(host_hwnd, LARES_HOTKEY_SNIP_REGION, MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'S');
+        RegisterHotKey(host_hwnd, LARES_HOTKEY_SNIP_WINDOW, MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'W');
+        RegisterHotKey(host_hwnd, LARES_HOTKEY_SNIP_FULL, MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'F');
+    }
     if (!g_cfg.dock_enabled && !g_cfg.launcher_win_key) return true;
     g_kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, low_level_kb_proc, GetModuleHandleW(NULL), 0);
     return g_kb_hook != NULL;
@@ -95,6 +102,9 @@ void hotkeys_shutdown(void) {
     if (g_hk_host) {
         UnregisterHotKey(g_hk_host, LARES_HOTKEY_LAUNCHER);
         UnregisterHotKey(g_hk_host, LARES_HOTKEY_CLIPBOARD);
+        UnregisterHotKey(g_hk_host, LARES_HOTKEY_SNIP_REGION);
+        UnregisterHotKey(g_hk_host, LARES_HOTKEY_SNIP_WINDOW);
+        UnregisterHotKey(g_hk_host, LARES_HOTKEY_SNIP_FULL);
     }
     g_hk_host = NULL;
 }
