@@ -70,6 +70,7 @@ target_include_directories(lares_ble PRIVATE
 # Main native Win32 + Direct2D software-rendered application
 add_executable(lares WIN32
     src/main.cpp
+    src/changes.cpp
     guard/safe.c
     src/font.cpp
     src/ui.cpp
@@ -89,6 +90,7 @@ target_include_directories(lares PRIVATE
 )
 target_link_libraries(lares PRIVATE
     lares_win_core
+    lares_journal
     d2d1
     dwrite
     dwmapi
@@ -143,8 +145,11 @@ add_executable(lares-guard WIN32
     guard/safe.c
     guard/state.c
     guard/taskbar.c
+    guard/taskbar_journal.c
+    journal/journal.c
     guard/guard.manifest
 )
+target_include_directories(lares-guard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/journal)
 target_compile_options(lares-guard PRIVATE /GS-)
 target_compile_definitions(lares-guard PRIVATE $<$<NOT:$<CONFIG:Debug>>:LARES_NO_CRT>)
 target_link_options(lares-guard PRIVATE
@@ -160,15 +165,38 @@ add_executable(lares-test-shell WIN32
     tests/test_shell.c
     guard/guard_client.c
     guard/state.c
-    guard/taskbar.c)
-target_include_directories(lares-test-shell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/guard)
+    guard/taskbar.c
+    guard/taskbar_journal.c
+    journal/journal.c)
+target_include_directories(lares-test-shell PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/guard
+    ${CMAKE_CURRENT_SOURCE_DIR}/journal)
 add_executable(lares-guard-test tests/guard_test.c tests/guard_state_test.c)
-target_include_directories(lares-guard-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/guard)
-target_sources(lares-guard-test PRIVATE guard/state.c guard/safe.c)
+target_include_directories(lares-guard-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/guard
+    ${CMAKE_CURRENT_SOURCE_DIR}/journal)
+target_sources(lares-guard-test PRIVATE guard/state.c guard/safe.c journal/journal.c)
 target_link_libraries(lares-guard-test PRIVATE shell32 user32)
 add_dependencies(lares-guard-test lares-guard lares-test-shell)
 add_test(NAME lares-guard-test COMMAND lares-guard-test)
 set_tests_properties(lares-guard-test PROPERTIES TIMEOUT 600)
+
+# The change journal (issue #129): every Windows setting Lares changes is
+# written down, and flushed, before it is changed, and one routine undoes
+# them. journal.c is plain Win32 with no C runtime, so the guard links it.
+add_library(lares_journal STATIC
+    journal/journal.c
+    journal/journal_win.c
+    guard/taskbar_journal.c
+    guard/taskbar.c)
+target_include_directories(lares_journal PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/journal
+    ${CMAKE_CURRENT_SOURCE_DIR}/guard)
+target_link_libraries(lares_journal PUBLIC advapi32 user32)
+
+add_executable(lares-journal-test tests/journal_test.c)
+target_link_libraries(lares-journal-test PRIVATE lares_journal)
+add_test(NAME lares-journal-test COMMAND lares-journal-test)
 
 # ---------------------------------------------------------------------------
 # AirDrop without WSL (issue #109): lares-share.exe runs the Wi-Fi adapter

@@ -36,13 +36,14 @@
 #define CLICK_BUTTON (WM_USER + 102) /* TDM_CLICK_BUTTON */
 #define LIMIT_MS 2000
 
-static wchar_t g_dir[MAX_PATH], g_state_file[MAX_PATH], g_class[64];
+static wchar_t g_dir[MAX_PATH], g_state_file[MAX_PATH], g_journal_file[MAX_PATH], g_class[64];
 static wchar_t g_guard[MAX_PATH], g_shell[MAX_PATH];
 static int g_real, g_failures, g_checks;
 static DWORD g_bar_thread;
 static HANDLE g_bar_done;
 static const char *g_case = "";
 
+#include "journal.h"
 #include "safe.h"
 #include "state.h"
 
@@ -314,7 +315,7 @@ static int nothing_runs(void) { return our_processes(0) == 0; }
 static int healthy(void)
 {
     snapshot s = read_state();
-    return s.running && s.hidden && guard_alive(s.guard) && guard_alive(s.twin) && shell_alive(s.shell) &&
+    return s.running && s.hidden == 1 && guard_alive(s.guard) && guard_alive(s.twin) && shell_alive(s.shell) &&
            taskbar_hidden();
 }
 
@@ -340,6 +341,8 @@ static void check_within(int (*condition)(void), int limit_ms, const char *what)
     snprintf(text, sizeof text, "%s (limit %d ms)", what, limit_ms);
     check(ms >= 0, text);
     if (ms >= 0) note("%s: %d ms", what, ms);
+    else note("  taskbars: %d of %d visible, auto-hide %d (was %d before); state hidden %d", bars_visible(), bars_total(),
+              bars_autohide(), g_before, read_state().hidden);
 }
 
 static void start_guard(const wchar_t *shell_command)
@@ -398,8 +401,16 @@ static void clean_up(void)
         quiet = our_processes(1) ? 0 : quiet + 1;
         Sleep(20);
     }
+    /* The real taskbar's auto-hide is put back by the guard itself, from
+     * the journal; the stand-in's journal is just thrown away. */
     if (g_real) run_guard_command(L"restore");
+    else DeleteFileW(g_journal_file);
     DeleteFileW(g_state_file);
+}
+
+static int journal_exists(void)
+{
+    return GetFileAttributesW(g_journal_file) != INVALID_FILE_ATTRIBUTES;
 }
 
 static void begin(const char *name, int bars, int autohide)
@@ -432,9 +443,12 @@ static void begin_running(const char *name, int bars, int autohide)
 static void case_clean_quit(int autohide)
 {
     begin_running(autohide ? "clean quit, auto-hide was on" : "clean quit, auto-hide was off", 1, autohide);
+    check(journal_exists() == !autohide, autohide ? "auto-hide was on already: nothing for the change journal"
+                                                 : "the change journal holds the switching on of auto-hide");
     tell_shell(SHELL_QUIT);
     check_within(taskbar_back, LIMIT_MS, "taskbar back after a clean quit");
     check_within(nothing_runs, 3000, "guard and twin left");
+    check(!journal_exists(), "nothing left in the change journal");
     check(read_state().running == 0 && read_state().crashes == 0, "state says stopped, no crash counted");
 }
 
@@ -632,32 +646,74 @@ static void case_sign_out(void)
     check(taskbar_back(), "taskbar still visible");
 }
 
-/* A guard that died with the taskbar hidden and nobody left to act. */
+/* What a guard that died in the middle leaves behind: a state file that
+ * says "hidden", and in the change journal the switching on of auto-hide,
+ * with or without the change itself having been made. */
+static int stand_in_read(const wchar_t *target, lares_journal_value *value, void *ctx)
+{
+    (void)target, (void)ctx;
+    lares_journal_value_dword(value, (DWORD)bars_autohide());
+    return 1;
+}
+
+static int stand_in_write(const wchar_t *target, const lares_journal_value *value, void *ctx)
+{
+    HWND w = NULL;
+    (void)target, (void)ctx;
+    while ((w = FindWindowExW(NULL, w, g_class, NULL)) != NULL)
+        SetPropW(w, AUTOHIDE_PROP, (HANDLE)(INT_PTR)(value->data[0] ? 2 : 1));
+    return 1;
+}
+
+static void leave_behind(int hidden, int autohide_switched)
+{
+    static const lares_journal_backend stand_in = { "taskbar", stand_in_read, stand_in_write, NULL };
+    lares_journal journal;
+    lares_journal_value off, on;
+    HWND bar = FindWindowExW(NULL, NULL, g_class, NULL);
+    if (hidden) {
+        FILE *f = _wfopen(g_state_file, L"wb");
+        if (f) {
+            fputs("lares-guard-state 1\nrunning 1\nhidden 1\nguard 4\ntwin 0\nshell 0\nend\n", f);
+            fclose(f);
+        }
+        ShowWindow(bar, SW_HIDE);
+    }
+    lares_journal_open(&journal, g_journal_file);
+    lares_journal_add_backend(&journal, &stand_in);
+    lares_journal_value_dword(&off, 0);
+    lares_journal_value_dword(&on, 1);
+    if (autohide_switched) lares_journal_change(&journal, "shell", "taskbar", L"auto-hide", &on, NULL);
+    else lares_journal_begin(&journal, "shell", "taskbar", L"auto-hide", &off, &on, NULL);
+    g_before = 0;
+    mark();
+}
+
 static void case_stale_state(void)
 {
-    begin("state left by a guard that is gone", 1, 0);
-    HWND bar = FindWindowExW(NULL, NULL, g_class, NULL);
-    ShowWindow(bar, SW_HIDE);
-    SetPropW(bar, AUTOHIDE_PROP, (HANDLE)(INT_PTR)2);
-    FILE *f = _wfopen(g_state_file, L"wb");
-    if (f) {
-        fputs("lares-guard-state 1\nrunning 1\nhidden 1\nautohide 0\nguard 4\ntwin 0\nshell 0\nend\n", f);
-        fclose(f);
-    }
+    begin("left by a guard that is gone: hidden, auto-hide switched on", 1, 0);
+    leave_behind(1, 1);
+    check(bars_visible() == 0 && bars_autohide() == 1 && journal_exists(), "the taskbar is hidden and the journal says why");
     check(run_guard_command(L"restore") == 0, "lares-guard restore runs");
-    check_within(taskbar_back, LIMIT_MS, "taskbar back from the state file");
+    check_within(taskbar_back, LIMIT_MS, "taskbar and auto-hide back");
+    check(!journal_exists(), "nothing left in the journal");
 
-    mark();
-    ShowWindow(bar, SW_HIDE);
-    SetPropW(bar, AUTOHIDE_PROP, (HANDLE)(INT_PTR)2);
-    f = _wfopen(g_state_file, L"wb");
-    if (f) {
-        fputs("lares-guard-state 1\nrunning 1\nhidden 1\nautohide 0\nguard 4\ntwin 0\nshell 0\nend\n", f);
-        fclose(f);
-    }
-    g_before = 0;
+    begin("left by a guard that is gone: the journal written, auto-hide not yet switched", 1, 0);
+    leave_behind(1, 0);
+    check(run_guard_command(L"restore") == 0, "lares-guard restore runs");
+    check_within(taskbar_back, LIMIT_MS, "taskbar back, auto-hide as it was");
+    check(!journal_exists(), "nothing left in the journal");
+
+    begin("left by a guard that is gone: only the auto-hide entry", 1, 0);
+    leave_behind(0, 1);
+    check(run_guard_command(L"restore") == 0, "lares-guard restore runs");
+    check_within(taskbar_back, LIMIT_MS, "auto-hide back");
+    check(!journal_exists(), "nothing left in the journal");
+
+    begin("left by a guard that is gone: a guard that starts", 1, 0);
+    leave_behind(1, 1);
     start_guard(L"\"no-such-program.exe\"");
-    check_within(taskbar_back, LIMIT_MS, "a guard that starts gives it back first");
+    check_within(taskbar_back, LIMIT_MS, "it gives the taskbar back first");
 }
 
 /* Safe mode: nothing of the shell starts and the taskbar is never touched. */
@@ -757,8 +813,10 @@ int wmain(int argc, wchar_t **argv)
 {
     wchar_t temp[MAX_PATH], *slash;
     int seconds = 0;
+    const wchar_t *only = NULL; /* --only sign-out | stale | safe: one group of cases, while working on it */
     for (int i = 1; i < argc; ++i) {
         if (!wcscmp(argv[i], L"--real")) g_real = 1;
+        else if (!wcscmp(argv[i], L"--only") && i + 1 < argc) only = argv[++i];
         else if (!wcscmp(argv[i], L"--measure") && i + 1 < argc) seconds = _wtoi(argv[++i]);
     }
 
@@ -774,6 +832,8 @@ int wmain(int argc, wchar_t **argv)
     CreateDirectoryW(g_dir, NULL);
     swprintf(g_state_file, ARRAYSIZE(g_state_file), L"%ls\\guard.state", g_dir);
     SetEnvironmentVariableW(L"LARES_GUARD_STATE_DIR", g_dir);
+    swprintf(g_journal_file, ARRAYSIZE(g_journal_file), L"%ls\\journal.log", g_dir);
+    SetEnvironmentVariableW(L"LARES_JOURNAL", g_journal_file);
 
     if (g_real) {
         HWND bar = FindWindowW(L"Shell_TrayWnd", NULL);
@@ -793,6 +853,12 @@ int wmain(int argc, wchar_t **argv)
 
         if (seconds) {
             measure(seconds);
+        } else if (only && !wcscmp(only, L"sign-out")) {
+            case_sign_out();
+        } else if (only && !wcscmp(only, L"stale")) {
+            case_stale_state();
+        } else if (only && !wcscmp(only, L"safe")) {
+            case_safe_mode();
         } else {
             g_failures += guard_state_tests();
             case_clean_quit(0);

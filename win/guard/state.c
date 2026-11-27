@@ -57,9 +57,7 @@ int lares_guard_state_format(const lares_guard_state *s, char *text, int capacit
 {
     int at = put_text(text, capacity, 0, STATE_HEADER "\n");
     at = put_line(text, capacity, at, "running", s->running ? 1 : 0);
-    at = put_line(text, capacity, at, "hidden", s->hidden ? 1 : 0);
-    /* 0 off, 1 on, 2 unknown: the file holds no minus sign. */
-    at = put_line(text, capacity, at, "autohide", s->autohide_before < 0 ? 2 : (s->autohide_before ? 1 : 0));
+    at = put_line(text, capacity, at, "hidden", (ULONGLONG)(s->hidden > 0 ? s->hidden : 0));
     at = put_line(text, capacity, at, "guard", s->guard_pid);
     at = put_line(text, capacity, at, "twin", s->twin_pid);
     at = put_line(text, capacity, at, "shell", s->shell_pid);
@@ -111,10 +109,8 @@ void lares_guard_state_parse(const char *text, int length, lares_guard_state *ou
         } else if (key_is(line, n, "running")) {
             s.running = number_after_key(line, n) != 0;
         } else if (key_is(line, n, "hidden")) {
-            s.hidden = number_after_key(line, n) != 0;
-        } else if (key_is(line, n, "autohide")) {
             ULONGLONG v = number_after_key(line, n);
-            s.autohide_before = v == 2 ? -1 : (v ? 1 : 0);
+            s.hidden = v > LARES_TASKBAR_GIVING_BACK ? LARES_TASKBAR_HIDDEN : (int)v;
         } else if (key_is(line, n, "guard")) {
             s.guard_pid = (DWORD)number_after_key(line, n);
         } else if (key_is(line, n, "twin")) {

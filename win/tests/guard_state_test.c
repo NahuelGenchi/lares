@@ -28,7 +28,6 @@ int guard_state_tests(void)
     memset(&a, 0, sizeof a);
     a.running = 1;
     a.hidden = 1;
-    a.autohide_before = -1;
     a.guard_pid = 1234;
     a.twin_pid = 5678;
     a.shell_pid = 91011;

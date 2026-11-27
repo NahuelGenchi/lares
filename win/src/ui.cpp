@@ -470,6 +470,8 @@ void MainWindow::select_section(const std::string& id, bool animate)
             editing_nickname_.clear();
             toggle_hits_.clear();
             settings_hits_.clear();
+            changes_open_ = -1;
+            changes_said_.clear();
             card_hits_.clear();
             drops_.clear();
             drop_open_.clear();

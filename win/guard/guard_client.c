@@ -22,6 +22,7 @@
 
 #include "state.h"
 #include "taskbar.h"
+#include "taskbar_journal.h"
 
 #define ALIVE_TIMER 0x4C47
 #define ALIVE_EVERY_MS 2000
@@ -55,11 +56,14 @@ static void signal_guard(const wchar_t *variable)
 static void hide_again(void)
 {
     lares_guard_state s;
+    lares_journal journal;
     lares_guard_state_load(c.dir, &s);
-    if (!s.hidden) return;
+    if (s.hidden != LARES_TASKBAR_HIDDEN) return;
     lares_taskbar_show(0);
-    if (s.autohide_before == 0 && lares_taskbar_get_autohide() == 0) lares_taskbar_set_autohide(1);
-    lares_taskbar_show(0);
+    /* Auto-hide that the journal says Lares switched on, and that a new
+     * Explorer came up without: on again, with no new entry. */
+    if (lares_taskbar_get_autohide() == 0 && lares_shell_journal(&journal) && lares_shell_autohide_owed(&journal))
+        lares_taskbar_set_autohide(1);
 }
 
 static void CALLBACK on_shown(HWINEVENTHOOK hook, DWORD event, HWND window, LONG object, LONG child, DWORD thread,
@@ -120,13 +124,17 @@ int lares_guard_client_message(HWND window, UINT message, WPARAM wp, LPARAM lp)
          * outlives the session, so it goes back now, from this process:
          * nothing new can be started this late. */
         lares_guard_state s;
+        lares_journal journal;
         KillTimer(window, ALIVE_TIMER);
         unwatch();
         c.hiding = 0;
         lares_guard_state_load(c.dir, &s);
+        /* Auto-hide first: it is the part that would outlive the session. */
+        if (lares_shell_journal(&journal)) lares_shell_autohide_back(&journal);
         if (s.hidden) {
+            s.hidden = LARES_TASKBAR_GIVING_BACK;
+            lares_guard_state_save(c.dir, &s);
             lares_taskbar_show(1);
-            if (s.autohide_before == 0) lares_taskbar_set_autohide(0);
             s.hidden = 0;
             lares_guard_state_save(c.dir, &s);
         }

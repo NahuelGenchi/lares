@@ -90,6 +90,7 @@ private:
     // Buttons on the Settings page.
     enum class SettingsAction {
         LeaveSafeMode,
+        UndoChanges,
     };
     struct SettingsHit {
         D2D1_RECT_F rect;
@@ -371,6 +372,8 @@ private:
     std::vector<SettingsHit> settings_hits_;
     void settings_action(SettingsAction action);
     const wchar_t* safe_scope() const { return opts_.dry_run ? L"dry" : L""; }
+    int changes_open_ = -1;      // Windows settings the change journal still holds; -1: not counted yet
+    std::wstring changes_said_;  // what the last undo did, shown until the page is left
     std::vector<NavCardHit> card_hits_;
     std::vector<Dropdown> drops_;          // the page's dropdowns, as last drawn
     std::string drop_open_;                // the key of the one whose list shows; empty for none

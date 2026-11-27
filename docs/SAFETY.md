@@ -26,7 +26,7 @@ Three things stand behind the guard, and this is the design chosen for "the guar
 
 1. **A twin.** The guard starts a second copy of itself, `lares-guard twin`, that does nothing but wait on the guard. If the guard ends without having written "stopped", the twin gives the taskbar back and starts a new guard. The guard waits on the twin the same way and starts a new one if it ends.
 2. **A job object.** The shell runs in a Windows job that ends it when the guard's handle closes, so a shell never runs on with nobody watching it. Programs the shell starts are not in the job.
-3. **State that outlives every process.** `%LOCALAPPDATA%\Lares\guard.state` says whether the taskbar is hidden and what auto-hide was before. It is written and flushed *before* the taskbar is touched, and replaced in one step, so a power cut leaves either the old state or the new one. The next guard to start, or `lares-guard restore`, gives the taskbar back from it.
+3. **State that outlives every process.** `%LOCALAPPDATA%\Lares\guard.state` says whether the taskbar's windows are hidden, and the change journal (below) says what auto-hide was before. Both are written and flushed *before* the taskbar is touched; the state file is replaced in one step, so a power cut leaves either the old state or the new one. The next guard to start, or `lares-guard restore`, gives the taskbar back from them.
 
 The limit of this design: if the guard and its twin are both killed in the same instant (a script that ends every process by name does this), neither has time to act. The taskbar then stays hidden until a guard next starts or `lares-guard restore` is run. Windows' own Start menu (the Windows key) and Alt+Tab still work in that state. Measured: one millisecond between the two kills is already enough for the taskbar to come back by itself.
 
@@ -72,6 +72,55 @@ In safe mode the guard starts no shell. A guard that is already running is asked
 | `lares --safe`, in any position on the command line | unit test | | confirmed |
 | The Safe mode card and **Turn safe mode off** | window check in a dry run, light and dark | the card shows, and goes when the button is clicked | confirmed |
 | Shift held at a real sign-in | | | **not checked**: it needs a sign-out on a PC with Lares' start-up entry, which does not exist until the bar is in this repository. Only the decision is tested, with Shift as a plain yes or no |
+
+## The change journal
+
+Every Windows setting Lares changes is written down first, in one small file per user, `%LOCALAPPDATA%\Lares\journal.log` (issue [#129](https://github.com/NahuelGenchi/lares/issues/129)). An entry says what was changed, the value before, the value after, when, and which feature asked. It is written and flushed to disk **before** the setting is touched and marked done after, so a crash or a power cut at any point leaves something undo can act on:
+
+| The program died... | What is on disk | What undo does |
+| :--- | :--- | :--- |
+| while writing the entry | a line cut short, which fails its checksum | ignores it: the setting was never touched |
+| after the entry, before the change | an entry with no "done" mark, the setting still as before | finds the old value and closes the entry |
+| after the change, before the "done" mark | an entry with no "done" mark, the setting changed | puts the old value back |
+
+One routine, `lares_journal_undo` in `win/journal/journal.h`, serves all three callers: **Undo all** in Settings (and `lares undo` on the command line), the guard when it gives the taskbar's auto-hide back, and the uninstaller when there is one. It works newest entry first, for one feature, one entry or everything. A setting that no longer has the value Lares gave it was changed by you or another program since: undo leaves it alone, says so, and keeps the entry. When nothing is left to undo, the file is removed.
+
+The interface is C with no C runtime, so the guard links it:
+
+```c
+lares_journal journal;
+lares_journal_open(&journal, NULL);                      /* the user's own journal */
+lares_journal_add_backend(&journal, &lares_journal_registry);
+
+lares_journal_value value;
+lares_journal_value_dword(&value, 1);
+lares_journal_change(&journal, "feature-name", "registry",
+                     L"HKCU\\Software\\Example|Value", &value, NULL);
+
+lares_journal_undo(&journal, NULL, 0, 0, &result);        /* everything, newest first */
+```
+
+A backend is a pair of functions that read and write one kind of setting. Two exist: `registry` (`win/journal/journal_win.h`, a value under `HKCU` or `HKLM`, including one that was not there) and `taskbar` (`win/guard/taskbar_journal.h`, the taskbar's auto-hide). The guard's own state file now holds only whether the taskbar's windows are hidden; auto-hide, the part that outlives a session, is in the journal.
+
+The file is plain text, one record a line, each with a CRC-32. It holds setting names and values, which can include paths; it stays on the PC like every other Lares file.
+
+| Case | How | Result | Status |
+| :--- | :--- | :--- | :--- |
+| A change, the list, undo, the file removed when empty | unit test, made-up backend | | confirmed |
+| Several entries: newest first, by feature, by one entry | unit test | two changes of one setting go back to the first value | confirmed |
+| A setting someone else changed since | unit test | left alone and kept in the journal; forced, it goes back | confirmed |
+| A change or an undo that cannot be made | unit test | reported, nothing owed for a change that failed | confirmed |
+| An entry with no completion mark, change made or not | unit test | put back, or found as it was | confirmed |
+| A torn last record | unit test: the second entry's records cut at every byte | the torn record is never believed, everything before it undoes, the next record starts on its own line | confirmed |
+| A record damaged in the middle | unit test | that record alone is lost | confirmed |
+| Registry values: written where there was none, changed, a string, removed | automatic, under a test key in `HKCU` | undo restores all four | confirmed |
+| Power cut between the journal write and the change | automatic: a copy of the test ends itself there | the setting was never changed; undo finds it as it was | confirmed |
+| Power cut between the change and the completion mark | automatic, the same way | undo puts the old value back | confirmed |
+| The guard's auto-hide through the journal | automatic, stand-in taskbar: every guard case above, plus three kinds of leftovers from a guard that died in the middle | auto-hide back each time, journal empty after | confirmed |
+| **Undo all** in Settings | window check in a dry run, light and dark, with a journal of two registry values under a test key | "2 settings are back as before", the values gone, the file removed | confirmed |
+| A real power cut (the machine losing power) | | | **not checked**: a killed process stands in for it. What the journal relies on is `FlushFileBuffers` reaching the disk before the change |
+
+**Not done yet:** the changes Lares for Windows already makes outside the shell (the helper's start-up entry, for one) do not go through the journal. That is its own issue, [#133](https://github.com/NahuelGenchi/lares/issues/133).
 
 ## What was checked
 

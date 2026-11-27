@@ -70,6 +70,7 @@
 #include "safe.h"
 #include "state.h"
 #include "taskbar.h"
+#include "taskbar_journal.h"
 
 #define LOOK_MS 4000
 #define MISSED_LOOKS 2
@@ -203,15 +204,24 @@ static void append_number(wchar_t *text, DWORD value)
     text[at] = 0;
 }
 
-/* The taskbar's two lines in the file belong to whoever hides and gives
- * back; the guard keeps them as they are and writes its own around them. */
+/* The "hidden" line in the file belongs to whoever hides and gives back;
+ * the guard keeps it as it is and writes its own lines around it. */
 static void save_state(void)
 {
     lares_guard_state on_disk;
     lares_guard_state_load(g.dir, &on_disk);
     g.st.hidden = on_disk.hidden;
-    g.st.autohide_before = on_disk.autohide_before;
     lares_guard_state_save(g.dir, &g.st);
+}
+
+/* Whether Lares still owes Windows something: hidden taskbar windows, or
+ * an auto-hide it switched on (the change journal says). */
+static int taskbar_owed(void)
+{
+    lares_guard_state s;
+    lares_journal journal;
+    lares_guard_state_load(g.dir, &s);
+    return s.hidden || (lares_shell_journal(&journal) && lares_shell_autohide_owed(&journal));
 }
 
 /* ---- the work that needs user32: done here by the short-lived copies,
@@ -222,27 +232,45 @@ static void save_state(void)
 static int do_hide(void)
 {
     lares_guard_state s;
+    lares_journal journal;
     lares_guard_state_load(g.dir, &s);
-    if (!s.hidden) {
+    if (s.hidden != LARES_TASKBAR_HIDDEN) {
         /* The file says "hidden" before anything is hidden; if it cannot be
          * made to say so, nothing is hidden. */
-        s.autohide_before = lares_taskbar_get_autohide();
-        s.hidden = 1;
+        s.hidden = LARES_TASKBAR_HIDDEN;
         if (!lares_guard_state_save(g.dir, &s)) return 0;
     }
     lares_taskbar_show(0);
-    if (s.autohide_before == 0 && lares_taskbar_get_autohide() == 0) lares_taskbar_set_autohide(1);
-    lares_taskbar_show(0);
+    /* Auto-hide is Windows' own setting, so it goes through the change
+     * journal: what it was is on disk before it is switched on. If the
+     * journal cannot be written, auto-hide stays as it is.
+     *
+     * Nothing is hidden after this point. A taskbar that Explorer shows
+     * again is the shell's side's to hide (guard_client.c), which looks at
+     * the state first; hiding once more here could land after the taskbar
+     * had already been given back. */
+    if (lares_shell_journal(&journal)) lares_shell_autohide_on(&journal);
     return 1;
 }
 
 static int do_restore(void)
 {
     lares_guard_state s;
+    lares_journal journal;
     lares_guard_state_load(g.dir, &s);
-    if (s.hidden) {
+    int owed = s.hidden != 0;
+    if (owed) {
+        /* Said first, so that a shell still alive (its guard was killed and
+         * it is on its way out) does not hide the taskbar again. */
+        s.hidden = LARES_TASKBAR_GIVING_BACK;
+        lares_guard_state_save(g.dir, &s);
         lares_taskbar_show(1);
-        if (s.autohide_before == 0) lares_taskbar_set_autohide(0);
+    }
+    /* Asked whether or not the windows were hidden: a guard that died
+     * between the two steps left only the journal's entry. */
+    if (lares_shell_journal(&journal)) lares_shell_autohide_back(&journal);
+    if (owed) {
+        lares_guard_state_load(g.dir, &s);
         s.hidden = 0;
         lares_guard_state_save(g.dir, &s);
     }
@@ -488,7 +516,7 @@ static int run_guard(void)
     /* What an earlier guard left hidden, if anything, comes back first. */
     lares_guard_state_tidy(g.dir);
     lares_guard_state_load(g.dir, &g.st);
-    if (g.st.hidden) restore_taskbar();
+    if (taskbar_owed()) restore_taskbar();
     g.st.running = 1;
     g.st.guard_pid = GetCurrentProcessId();
     g.st.twin_pid = g.st.shell_pid = 0;

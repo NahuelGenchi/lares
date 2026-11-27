@@ -66,6 +66,9 @@ static void test_cli()
     const char* a8[] = { "lares", "bogus" };
     CHECK(lares::parse_cli(2, a8).action == lares::CliAction::Error);
 
+    const char* a9[] = { "lares", "undo" };
+    CHECK(lares::parse_cli(2, a9).action == lares::CliAction::Undo);
+
     // --safe stands anywhere and goes with anything else.
     CHECK(!lares::parse_cli(1, a0).safe);
     const char* s1[] = { "lares", "--safe" };
