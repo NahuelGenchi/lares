@@ -11,7 +11,9 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | One drawing engine, measured | [#140](https://github.com/NahuelGenchi/lares/issues/140) | confirmed: GDI+ with Lares' own glyph blending |
 | The drawing layer and settings | [#141](https://github.com/NahuelGenchi/lares/issues/141) | confirmed by tests: the layer draws into memory, the settings round-trip; nothing on screen yet |
 | `lares-shell.exe`: top bar and dock, under `lares-guard.exe` | [#145](https://github.com/NahuelGenchi/lares/issues/145) | confirmed with tests, on a stand-in taskbar and on the real taskbar of GitHub's Windows runner; not used on a real Windows 11 desktop yet |
-| Launcher, popups, clipboard history, process list, screenshot tool | | planned |
+| The top bar's popups: calendar, keyboard, Bluetooth, network and Tailscale, media, notifications, power, screenshot menu | [#147](https://github.com/NahuelGenchi/lares/issues/147) | confirmed drawn, light and dark, in a test copy; not clicked on a real desktop |
+| Launcher and clipboard history | | planned |
+| Process list and screenshot tool | | planned |
 | `lares-files.exe` and `lares-view.exe` | | planned |
 | AirDrop panel on Lares' own sharing code; device indicators | | planned |
 | Per-user file types for Markdown and images (optional) | | planned |
@@ -204,7 +206,7 @@ A switch writes `shell.ini`, then `win/src/shell_service.cpp` puts what runs in 
 
 The dock starts with File Explorer, the browser Windows opens links with, a terminal and Lares, each only when found ([Other programs](#other-programs)); once the user changes it, `shell.ini` keeps the pins. Win+1 to Win+0 bring the dock's apps to the front; the keyboard hook that sees them is only installed while the dock is on.
 
-**Until the rest of the shell arrives**, the bar's and dock's buttons open Windows' own: the clock and notifications open Windows' notification centre, volume and power its quick settings, network its network list, Bluetooth and keyboard their Settings pages, the screenshot button Windows' snipping, the processor, graphics and memory readings Task Manager, and Start Windows' own Start menu. The sharing button is left out until the AirDrop panel (part 6).
+**Until the rest of the shell arrives**, the dock's Start button opens Windows' own Start menu, the processor, graphics and memory readings open Task Manager, and the screenshot menu's entries open Windows' snipping. The sharing button is left out until the AirDrop panel (part 6). The bar's other buttons open Lares' popups (below).
 
 **Checking a build on a PC someone works on.** `lares-shell --isolated` (or `LARES_SHELL_ISOLATED=1`) runs a copy that hides nothing, reserves no space, puts its windows far off the screen, installs no keyboard hook and opens nothing. `lares-shell --snapshot DIR` does the same with both parts on, draws them once into `DIR\top-bar.png` and `DIR\dock.png`, and ends; `LARES_COLOR_SCHEME=light` or `dark` picks the palette.
 
@@ -228,6 +230,30 @@ The dock starts with File Explorer, the browser Windows opens links with, a term
 | The same on a clean Windows | | the Checks workflow prints them on every pull request | see the workflow log |
 
 On the development PC about 2.4 MB of every process's own memory is another program's ([docs/SAFETY.md](SAFETY.md)). The budget is about 25 MB at rest.
+
+### The popups
+
+The bar's buttons open one see-through popup at a time (`win/shell/popups.c`, issue [#147](https://github.com/NahuelGenchi/lares/issues/147)), drawn when it opens and when what it shows changes. They are part of the top bar and have no switch of their own.
+
+| Popup | What it holds |
+| :--- | :--- |
+| Calendar | the time and date, a month to page through, Today; the week starts on Sunday or Monday (`[top-bar] week-starts`) |
+| Keyboard | the keyboard layouts Windows has, to switch the window in front to another |
+| Bluetooth | the devices Windows already knows, connected first; **Scan** looks for new ones only when pressed, because a scan can make Bluetooth audio stutter |
+| Network and Tailscale | the connection, and when Tailscale is installed (found through its service): connect or disconnect, the address to copy, an exit node, and its Windows service, started and stopped on demand with an optional manual start so it costs no memory while off |
+| Media | what plays, with its controls, the volume, and the sound outputs |
+| Notifications | Windows' notification centre, and **Do Not Disturb**, which opens Windows' notification settings: Windows offers no public way for a program to switch it, so the popup does not pretend to |
+| Power | lock, sleep, sign out, restart, shut down, File Explorer, and closing the bar and dock until the next sign-in |
+| Screenshot | region, window or screen, through Windows' snipping until Lares' screenshot tool arrives; its shortcuts show only once that tool is on |
+
+Starting or stopping Tailscale's service needs administrator rights on most PCs. The popup first tries without them; when Windows refuses, the shell starts a short-lived copy of itself, `lares-shell --ts-service start|stop [--ts-startup manual|auto]`, with Windows' own approval prompt. That copy touches the Tailscale service and nothing else, and a cancelled prompt is reported in the popup.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| Every popup drawn, light and dark | `lares-shell --snapshot`, development PC, looked at; a test copy draws the popups without showing them or taking the focus | confirmed |
+| Clicking in the popups, the keyboard switch, the volume slider, connecting Tailscale | | **not checked**: needs a desktop where the shell is in use |
+| Starting and stopping Tailscale's service, with and without the approval prompt | | **not checked**: it would change a service on the development PC |
+| The memory a popup takes, given back when it closes | | **not measured** yet |
 
 ### Known limits
 
