@@ -75,6 +75,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node tools/privacy-gate.mjs --files win/build/crash-report.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # The shell's drawing engine (issue #140): both engines draw the same
+      # screens on a clean Windows, each in a process of its own.
+      - name: Drawing engines compared
+        run: |
+          win/build/Release/lares-draw-bench.exe compare --frames 60
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Privacy gate (built programs)
         run: node tools/privacy-gate.mjs --binaries win/build/Release
       # The measurement script runs, compares, and writes nothing private.
