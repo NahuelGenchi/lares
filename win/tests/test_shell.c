@@ -11,7 +11,8 @@
  *   WM_APP + 3   hang (stops answering messages)
  *   WM_APP + 4   leave with no word to the guard
  *
- * `--no-ready` never says ready; `--crash-after MS` crashes by itself.
+ * `--no-ready` never says ready; `--ready-after MS` says it late, as a bar
+ * that takes a moment to draw would; `--crash-after MS` crashes by itself.
  */
 #include <windows.h>
 
@@ -25,6 +26,8 @@
 #define SHELL_CRASH (WM_APP + 2)
 #define SHELL_HANG (WM_APP + 3)
 #define SHELL_LEAVE (WM_APP + 4)
+#define CRASH_TIMER 1
+#define READY_TIMER 2
 
 /* What a real Lares program does on a crash: end at once, so that whoever
  * waits on the process is not kept waiting by Windows' own crash handling. */
@@ -57,7 +60,12 @@ static LRESULT CALLBACK shell_window(HWND window, UINT message, WPARAM wp, LPARA
     case SHELL_LEAVE:
         ExitProcess(1);
     case WM_TIMER:
-        crash_now();
+        if (wp == READY_TIMER) {
+            KillTimer(window, READY_TIMER);
+            lares_guard_client_ready(window);
+        } else {
+            crash_now();
+        }
         return 0;
     default:
         return DefWindowProcW(window, message, wp, lp);
@@ -80,8 +88,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
     if (!window) return 2;
 
     const wchar_t *after = wcsstr(command, L"--crash-after");
-    if (after) SetTimer(window, 1, (UINT)wcstoul(after + 13, NULL, 10), NULL);
-    if (!wcsstr(command, L"--no-ready")) lares_guard_client_ready(window);
+    if (after) SetTimer(window, CRASH_TIMER, (UINT)wcstoul(after + 13, NULL, 10), NULL);
+    after = wcsstr(command, L"--ready-after");
+    if (after) SetTimer(window, READY_TIMER, (UINT)wcstoul(after + 13, NULL, 10), NULL);
+    else if (!wcsstr(command, L"--no-ready")) lares_guard_client_ready(window);
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) DispatchMessageW(&m);

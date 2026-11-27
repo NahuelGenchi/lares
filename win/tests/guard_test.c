@@ -328,7 +328,11 @@ static void start_guard(const wchar_t *shell_command)
     PROCESS_INFORMATION pi;
     si.cb = sizeof si;
     if (shell_command) swprintf(line, ARRAYSIZE(line), L"\"%ls\" run %ls", g_guard, shell_command);
-    else swprintf(line, ARRAYSIZE(line), L"\"%ls\" run \"%ls\"", g_guard, g_shell);
+    /* The stand-in says "ready" a little late, as a real bar would: a shell
+     * started again right after a crash would otherwise hide the taskbar
+     * within a few milliseconds of it coming back, too briefly to be seen
+     * by a test on a busy machine. */
+    else swprintf(line, ARRAYSIZE(line), L"\"%ls\" run \"%ls\" --ready-after 300", g_guard, g_shell);
     mark();
     if (!CreateProcessW(NULL, line, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         check(0, "the guard starts");
