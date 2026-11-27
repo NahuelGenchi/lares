@@ -5,6 +5,7 @@ extern "C" {
 }
 #include "cli.h"
 #include "config.h"
+#include "crash_view.h"
 #include "devices.h"
 #include "helper.h"
 extern "C" {
@@ -99,6 +100,17 @@ static void test_pad_autostart()
     DeleteFileW(journal_path);
     RegDeleteTreeW(HKEY_CURRENT_USER, key);
     remove_empty_lares_key();
+}
+
+// The program's name from a crash report's file name, as Settings shows it.
+static void test_crash_names()
+{
+    CHECK(lares::crash_program_from_name(L"lares-20261127-153012.txt") == L"lares");
+    CHECK(lares::crash_program_from_name(L"lares-pad-20261127-153012.txt") == L"lares-pad");
+    CHECK(lares::crash_program_from_name(L"lares-guard-20261127-153012.txt") == L"lares-guard");
+    CHECK(lares::crash_program_from_name(L"notes.txt") == L"a Lares program");
+    CHECK(lares::crash_program_from_name(L"lares-2026112x-153012.txt") == L"a Lares program");
+    CHECK(lares::crash_program_from_name(L"-20261127-153012.txt") == L"a Lares program");
 }
 
 static void test_cli()
@@ -981,6 +993,7 @@ int main()
     test_hid_find();
     test_cli();
     test_pad_autostart();
+    test_crash_names();
     test_theme();
     test_config();
     test_shared_art();

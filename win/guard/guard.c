@@ -72,6 +72,9 @@
 #include "taskbar.h"
 #include "taskbar_journal.h"
 
+#include "crash.h"
+#include "lares_version.h"
+
 #define LOOK_MS 4000
 #define MISSED_LOOKS 2
 #define CHILD_WAIT_MS 5000
@@ -718,6 +721,9 @@ static int guard_main(void)
     const wchar_t *rest = skip_argument(GetCommandLineW());
     const wchar_t *tail;
 
+    /* A crash writes a report on this PC only (crash.h), and the twin, which
+     * waits on this process, learns of it at once. */
+    lares_crash_install("lares-guard", LARES_VERSION);
     if (!lares_guard_state_dir(g.dir, ARRAYSIZE(g.dir))) return 2;
     if (!GetModuleFileNameW(NULL, g.self, ARRAYSIZE(g.self))) return 2;
     if (GetEnvironmentVariableW(L"LARES_GUARD_TASKBAR_CLASS", test_class, ARRAYSIZE(test_class)) > 0)
