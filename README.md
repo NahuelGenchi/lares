@@ -30,6 +30,10 @@ Share starts nothing until *Receive* is on or files are picked to send. Then `la
 
 The top-bar addon (`lares@nahuelgenchi.github.io`) is JavaScript, because GNOME Shell runs nothing else in the top bar. It only draws: every reading and action comes from the helper. It stays off until Show the icon is turned on under Top bar in Lares' Settings, and GNOME loads it at the next log-in after it is first installed.
 
+## Measured gains
+
+What a Windows 11 PC gains or pays with Lares is shown as measured numbers, never as a promise. `tools/measure.ps1` records a PC at rest (memory in use and committed, processes and threads, processor and graphics card use, start-up entries, and the own memory of the programs you name) into a small file with nothing private in it, and compares a before with an after. [docs/GAINS.md](docs/GAINS.md) has the method and the results so far, each marked confirmed, reported, planned or blocked.
+
 ## Build and install
 
 It needs a C compiler, `make`, GTK 4.22 or newer with its development files, and GNOME. `make install` puts everything in `~/.local` and needs no administrator rights; it also installs the Monocraft font (SIL Open Font License) if it isn't there yet.
