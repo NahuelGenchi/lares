@@ -53,7 +53,8 @@ Lares for Windows is getting its own top bar, dock, launcher, Files and viewers,
 | :--- | :--- |
 | One drawing engine for every shell part: GDI+ with Lares' own ClearType blending, chosen over Direct2D's software target by measurement | confirmed ([docs/SHELL.md](docs/SHELL.md)) |
 | The drawing layer, and the shell's settings in Lares' own configuration with every part off; Tailscale, Sunshine, a terminal and the browser found the way Windows finds them | confirmed by tests; nothing on screen yet |
-| Top bar and dock, launcher and popups, Files and viewers, the AirDrop panel and device indicators | planned |
+| Top bar and dock (`lares-shell.exe`, under `lares-guard.exe`): switches in Settings, off by default; the Windows taskbar is hidden only while the dock is on | confirmed with tests on a stand-in taskbar and, ten times in a row, on the real taskbar of GitHub's Windows runner; not yet used by a person on a real Windows 11 desktop |
+| Launcher and popups, Files and viewers, the AirDrop panel and device indicators | planned |
 
 ## Build and install
 
@@ -85,4 +86,4 @@ Work is tracked with issues, milestones and pull requests; see [CONTRIBUTING.md]
 
 ## License
 
-GPL-2.0-or-later. The controller artwork, `data/pad/controller.png`, comes from Padlight, by the same author, under the same license; the pixel-art picture the window and the top-bar menu draw, `data/pad/controller.txt`, is traced from it. Xbox is a trademark of Microsoft; Lares is not affiliated with it. Share's AirDrop code follows the specification and implementation of [owly](https://github.com/t4t5/owly) (MIT, Copyright (c) 2026 T4T5; see `LICENSES/MIT-owly.txt`).
+GPL-2.0-or-later. The controller artwork, `data/pad/controller.png`, comes from Padlight, by the same author, under the same license; the pixel-art picture the window and the top-bar menu draw, `data/pad/controller.txt`, is traced from it. Xbox is a trademark of Microsoft; Lares is not affiliated with it. The dock's Start button is drawn after Microsoft's Windows XP logo (artwork credit: Microsoft); Windows is a trademark of Microsoft. Share's AirDrop code follows the specification and implementation of [owly](https://github.com/t4t5/owly) (MIT, Copyright (c) 2026 T4T5; see `LICENSES/MIT-owly.txt`).

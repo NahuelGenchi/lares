@@ -10,7 +10,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | :--- | :--- | :--- |
 | One drawing engine, measured | [#140](https://github.com/NahuelGenchi/lares/issues/140) | confirmed: GDI+ with Lares' own glyph blending |
 | The drawing layer and settings | [#141](https://github.com/NahuelGenchi/lares/issues/141) | confirmed by tests: the layer draws into memory, the settings round-trip; nothing on screen yet |
-| `lares-shell.exe`: top bar and dock, under `lares-guard.exe` | | planned |
+| `lares-shell.exe`: top bar and dock, under `lares-guard.exe` | [#145](https://github.com/NahuelGenchi/lares/issues/145) | confirmed with tests, on a stand-in taskbar and on the real taskbar of GitHub's Windows runner; not used on a real Windows 11 desktop yet |
 | Launcher, popups, clipboard history, process list, screenshot tool | | planned |
 | `lares-files.exe` and `lares-view.exe` | | planned |
 | AirDrop panel on Lares' own sharing code; device indicators | | planned |
@@ -178,3 +178,58 @@ Lares' Remote section uses the same lookup: Tailscale through its service, and S
 | A service's program folder from its command line: quoted, unquoted with spaces and arguments, `\??\`, environment variables, broken | unit test | confirmed |
 | A terminal and Explorer are found on any Windows; Tailscale and a browser, when found, exist | unit test, development PC and the Checks workflow | confirmed |
 | Remote finds Tailscale and Sunshine on a PC that has them | | not checked in a window yet |
+
+## The top bar and the dock
+
+`lares-shell.exe` (`win/shell/`, issue [#145](https://github.com/NahuelGenchi/lares/issues/145)) draws the top bar and the dock. It never runs on its own: `lares-guard.exe` starts it and owns hiding the Windows taskbar ([docs/SAFETY.md](SAFETY.md)), so a crash, a hang or a kill of the shell gives the taskbar back.
+
+**Turning them on and off.** Settings has a **Bar and dock** card with two switches, both off:
+
+- **Top bar**: a bar at the top of the screen with the app in front, the clock and quick readings. It sits beside Windows' own taskbar, which stays.
+- **Dock**: takes the place of Windows' taskbar, with Start and the pinned and open apps. Only while the dock is on does the shell tell the guard it is ready, and only then is the Windows taskbar hidden. Turning the dock off ends the shell cleanly, the guard gives the taskbar back, and a new shell starts for the bar alone if it is still on.
+
+A switch writes `shell.ini`, then `win/src/shell_service.cpp` puts what runs in line: it starts `lares-guard run lares-shell.exe`, tells a running shell to read its settings again, or ends it cleanly. It also keeps one start-up entry, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `LaresShell`, set to `lares-guard run --sign-in lares-shell.exe` while either part is on. The entry goes through the change journal, so **Undo all**, `lares undo` and an uninstaller can remove it, and it is written only when a switch changes it: an account where nothing was turned on has no entry and an empty journal. Safe mode keeps both switches off and greyed out. A dry run changes nothing.
+
+**What the prototype gained, kept:**
+
+| Behaviour | Where |
+| :--- | :--- |
+| Top bar fixed (reserves its strip of the screen) or hidden automatically, back when the pointer touches the top edge; right-click the bar | `topbar.c` |
+| Dock always shown (reserves its strip, so maximized windows stop above it), hidden automatically, or hidden when a window covers it; right-click the dock | `dock.c` |
+| Drag a pinned app sideways to a new place; the order is saved | `dock.c` |
+| Run as Administrator in a dock app's menu, for real program files only | `dock.c` |
+| Short slide, fade and launch hop transitions, each a timer that exists only while it runs; **Animations** in either menu turns them off | `topbar.c`, `dock.c` |
+| After an Explorer restart both bars reserve their strips again; a real full-screen window hides both | `topbar.c`, `dock.c`, `main.c` |
+| Window events merged: only the ones that can change what the bar and dock show get through, into one refresh | `win_tracker.c` |
+
+The dock starts with File Explorer, the browser Windows opens links with, a terminal and Lares, each only when found ([Other programs](#other-programs)); once the user changes it, `shell.ini` keeps the pins. Win+1 to Win+0 bring the dock's apps to the front; the keyboard hook that sees them is only installed while the dock is on.
+
+**Until the rest of the shell arrives**, the bar's and dock's buttons open Windows' own: the clock and notifications open Windows' notification centre, volume and power its quick settings, network its network list, Bluetooth and keyboard their Settings pages, the screenshot button Windows' snipping, the processor, graphics and memory readings Task Manager, and Start Windows' own Start menu. The sharing button is left out until the AirDrop panel (part 6).
+
+**Checking a build on a PC someone works on.** `lares-shell --isolated` (or `LARES_SHELL_ISOLATED=1`) runs a copy that hides nothing, reserves no space, puts its windows far off the screen, installs no keyboard hook and opens nothing. `lares-shell --snapshot DIR` does the same with both parts on, draws them once into `DIR\top-bar.png` and `DIR\dock.png`, and ends; `LARES_COLOR_SCHEME=light` or `dark` picks the palette.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| A fresh account: nothing on, no shell, no guard, no start-up entry, an empty journal, the taskbar as it was | `lares-shell-test`, stand-in taskbar, development PC; and the Checks workflow | confirmed |
+| Dock on and off; top bar on and off; the dock joining a running bar (same shell); the dock leaving the bar (new shell, taskbar back); start-up entry present and gone | `lares-shell-test`, stand-in taskbar and a shell that hides nothing, once on the development PC (36 checks) | confirmed |
+| The same, ten times in a row, on the real taskbar with a shell that reserves its strips | `lares-shell-test --real --cycles 10`, the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; see its log |
+| Bar and dock drawn, light and dark | `lares-shell --snapshot`, development PC, looked at | confirmed |
+| The Bar and dock card in Settings, light and dark, both off | window check in a dry run, development PC | confirmed |
+| Clicking each button, the menus, dragging, auto-hide and the three dock modes on a real desktop | | **not checked**: on the development PC another bar hides the taskbar and must not be disturbed. Needs a Windows 11 test account |
+| A real Explorer restart, sign-out, change of screens | | **not checked**, as for the guard ([docs/SAFETY.md](SAFETY.md)) |
+
+### Measured
+
+| Reading | Value | Where | Status |
+| :--- | ---: | :--- | :--- |
+| `lares-shell.exe` own memory at rest, bar and dock on | 16.6 MB (working set 7.8 MB) | development PC, a copy that hides nothing, 30 seconds after 5 to settle | confirmed |
+| Its processor time at rest | 62.5 ms in 30 s (0.2% of one core) | same | confirmed |
+| Direct3D, Direct2D, WebView2, Chromium or .NET loaded | none of its own | same; another program loads `d2d1.dll` into every process on that PC | confirmed |
+| The same on a clean Windows | | the Checks workflow prints them on every pull request | see the workflow log |
+
+On the development PC about 2.4 MB of every process's own memory is another program's ([docs/SAFETY.md](SAFETY.md)). The budget is about 25 MB at rest.
+
+### Known limits
+
+- The bar and dock are drawn at fixed pixel sizes on the primary screen, as the prototype drew them: at 150% or 200% display scale they are small, and a second screen gets neither. Scaling and more screens belong to the test matrix of stage 4.
+- Start opens Windows' own Start menu until Lares' launcher arrives.

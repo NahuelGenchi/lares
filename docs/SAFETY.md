@@ -4,7 +4,7 @@
 
 Lares for Windows will be able to put its own bar and dock in place of the Windows taskbar. This page is about what happens when something goes wrong: a crash, a kill, a hang, a power cut. The rule is that the user always keeps a working desktop, and the Windows taskbar comes back by itself.
 
-Each claim is marked **confirmed** (a recorded check establishes it), **reported** (documented by Microsoft, not checked here), **planned** or **blocked**. The bar and dock themselves are not in this repository yet, so everything here was checked with a stand-in for them, `lares-test-shell.exe`, which is built for tests and never installed.
+Each claim is marked **confirmed** (a recorded check establishes it), **reported** (documented by Microsoft, not checked here), **planned** or **blocked**. Most of what is here was checked with a stand-in for the bar and dock, `lares-test-shell.exe`, which is built for tests and never installed. The real bar and dock, `lares-shell.exe`, came in later ([docs/SHELL.md](SHELL.md), issue [#145](https://github.com/NahuelGenchi/lares/issues/145)); `lares-shell-test` turns them on and off through the guard.
 
 ## The guard
 
@@ -57,7 +57,7 @@ The target is under 1 MB of own memory. It is met on a clean Windows. On the dev
 Safe mode starts Lares with every shell part off and leaves the Windows desktop exactly as it is. Three things turn it on (issue [#128](https://github.com/NahuelGenchi/lares/issues/128)):
 
 - **`--safe`**, on `lares.exe` (with anything else on its command line, or alone) or as `lares-guard run --safe <shell>`.
-- **Shift held while signing in.** The guard looks at Shift only when it is started with `--sign-in`, which is what Lares' start-up entry will pass; at any other start, typing a capital letter would be enough. Hold Shift until the desktop is fully shown.
+- **Shift held while signing in.** The guard looks at Shift only when it is started with `--sign-in`, which is what Lares' start-up entry for the bar and dock passes (`HKCU\...\Run`, value `LaresShell`); at any other start, typing a capital letter would be enough. Hold Shift until the desktop is fully shown.
 - **A mark on the session** that either of the two leaves behind, so that nothing starts the bar again by itself later in the same session. The mark is a Windows global atom: no file, no process, and it is gone at the next sign-in. Reading the keyboard and the mark both need Windows' window library, so one of the guard's short-lived copies decides at each start; the guard itself still never loads it.
 
 In safe mode the guard starts no shell. A guard that is already running is asked to end the bar and give the taskbar back (`lares-guard stop` does the same on its own), and anything an earlier guard left hidden comes back. Lares' Settings shows a **Safe mode** card while it is on, with **Turn safe mode off**.
@@ -71,7 +71,7 @@ In safe mode the guard starts no shell. A guard that is already running is asked
 | The decision (switch, Shift, mark; Shift only at sign-in) | unit test | | confirmed |
 | `lares --safe`, in any position on the command line | unit test | | confirmed |
 | The Safe mode card and **Turn safe mode off** | window check in a dry run, light and dark | the card shows, and goes when the button is clicked | confirmed |
-| Shift held at a real sign-in | | | **not checked**: it needs a sign-out on a PC with Lares' start-up entry, which does not exist until the bar is in this repository. Only the decision is tested, with Shift as a plain yes or no |
+| Shift held at a real sign-in | | | **not checked**: it needs a sign-out on a PC with the bar or dock turned on; the start-up entry exists since issue #145, but no sign-out was made. Only the decision is tested, with Shift as a plain yes or no |
 
 ## The change journal
 
@@ -127,6 +127,7 @@ Every place the Windows code changes something outside its own files was looked 
 | Change | Where | Journal | Why |
 | :--- | :--- | :--- | :--- |
 | The taskbar's auto-hide | `win/guard/` | yes, feature `shell` | a setting of Windows' own that outlives Lares |
+| The bar's and dock's start-up entry, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `LaresShell` | `win/src/shell_service.cpp` | yes, feature `shell-startup` | a setting that outlives Lares; written only when a switch changes it, so a fresh account's journal stays empty |
 | The helper's start-up entry, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `LaresPad` | `win/src/helper.cpp` | yes, feature `pad-helper` | a setting that outlives Lares. An entry made by a Lares from before the journal is written down as Lares' own the first time, so undo removes it instead of putting it back. **Undo all** also turns Run in the background off, or the next start would add the entry again, and stops the helper |
 | The screen's size, for Remote | `win/src/remote.cpp` | no | changed without being saved (`ChangeDisplaySettingsExW` without `CDS_UPDATEREGISTRY`), so Windows forgets it at sign-out; Home puts it back |
 | Tailscale up and down, Sunshine started and stopped | `win/src/remote.cpp` | no | switched on and off, not configured: the Remote and Home modes are the switch |

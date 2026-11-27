@@ -271,7 +271,14 @@ static bool replace_file(const std::wstring& path, const std::string& content)
         out.flush();
         if (!out.good()) return false;
     }
-    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    // Another Lares program may be reading the file this very moment (the
+    // shell reads shell.ini when told to): try again for a little while.
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+        DWORD err = GetLastError();
+        if (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION) break;
+        Sleep(25);
+    }
     DeleteFileW(tmp.c_str());
     return false;
 #else
@@ -359,6 +366,10 @@ std::string serialize_pad_ini(const PadPrefs& p)
 std::wstring config_dir_path()
 {
 #ifdef _WIN32
+    // Tests keep their settings in a folder of their own.
+    wchar_t test_dir[MAX_PATH];
+    DWORD td = GetEnvironmentVariableW(L"LARES_CONFIG_DIR", test_dir, MAX_PATH);
+    if (td > 0 && td < MAX_PATH) return std::wstring(test_dir);
     PWSTR appdata = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appdata)) && appdata) {
         std::wstring dir(appdata);
