@@ -41,7 +41,7 @@ Lares for Windows will be able to put its own bar in place of the Windows taskba
 | Part | What it does | Status |
 | :--- | :--- | :--- |
 | `lares-guard.exe` | Gives the Windows taskbar back, with auto-hide as it was, when the bar crashes, hangs or is killed, and when the guard itself is killed; stops after two crashes in five minutes and asks | confirmed with a stand-in bar, and on the real taskbar of Windows Server; not yet checked on a real Windows 11 taskbar, sign-out, Explorer restart or change of screens |
-| Safe mode | `--safe`, or Shift held while signing in, starts Lares with every shell part off | planned ([#128](https://github.com/NahuelGenchi/lares/issues/128)) |
+| Safe mode | `--safe`, or Shift held while signing in, starts Lares with every shell part off and leaves the Windows desktop alone for the rest of the session | confirmed with a stand-in bar and in a dry run; Shift at a real sign-in is not yet checked |
 | Change journal | Records every Windows setting Lares changes before changing it, with one undo | planned ([#129](https://github.com/NahuelGenchi/lares/issues/129)) |
 | Crash reports | Written on the PC only, private details removed, never sent | planned ([#130](https://github.com/NahuelGenchi/lares/issues/130)) |
 

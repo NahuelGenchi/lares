@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cli.h"
 #include "remote.h"
+#include "safe.h"
 #include "ui.h"
 
 #include <cstring>
@@ -59,6 +60,30 @@ static void write_cli_output(const char* text)
     if (attached) FreeConsole();
 }
 
+/* Runs lares-guard.exe, from beside this program, with one word, and waits
+ * for it. Does nothing when it is not there. */
+static void run_guard(const wchar_t* verb)
+{
+    wchar_t path[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+    std::wstring guard(path);
+    size_t slash = guard.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return;
+    guard.resize(slash + 1);
+    guard += L"lares-guard.exe";
+    if (GetFileAttributesW(guard.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+
+    std::wstring line = L"\"" + guard + L"\" " + verb;
+    STARTUPINFOW si = {};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) return;
+    WaitForSingleObject(pi.hProcess, 10000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -88,6 +113,17 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
         env_stream.empty() ? nullptr : env_stream.c_str(),
         env_scheme.empty() ? nullptr : env_scheme.c_str(),
         env_sec.empty() ? nullptr : env_sec.c_str());
+
+    /* Safe mode (win/guard/safe.h): the session is marked, and a guard that
+     * is running is asked to end the bar and give the taskbar back. A dry
+     * run marks a session of its own and touches nothing. */
+    if (opts.safe) {
+        lares_safe_mode_mark(opts.dry_run ? L"dry" : L"", 1);
+        if (!opts.dry_run) {
+            run_guard(L"stop");
+            run_guard(L"restore");
+        }
+    }
 
     if (opts.action == lares::CliAction::Help) {
         write_cli_output(lares::cli_usage());

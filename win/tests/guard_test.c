@@ -43,6 +43,7 @@ static DWORD g_bar_thread;
 static HANDLE g_bar_done;
 static const char *g_case = "";
 
+#include "safe.h"
 #include "state.h"
 
 int guard_state_tests(void); /* guard_state_test.c */
@@ -659,6 +660,44 @@ static void case_stale_state(void)
     check_within(taskbar_back, LIMIT_MS, "a guard that starts gives it back first");
 }
 
+/* Safe mode: nothing of the shell starts and the taskbar is never touched. */
+static void case_safe_mode(void)
+{
+    wchar_t command[MAX_PATH + 32], verb[MAX_PATH + 48];
+    swprintf(command, ARRAYSIZE(command), L"--safe \"%ls\"", g_shell);
+    swprintf(verb, ARRAYSIZE(verb), L"run %ls", command);
+
+    begin("safe mode: the --safe switch", 1, 0);
+    lares_safe_mode_mark(g_class, 0);
+    start_guard(command);
+    Sleep(500);
+    check(nothing_runs(), "no guard, twin or shell stays");
+    check(taskbar_back() && read_state().hidden == 0, "the taskbar was left alone");
+    check(lares_safe_mode_marked(g_class), "the session is marked");
+
+    start_guard(NULL);
+    Sleep(500);
+    check(nothing_runs() && taskbar_back(), "in a marked session a plain start does nothing either");
+
+    lares_safe_mode_mark(g_class, 0);
+    check(!lares_safe_mode_marked(g_class), "the mark can be taken away");
+    begin_running("safe mode: --safe while the bar is running", 1, 0);
+    check(run_guard_command(verb) == 0, "lares-guard run --safe returns");
+    check_within(taskbar_back, LIMIT_MS, "taskbar back");
+    check_within(nothing_runs, 3000, "guard, twin and shell are gone");
+    check(read_state().running == 0 && read_state().crashes == 0, "state says stopped, no crash counted");
+    lares_safe_mode_mark(g_class, 0);
+
+    begin_running("lares-guard stop", 1, 0);
+    check(run_guard_command(L"stop") == 0, "it returns once the guard has left");
+    check(nothing_runs() && taskbar_back(), "guard, twin and shell are gone and the taskbar is back");
+    check(read_state().running == 0 && read_state().crashes == 0, "state says stopped, no crash counted");
+    check(run_guard_command(L"stop") == 0, "with no guard running it does nothing");
+
+    int shift = run_guard_command(L"do-shift");
+    check(shift == 30 || shift == 31, "Shift can be read");
+}
+
 static void case_real(void)
 {
     begin_running("real taskbar: crash, guard killed, clean quit", 1, 0);
@@ -767,6 +806,7 @@ int wmain(int argc, wchar_t **argv)
             case_display_change();
             case_sign_out();
             case_stale_state();
+            case_safe_mode();
         }
     }
 

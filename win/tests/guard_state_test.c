@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "safe.h"
 #include "state.h"
 
 static int failures;
@@ -59,6 +60,15 @@ int guard_state_tests(void)
     expect(n == LARES_GUARD_MAX_CRASHES && a.crash_count == LARES_GUARD_MAX_CRASHES, "the list stays bounded");
     expect(LARES_GUARD_CRASH_LIMIT == 2, "two crashes stop the restarts");
 
-    printf("state file: %s\n", failures ? "FAILED" : "ok");
+    /* Safe mode's decision: the switch, the session's mark, or Shift, and
+     * Shift only for a start at sign-in. */
+    expect(!lares_safe_mode_wanted(0, 0, 0, 0), "nothing asked: no safe mode");
+    expect(lares_safe_mode_wanted(1, 0, 0, 0), "the --safe switch");
+    expect(lares_safe_mode_wanted(0, 0, 0, 1), "a marked session");
+    expect(lares_safe_mode_wanted(0, 1, 1, 0), "Shift held at sign-in");
+    expect(!lares_safe_mode_wanted(0, 0, 1, 0), "Shift held at any other start does not count");
+    expect(!lares_safe_mode_wanted(0, 1, 0, 0), "a sign-in without Shift is a normal start");
+
+    printf("state file and safe mode's decision: %s\n", failures ? "FAILED" : "ok");
     return failures;
 }

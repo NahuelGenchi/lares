@@ -3,8 +3,14 @@
  *
  * lares-guard: the watchdog that gives the Windows taskbar back.
  *
- *   lares-guard run <shell program and its arguments>
+ *   lares-guard run [--sign-in] [--safe] <shell program and its arguments>
+ *   lares-guard stop
  *   lares-guard restore
+ *
+ * `stop` asks a running guard to end its shell, give the taskbar back and
+ * leave. `--safe`, Shift held at a start marked `--sign-in`, or a session
+ * already marked safe (safe.h) mean safe mode: no shell is started, a
+ * running guard is stopped, and the Windows desktop is left as it is.
  *
  * `run` starts the shell and owns the fact "the Windows taskbar is hidden".
  * The shell says "I am ready" and the guard hides the taskbar; it says "I am
@@ -61,6 +67,7 @@
 
 #include <commctrl.h>
 
+#include "safe.h"
 #include "state.h"
 #include "taskbar.h"
 
@@ -76,6 +83,8 @@
 #define DONE_SESSION_ENDING 11
 #define ANSWER_KEEP 20
 #define ANSWER_TRY_AGAIN 21
+#define SHIFT_FREE 30
+#define SHIFT_HELD 31
 
 static struct {
     wchar_t dir[MAX_PATH];
@@ -453,13 +462,20 @@ static HANDLE named_event(const wchar_t *kind, const wchar_t *variable)
     return CreateEventW(NULL, TRUE, FALSE, name);
 }
 
-/* One guard for each taskbar it could hide: a running guard holds this. */
-static void guard_mutex_name(wchar_t *name)
+/* The names a running guard is known by: its mutex (one guard for each
+ * taskbar it could hide) and, with ".stop", the event that asks it to leave. */
+static void guard_object_name(wchar_t *name, const wchar_t *kind)
 {
     wchar_t test_class[64];
     lstrcpyW(name, L"Local\\com.nahuelgenchi.Lares.guard");
+    lstrcatW(name, kind);
     if (GetEnvironmentVariableW(L"LARES_GUARD_TASKBAR_CLASS", test_class, ARRAYSIZE(test_class)) > 0)
         lstrcatW(name, test_class);
+}
+
+static void guard_mutex_name(wchar_t *name)
+{
+    guard_object_name(name, L"");
 }
 
 static int run_guard(void)
@@ -489,12 +505,16 @@ static int run_guard(void)
     g.job = CreateJobObjectW(NULL, NULL);
     SetInformationJobObject(g.job, JobObjectExtendedLimitInformation, &limits, sizeof limits);
 
+    guard_object_name(name, L".stop");
+    HANDLE stop = CreateEventW(NULL, TRUE, FALSE, name);
+
     start_twin();
     if (!start_shell()) shell_crashed();
 
     for (;;) {
-        HANDLE handles[3];
-        DWORD n = 0, shell_at = MAXDWORD, twin_at = MAXDWORD, ready_at = MAXDWORD;
+        HANDLE handles[4];
+        DWORD n = 0, shell_at = MAXDWORD, twin_at = MAXDWORD, ready_at = MAXDWORD, stop_at = MAXDWORD;
+        if (stop) handles[stop_at = n++] = stop;
         if (g.shell) handles[shell_at = n++] = g.shell;
         if (g.twin) handles[twin_at = n++] = g.twin;
         if (g.shell && !g.shell_ready) handles[ready_at = n++] = g.ready;
@@ -507,6 +527,15 @@ static int run_guard(void)
             if (g.shell && g.shell_ready) look_at_shell();
         } else if (which >= n) {
             return 1; /* the wait itself failed: leave rather than spin */
+        } else if (which == stop_at) {
+            /* Asked to leave (`lares-guard stop`, safe mode): the shell goes
+             * first, then the taskbar comes back. */
+            if (g.shell) {
+                TerminateProcess(g.shell, 0);
+                WaitForSingleObject(g.shell, CHILD_WAIT_MS);
+            }
+            restore_taskbar();
+            leave(0);
         } else if (which == shell_at) {
             shell_ended();
         } else if (which == twin_at) {
@@ -569,6 +598,49 @@ static int run_restore(void)
     return 0;
 }
 
+/* Asks a running guard to end its shell, give the taskbar back and leave,
+ * and waits for it. 0 when no guard is left running. */
+static int run_stop(void)
+{
+    wchar_t name[160];
+    guard_object_name(name, L".stop");
+    HANDLE stop = OpenEventW(EVENT_MODIFY_STATE, FALSE, name);
+    if (!stop) return 0;
+    SetEvent(stop);
+    CloseHandle(stop);
+    guard_object_name(name, L"");
+    for (int i = 0; i < 500; ++i) {
+        HANDLE running = OpenMutexW(SYNCHRONIZE, FALSE, name);
+        if (!running) return 0;
+        CloseHandle(running);
+        Sleep(10);
+    }
+    return 1;
+}
+
+/* Safe mode (safe.h): the switch, Shift held at sign-in, or the mark an
+ * earlier --safe left on this session. Shift is read by a short-lived copy,
+ * because reading the keyboard needs user32. */
+static int safe_mode_wanted(int safe_switch, int at_sign_in)
+{
+    wchar_t scope[64];
+    scope[0] = 0;
+    GetEnvironmentVariableW(L"LARES_GUARD_TASKBAR_CLASS", scope, ARRAYSIZE(scope));
+    int shift_held = at_sign_in && run_copy(L"do-shift", CHILD_WAIT_MS) == SHIFT_HELD;
+    if (!lares_safe_mode_wanted(safe_switch, at_sign_in, shift_held, lares_safe_mode_marked(scope))) return 0;
+    lares_safe_mode_mark(scope, 1); /* for the rest of the session */
+    return 1;
+}
+
+/* Safe mode: no shell is started, a guard that is running is stopped, and
+ * anything left hidden comes back. Windows' desktop is otherwise untouched. */
+static int run_safe(void)
+{
+    run_stop();
+    run_restore();
+    return 0;
+}
+
 static int guard_main(void)
 {
     wchar_t test_class[64];
@@ -592,11 +664,22 @@ static int guard_main(void)
         lstrcpyW(g.command, tail);
         return run_twin(guard_pid);
     }
-    if (take_word(rest, L"run", &tail) && *tail) {
-        if (lstrlenW(tail) >= ARRAYSIZE(g.command)) return 2;
+    if (take_word(rest, L"run", &tail)) {
+        int safe_switch = 0, at_sign_in = 0;
+        for (;;) {
+            if (take_word(tail, L"--safe", &tail)) safe_switch = 1;
+            else if (take_word(tail, L"--sign-in", &tail)) at_sign_in = 1;
+            else break;
+        }
+        if (!*tail || lstrlenW(tail) >= ARRAYSIZE(g.command)) return 2;
+        /* Only the shell's own command is kept: a guard started again by
+         * the twin is not "at sign-in" and does not look at Shift. */
         lstrcpyW(g.command, tail);
+        if (safe_mode_wanted(safe_switch, at_sign_in)) return run_safe();
         return run_guard();
     }
+    if (take_word(rest, L"stop", &tail)) return run_stop();
+    if (take_word(rest, L"do-shift", &tail)) return (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? SHIFT_HELD : SHIFT_FREE;
     return 2;
 }
 

@@ -70,6 +70,7 @@ target_include_directories(lares_ble PRIVATE
 # Main native Win32 + Direct2D software-rendered application
 add_executable(lares WIN32
     src/main.cpp
+    guard/safe.c
     src/font.cpp
     src/ui.cpp
     src/ui_pages.cpp
@@ -83,6 +84,7 @@ add_executable(lares WIN32
 target_include_directories(lares PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/res
+    ${CMAKE_CURRENT_SOURCE_DIR}/guard
     ${LARES_SHARED_INC}
 )
 target_link_libraries(lares PRIVATE
@@ -138,6 +140,7 @@ add_test(NAME lares-win-unit COMMAND lares-win-unit)
 # in the short-lived copies of itself that hide and give back.
 add_executable(lares-guard WIN32
     guard/guard.c
+    guard/safe.c
     guard/state.c
     guard/taskbar.c
     guard/guard.manifest
@@ -161,7 +164,7 @@ add_executable(lares-test-shell WIN32
 target_include_directories(lares-test-shell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/guard)
 add_executable(lares-guard-test tests/guard_test.c tests/guard_state_test.c)
 target_include_directories(lares-guard-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/guard)
-target_sources(lares-guard-test PRIVATE guard/state.c)
+target_sources(lares-guard-test PRIVATE guard/state.c guard/safe.c)
 target_link_libraries(lares-guard-test PRIVATE shell32 user32)
 add_dependencies(lares-guard-test lares-guard lares-test-shell)
 add_test(NAME lares-guard-test COMMAND lares-guard-test)

@@ -20,6 +20,7 @@ struct CliOptions {
     std::string section;
     bool dry_run = false;
     bool dry_stream = false;
+    bool safe = false; // --safe: every shell part off for this session
     std::string color_scheme; // "", "dark", or "light"
 };
 
