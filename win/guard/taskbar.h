@@ -19,6 +19,9 @@ extern "C" {
  * means the real taskbar. */
 void lares_taskbar_use_test_class(const wchar_t *window_class);
 
+/* Whether a stand-in taskbar is in use (tests). */
+int lares_taskbar_testing(void);
+
 /* How many taskbars there are (one per screen that shows one), and how many
  * of them are visible. */
 int lares_taskbar_count(void);

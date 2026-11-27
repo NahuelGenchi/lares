@@ -222,6 +222,25 @@ static void test_changed_by_someone_else(void)
     check(!file_exists(), "and the file is gone");
 }
 
+/* Making an owed change hold again, and never after its undo. */
+static void test_reapply(void)
+{
+    lares_journal j;
+    lares_journal_undo_result r;
+    printf("an owed change made to hold again\n");
+    fresh(&j);
+    set_slot(L"one", 1, 0);
+    check(!lares_journal_reapply(&j, "shell", "fake", L"one"), "nothing owed: nothing to make hold");
+    change(&j, "shell", L"one", 1, NULL);
+    set_slot(L"one", 1, 0); /* Windows put it back by itself */
+    check(lares_journal_reapply(&j, "shell", "fake", L"one") && slot_is(L"one", 1, 1), "owed: written again");
+    check(lares_journal_list(&j, NULL, NULL) == 1, "no new entry");
+    check(lares_journal_reapply(&j, "shell", "fake", L"one") && slot_is(L"one", 1, 1), "already holding: left as it is");
+    check(!lares_journal_reapply(&j, "remote", "fake", L"one"), "another feature's change is not touched");
+    check(lares_journal_undo(&j, NULL, 0, 0, &r) && r.restored == 1 && slot_is(L"one", 1, 0), "undone");
+    check(!lares_journal_reapply(&j, "shell", "fake", L"one") && slot_is(L"one", 1, 0), "after the undo it stays undone");
+}
+
 static void test_failed_write(void)
 {
     lares_journal j;
@@ -518,6 +537,7 @@ int wmain(int argc, wchar_t **argv)
     test_order_and_selection();
     test_changed_by_someone_else();
     test_failed_write();
+    test_reapply();
     test_no_completion_mark();
     test_torn_and_damaged();
     test_values_and_names();

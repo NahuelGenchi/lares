@@ -58,6 +58,10 @@ jobs:
       # runs it against the runner's own taskbar, when it has one, and prints
       # what the guard costs.
       - name: Guard against the real taskbar, and its measured cost
+        env:
+          # The runner is a throwaway machine; on a PC someone works on the
+          # real-taskbar cases stay off.
+          LARES_TEST_REAL_TASKBAR: "1"
         run: |
           win/build/Release/lares-guard-test.exe --real
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

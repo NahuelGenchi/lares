@@ -303,11 +303,28 @@ static void parse(const char *text, int size, loaded *j)
     }
 }
 
+/* Another program (a virus scanner, a backup) may hold the file for a
+ * moment, and a file being removed refuses to open until whoever holds it
+ * lets go. Opening waits for that, a quarter of a second at most. */
+static HANDLE open_journal(const wchar_t *path, DWORD access, DWORD share, DWORD disposition)
+{
+    HANDLE f = INVALID_HANDLE_VALUE;
+    for (int i = 0; i < 50; ++i) {
+        f = CreateFileW(path, access, share, NULL, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f != INVALID_HANDLE_VALUE) break;
+        DWORD e = GetLastError();
+        if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION) break;
+        Sleep(5);
+        SetLastError(e);
+    }
+    return f;
+}
+
 static int load(const lares_journal *journal, loaded *j)
 {
     ZeroMemory(j, sizeof *j);
-    HANDLE f = CreateFileW(journal->path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE f = open_journal(journal->path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            OPEN_EXISTING);
     if (f == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
     j->exists = 1;
     DWORD size = GetFileSize(f, NULL), got = 0;
@@ -352,8 +369,7 @@ static int append(const lares_journal *journal, const line *record, int torn_tai
     DWORD put = 0;
     LARGE_INTEGER size;
     make_folder(journal->path);
-    HANDLE f = CreateFileW(journal->path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
-                           NULL);
+    HANDLE f = open_journal(journal->path, FILE_APPEND_DATA, FILE_SHARE_READ, OPEN_ALWAYS);
     if (f == INVALID_HANDLE_VALUE) return 0;
     int ok = GetFileSizeEx(f, &size);
     if (ok && size.QuadPart == 0) ok = WriteFile(f, HEADER, sizeof HEADER - 1, &put, NULL) && put == sizeof HEADER - 1;
@@ -575,6 +591,30 @@ int lares_journal_undo(lares_journal *journal, const char *feature, ULONGLONG id
 int lares_journal_forget(lares_journal *journal, const char *feature, ULONGLONG id)
 {
     return undo(journal, feature, id, 0, 1, NULL);
+}
+
+int lares_journal_reapply(lares_journal *journal, const char *feature, const char *kind, const wchar_t *target)
+{
+    lares_journal_value current;
+    loaded j;
+    int holds = 0;
+    const lares_journal_backend *b = backend_for(journal, kind);
+    if (!b) return 0;
+
+    HANDLE mutex = lock_journal();
+    if (load(journal, &j)) {
+        for (int i = j.count - 1; i >= 0; --i) {
+            lares_journal_entry *e = &j.entries[i];
+            if (lstrcmpA(e->kind, kind) != 0 || lstrcmpW(e->target, target) != 0) continue;
+            if (e->state == LARES_JOURNAL_UNDONE || lstrcmpA(e->feature, feature) != 0) break;
+            if (b->read(e->target, &current, b->ctx))
+                holds = lares_journal_value_equal(&current, &e->after) || b->write(e->target, &e->after, b->ctx);
+            break;
+        }
+    }
+    unload(&j);
+    unlock_journal(mutex);
+    return holds;
 }
 
 int lares_journal_list(lares_journal *journal, int (*each)(const lares_journal_entry *entry, void *ctx), void *ctx)
