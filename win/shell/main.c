@@ -368,9 +368,22 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         int ok = topbar_snapshot(path);
         _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\dock.png", snapshot_dir);
         ok &= dock_snapshot(path);
+        static const struct { PopupKind kind; const wchar_t *name; } pops[] = {
+            { POPUP_CALENDAR, L"calendar" }, { POPUP_KEYBOARD, L"keyboard" },
+            { POPUP_BLUETOOTH, L"bluetooth" }, { POPUP_NETWORK, L"network" },
+            { POPUP_MEDIA, L"media" }, { POPUP_NOTIFICATIONS, L"notifications" },
+            { POPUP_POWER, L"power" }, { POPUP_SCREENSHOT, L"screenshot" },
+        };
+        for (int i = 0; i < (int)(sizeof(pops) / sizeof(pops[0])); ++i) {
+            popups_toggle(pops[i].kind, 400, 40);
+            _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\popup-%ls.png", snapshot_dir, pops[i].name);
+            ok &= popups_snapshot(path);
+            popups_close();
+        }
         DestroyWindow(g_hHostWnd);
         MSG m;
         while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) DispatchMessageW(&m);
+        popups_shutdown();
         dock_destroy();
         topbar_destroy();
         if (g_media_on) media_shutdown();

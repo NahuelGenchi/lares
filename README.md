@@ -54,7 +54,8 @@ Lares for Windows is getting its own top bar, dock, launcher, Files and viewers,
 | One drawing engine for every shell part: GDI+ with Lares' own ClearType blending, chosen over Direct2D's software target by measurement | confirmed ([docs/SHELL.md](docs/SHELL.md)) |
 | The drawing layer, and the shell's settings in Lares' own configuration with every part off; Tailscale, Sunshine, a terminal and the browser found the way Windows finds them | confirmed by tests; nothing on screen yet |
 | Top bar and dock (`lares-shell.exe`, under `lares-guard.exe`): switches in Settings, off by default; the Windows taskbar is hidden only while the dock is on | confirmed with tests on a stand-in taskbar and, ten times in a row, on the real taskbar of GitHub's Windows runner; not yet used by a person on a real Windows 11 desktop |
-| Launcher and popups, Files and viewers, the AirDrop panel and device indicators | planned |
+| The top bar's popups: calendar, keyboard, Bluetooth, network and Tailscale, media, notifications, power | confirmed drawn in a test copy, light and dark; not yet used on a real desktop |
+| Launcher, clipboard history, process list and screenshot tool, Files and viewers, the AirDrop panel and device indicators | planned |
 
 ## Build and install
 

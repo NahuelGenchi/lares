@@ -59,3 +59,10 @@ void action_open_processes(void) {
     wchar_t exe[MAX_PATH];
     if (lares_windows_program(L"taskmgr.exe", exe, MAX_PATH)) open_file(exe, NULL);
 }
+
+/* Windows' own snipping, until Lares' screenshot tool arrives (issue #139,
+ * part 4c); it asks for the region, window or screen itself. */
+void action_screenshot(int mode) {
+    (void)mode;
+    open_file(L"ms-screenclip:", NULL);
+}

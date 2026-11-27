@@ -99,6 +99,7 @@ typedef struct {
     bool dock_show_media_widget;
 
     bool launcher_win_key;
+    bool screenshot_enabled;
 } AppConfig;
 
 typedef struct {
@@ -263,7 +264,7 @@ int  dock_snapshot(const wchar_t *png_path);
 bool hotkeys_init(HWND host_hwnd);
 void hotkeys_shutdown(void);
 
-/* popups.c: until Lares' own popups arrive, Windows' own pages open instead. */
+/* popups.c: the bar's popups (issue #147). */
 void popups_init(HINSTANCE hInst);
 void popups_toggle(PopupKind kind, int anchor_x, int anchor_y);
 void popups_close(void);
@@ -273,6 +274,8 @@ void popups_refresh_if_open(void);
 void popups_on_tailscale_updated(void);
 void popups_on_bt_scan_done(void);
 void popups_shutdown(void);
+HWND popups_get_last_fg_window(void);
+int  popups_snapshot(const wchar_t *png_path);
 
 /* Things the bar and dock open (actions.c): Lares' own parts once they are
  * on, else Windows' own. */
@@ -282,5 +285,7 @@ void action_open_terminal(void);
 void action_open_settings(void);
 void action_open_lares(const wchar_t *section);
 void action_open_processes(void);
+/* 0 a region, 1 the window in front, 2 the whole screen. */
+void action_screenshot(int mode);
 
 #endif /* LARES_SHELL_H */
