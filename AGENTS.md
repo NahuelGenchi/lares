@@ -24,6 +24,7 @@ Never describe something as working or complete unless a recorded check establis
 | `src/airdrop/` | AirDrop above the link, GLib only: plists, CPIO, gzip and DVZip, HTTP, mDNS, the Bluetooth LE wake-up, and the TLS receiver and sender |
 | `src/awdl/` | `lares-awdl`, the libc-only AWDL link program that holds `CAP_NET_ADMIN` and `CAP_NET_RAW` (`docs/AIRDROP.md`) |
 | `win/share/`, `win/third_party/` | `lares-share.exe`, AirDrop on Windows without WSL: an RTL8188EU driver over WinUSB ported from Linux `rtl8xxxu` (GPL-2.0-only), `src/awdl`'s node, lwIP for IPv6, Schannel, and `src/airdrop` and `src/share.c` in C++ (`docs/WINDOWS.md`) |
+| `win/guard/`, `win/tests/guard_test.c`, `win/tests/test_shell.c` | Crash safety on Windows: `lares-guard.exe`, which gives the Windows taskbar back when the bar or the guard itself stops, the shell's side of it, and their tests with a stand-in bar and taskbar (`docs/SAFETY.md`). The tests never touch the PC's own taskbar unless run with `--real` |
 | `src/remote_model.c`, `src/remote_view.c` | Remote play: the screen, Sunshine and Tailscale, the Home and Remote modes, and the setup guide |
 | `src/settings_view.c` | The Settings section: Run in the background and the top-bar icon |
 | `src/helper/lares-pad.c`, `src/helper/livelight.c` | The background helper and its D-Bus interface for the addon, and the keyboard lighting it plays live |

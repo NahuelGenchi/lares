@@ -132,6 +132,42 @@ enable_testing()
 add_test(NAME lares-win-unit COMMAND lares-win-unit)
 
 # ---------------------------------------------------------------------------
+# Crash safety (issue #127): lares-guard.exe gives the Windows taskbar back
+# when Lares' bar stops. To stay under 1 MB of its own memory it links without
+# the C runtime (a Debug build keeps it for its checks) and loads user32 only
+# in the short-lived copies of itself that hide and give back.
+add_executable(lares-guard WIN32
+    guard/guard.c
+    guard/state.c
+    guard/taskbar.c
+    guard/guard.manifest
+)
+target_compile_options(lares-guard PRIVATE /GS-)
+target_compile_definitions(lares-guard PRIVATE $<$<NOT:$<CONFIG:Debug>>:LARES_NO_CRT>)
+target_link_options(lares-guard PRIVATE
+    $<$<NOT:$<CONFIG:Debug>>:/NODEFAULTLIB>
+    $<$<NOT:$<CONFIG:Debug>>:/ENTRY:lares_guard_entry>
+    /DELAYLOAD:user32.dll)
+target_link_libraries(lares-guard PRIVATE kernel32 user32 $<$<CONFIG:Debug>:delayimp>)
+
+# Tests only, never installed: a stand-in for the bar that quits, crashes and
+# hangs when told, and the program that kills guard, twin and shell in every
+# order against a stand-in taskbar.
+add_executable(lares-test-shell WIN32
+    tests/test_shell.c
+    guard/guard_client.c
+    guard/state.c
+    guard/taskbar.c)
+target_include_directories(lares-test-shell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/guard)
+add_executable(lares-guard-test tests/guard_test.c tests/guard_state_test.c)
+target_include_directories(lares-guard-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/guard)
+target_sources(lares-guard-test PRIVATE guard/state.c)
+target_link_libraries(lares-guard-test PRIVATE shell32 user32)
+add_dependencies(lares-guard-test lares-guard lares-test-shell)
+add_test(NAME lares-guard-test COMMAND lares-guard-test)
+set_tests_properties(lares-guard-test PROPERTIES TIMEOUT 600)
+
+# ---------------------------------------------------------------------------
 # AirDrop without WSL (issue #109): lares-share.exe runs the Wi-Fi adapter
 # over WinUSB, AWDL, IPv6 and AirDrop itself, and talks to lares.exe in
 # lines (win/share/main.cpp).

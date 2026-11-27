@@ -34,6 +34,17 @@ The top-bar addon (`lares@nahuelgenchi.github.io`) is JavaScript, because GNOME 
 
 What a Windows 11 PC gains or pays with Lares is shown as measured numbers, never as a promise. `tools/measure.ps1` records a PC at rest (memory in use and committed, processes and threads, processor and graphics card use, start-up entries, and the own memory of the programs you name) into a small file with nothing private in it, and compares a before with an after. [docs/GAINS.md](docs/GAINS.md) has the method and the results so far, each marked confirmed, reported, planned or blocked.
 
+## Crash safety on Windows
+
+Lares for Windows will be able to put its own bar in place of the Windows taskbar, so what happens when something breaks comes first. [docs/SAFETY.md](docs/SAFETY.md) has the design, every check and what is still unchecked.
+
+| Part | What it does | Status |
+| :--- | :--- | :--- |
+| `lares-guard.exe` | Gives the Windows taskbar back, with auto-hide as it was, when the bar crashes, hangs or is killed, and when the guard itself is killed; stops after two crashes in five minutes and asks | confirmed with a stand-in bar, and on the real taskbar of Windows Server; not yet checked on a real Windows 11 taskbar, sign-out, Explorer restart or change of screens |
+| Safe mode | `--safe`, or Shift held while signing in, starts Lares with every shell part off | planned ([#128](https://github.com/NahuelGenchi/lares/issues/128)) |
+| Change journal | Records every Windows setting Lares changes before changing it, with one undo | planned ([#129](https://github.com/NahuelGenchi/lares/issues/129)) |
+| Crash reports | Written on the PC only, private details removed, never sent | planned ([#130](https://github.com/NahuelGenchi/lares/issues/130)) |
+
 ## Build and install
 
 It needs a C compiler, `make`, GTK 4.22 or newer with its development files, and GNOME. `make install` puts everything in `~/.local` and needs no administrator rights; it also installs the Monocraft font (SIL Open Font License) if it isn't there yet.
