@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "changes.h"
 #include "cli.h"
+#include "crash.h"
+#include "lares_version.h"
 #include "remote.h"
 #include "safe.h"
 #include "ui.h"
@@ -63,6 +65,8 @@ static void write_cli_output(const char* text)
 
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
 {
+    // A crash writes a report on this PC only (win/crash/crash.h).
+    lares_crash_install("lares", LARES_VERSION);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     int wargc = 0;

@@ -67,6 +67,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           win/build/Release/lares-guard-test.exe --measure 30
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # ctest already crashed the stand-in shell and checked its report; this
+      # keeps one report and runs the privacy gate over it.
+      - name: A crash report passes the privacy gate
+        run: |
+          win/build/Release/lares-crash-test.exe --keep win/build/crash-report.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tools/privacy-gate.mjs --files win/build/crash-report.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Privacy gate (built programs)
         run: node tools/privacy-gate.mjs --binaries win/build/Release
       # The measurement script runs, compares, and writes nothing private.

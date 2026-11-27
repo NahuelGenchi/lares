@@ -19,7 +19,9 @@
 #include <stdlib.h>
 #include <wchar.h>
 
+#include "crash.h"
 #include "guard_client.h"
+#include "lares_version.h"
 
 #define SHELL_WINDOW_CLASS L"LaresTestShell"
 #define SHELL_QUIT (WM_APP + 1)
@@ -28,14 +30,6 @@
 #define SHELL_LEAVE (WM_APP + 4)
 #define CRASH_TIMER 1
 #define READY_TIMER 2
-
-/* What a real Lares program does on a crash: end at once, so that whoever
- * waits on the process is not kept waiting by Windows' own crash handling. */
-static LONG WINAPI on_crash(EXCEPTION_POINTERS *info)
-{
-    TerminateProcess(GetCurrentProcess(), info->ExceptionRecord->ExceptionCode);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
 
 static void crash_now(void)
 {
@@ -76,7 +70,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
 {
     (void)previous, (void)show;
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-    SetUnhandledExceptionFilter(on_crash);
+    /* What every Lares program does: a crash writes a local report and
+     * ends the process at once (win/crash/crash.h). */
+    lares_crash_install("lares-test-shell", LARES_VERSION);
 
     WNDCLASSW wc = { 0 };
     wc.lpfnWndProc = shell_window;

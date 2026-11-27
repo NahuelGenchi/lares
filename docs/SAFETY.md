@@ -48,7 +48,7 @@ The guard and the twin use `kernel32` alone: no window, no C runtime, and one wa
 | Guard, working set | 3.4 MB | same | confirmed |
 | `lares-guard.exe`, own memory | 2.4 MB | the Windows 11 development PC | confirmed, see below |
 | Guard, processor time in 60 idle seconds | 15.6 ms or less (one tick of the clock) | the Windows 11 development PC | confirmed |
-| `lares-guard.exe`, size on disk | 19 KB | | confirmed |
+| `lares-guard.exe`, size on disk | 43 KB, with the change journal and the crash handler built in (19 KB without) | | confirmed |
 
 The target is under 1 MB of own memory. It is met on a clean Windows. On the development PC a third-party program loads itself, and Windows' window and drawing libraries with it, into every process that starts; the 2.4 MB there is that program's cost, in the guard as in every other process, and nothing the guard can avoid. `lares-guard-test --measure <seconds>` prints these readings, and the Checks workflow runs it on every pull request.
 
@@ -121,6 +121,41 @@ The file is plain text, one record a line, each with a CRC-32. It holds setting 
 | A real power cut (the machine losing power) | | | **not checked**: a killed process stands in for it. What the journal relies on is `FlushFileBuffers` reaching the disk before the change |
 
 **Not done yet:** the changes Lares for Windows already makes outside the shell (the helper's start-up entry, for one) do not go through the journal. That is its own issue, [#133](https://github.com/NahuelGenchi/lares/issues/133).
+
+## Crash reports
+
+When a Lares program crashes, it writes one small text file on this PC and ends at once (issue [#130](https://github.com/NahuelGenchi/lares/issues/130)). Nothing is ever sent anywhere: the code that writes reports opens no connection and starts no program (owner decision in [#124](https://github.com/NahuelGenchi/lares/issues/124)). Reports go to `%LOCALAPPDATA%\Lares\crash\`, named after the program and the time, and only the newest ten are kept. `lares.exe`, `lares-pad.exe` and `lares-guard.exe` install the handler at start (`lares_crash_install` in `win/crash/crash.h`).
+
+A report holds the program and its version, the Windows version, what went wrong (and for a bad memory access, whether it was a read or a write and at which address), the faulting module, and the call stack as module names and offsets:
+
+```
+Program: lares-test-shell
+Version: dev 6679270
+Windows: 10.0.26300 (x64)
+When: 2026-11-27 18:30:29 UTC
+What happened: access violation (0xc0000005), writing address 0x0
+Faulting module: lares-test-shell.exe+0x10a2
+Call stack:
+  00  lares-test-shell.exe+0x10a2
+  01  USER32.dll+0x152e6
+  ...
+```
+
+What it never holds: a folder (modules are named by their file name alone), a window title, anything from the clipboard, or the account's or the computer's name. Before the file is written, its whole text goes through `lares_crash_scrub`: the user's own folder becomes `%USERPROFILE%`, any other `\Users\<name>` or `/home/<name>` loses its name, and the account and computer names become `<name>` and `<pc>`. The time is in UTC, so a report does not give away the time zone either. The handler takes its memory straight from Windows, not from a heap that may be what broke, and ends the process with the crash's own code, so the guard is not kept waiting by Windows' own crash handling.
+
+Settings shows the newest report under **Crash reports**, with **Show me the report** (opens it in the program Windows uses for text files) and **Copy report** (puts its text on the clipboard).
+
+| Case | How | Result | Status |
+| :--- | :--- | :--- | :--- |
+| Private details replaced: own folder, someone else's folder with either slash, any letter case, account and computer name as words, a full buffer | unit test | | confirmed |
+| A path with a user folder fed to the report itself | unit test | comes out with the `%USERPROFILE%` placeholder | confirmed |
+| A real crash of the stand-in shell | automatic | ends at once with the crash's code; the report names the program, version, Windows version, the fault and a call stack reaching Windows' own code; none of the PC's folder, account or computer names is in it | confirmed |
+| The report passes `tools/privacy-gate.mjs` | the Checks workflow keeps one report and runs the gate over it; also run by hand on the development PC | nothing private found | confirmed |
+| **Copy report** | window check in a dry run, light, with a report in a scratch folder (`LARES_CRASH_DIR`) | the clipboard held exactly the file's text; the clipboard's earlier text was put back after | confirmed |
+| The card in light and dark | window check in a dry run | | confirmed |
+| **Show me the report** | | | **not checked**: on the development PC it would open the owner's own text editor, which may have the owner's files open |
+| A crash of `lares.exe`, `lares-pad.exe` or `lares-guard.exe` themselves | | | **not checked**: the same handler, installed at start, but only the stand-in was made to crash |
+| A crash of `lares-share.exe` | | | not covered: it does not install the handler yet |
 
 ## What was checked
 

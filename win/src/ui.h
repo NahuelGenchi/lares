@@ -3,6 +3,7 @@
 #pragma once
 #include "cli.h"
 #include "config.h"
+#include "crash_view.h"
 #include "devices.h"
 #include "font.h"
 #include "helper.h"
@@ -91,6 +92,8 @@ private:
     enum class SettingsAction {
         LeaveSafeMode,
         UndoChanges,
+        ShowCrashReport,
+        CopyCrashReport,
     };
     struct SettingsHit {
         D2D1_RECT_F rect;
@@ -374,6 +377,9 @@ private:
     const wchar_t* safe_scope() const { return opts_.dry_run ? L"dry" : L""; }
     int changes_open_ = -1;      // Windows settings the change journal still holds; -1: not counted yet
     std::wstring changes_said_;  // what the last undo did, shown until the page is left
+    bool crash_looked_ = false;  // the newest crash report was looked for since the page opened
+    CrashReportInfo crash_report_;
+    std::wstring crash_said_;    // "Copied.", shown until the page is left
     std::vector<NavCardHit> card_hits_;
     std::vector<Dropdown> drops_;          // the page's dropdowns, as last drawn
     std::string drop_open_;                // the key of the one whose list shows; empty for none
