@@ -236,6 +236,14 @@ target_link_libraries(lares-crash-test PRIVATE lares_crash)
 add_dependencies(lares-crash-test lares-test-shell)
 add_test(NAME lares-crash-test COMMAND lares-crash-test)
 
+# The drawing engine comparison (issue #140): draws the same shell screens
+# with GDI+ and Lares' own glyph blending, and with a Direct2D software
+# target, each in a process of its own, and prints what each costs.
+add_executable(lares-draw-bench bench/draw_bench.cpp)
+# Each engine's libraries load only in the process that uses them.
+target_link_libraries(lares-draw-bench PRIVATE gdiplus d2d1 dwrite windowscodecs ole32 psapi gdi32 user32 delayimp)
+target_link_options(lares-draw-bench PRIVATE /DELAYLOAD:gdiplus.dll /DELAYLOAD:d2d1.dll /DELAYLOAD:dwrite.dll /DELAYLOAD:windowscodecs.dll)
+
 # ---------------------------------------------------------------------------
 # AirDrop without WSL (issue #109): lares-share.exe runs the Wi-Fi adapter
 # over WinUSB, AWDL, IPv6 and AirDrop itself, and talks to lares.exe in

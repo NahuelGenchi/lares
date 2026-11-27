@@ -45,6 +45,15 @@ Lares for Windows will be able to put its own bar in place of the Windows taskba
 | Change journal | Writes down every Windows setting the shell changes, and flushes it to disk, before changing it; **Undo all** in Settings and `lares undo` put them back, also after a crash halfway | confirmed with tests, a program killed halfway included, and for the helper's start-up entry; a real loss of power is not checked, and the two changes that need administrator rights (Sunshine's permission, the Wi-Fi driver) are not in it yet ([docs/SAFETY.md](docs/SAFETY.md)) |
 | Crash reports | Written on the PC only, private details removed before the file is written, never sent; Settings can show and copy the newest | confirmed with a crash of the stand-in bar, and its report passes the privacy gate; a crash of Lares' own programs is not yet checked |
 
+## The Windows shell
+
+Lares for Windows is getting its own top bar, dock, launcher, Files and viewers, as an opt-in module: every part has a switch in Settings that is off by default, and Windows looks exactly as it did until one is turned on. [docs/SHELL.md](docs/SHELL.md) has the plan, the budget and every reading.
+
+| Part | Status |
+| :--- | :--- |
+| One drawing engine for every shell part: GDI+ with Lares' own ClearType blending, chosen over Direct2D's software target by measurement | confirmed ([docs/SHELL.md](docs/SHELL.md)) |
+| Top bar and dock, launcher and popups, Files and viewers, the AirDrop panel and device indicators | planned |
+
 ## Build and install
 
 It needs a C compiler, `make`, GTK 4.22 or newer with its development files, and GNOME. `make install` puts everything in `~/.local` and needs no administrator rights; it also installs the Monocraft font (SIL Open Font License) if it isn't there yet.
