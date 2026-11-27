@@ -439,15 +439,19 @@ static HANDLE named_event(const wchar_t *kind, const wchar_t *variable)
     return CreateEventW(NULL, TRUE, FALSE, name);
 }
 
-static int run_guard(void)
+/* One guard for each taskbar it could hide: a running guard holds this. */
+static void guard_mutex_name(wchar_t *name)
 {
-    wchar_t name[128];
     wchar_t test_class[64];
-
-    /* One guard for each taskbar it could hide. */
     lstrcpyW(name, L"Local\\com.nahuelgenchi.Lares.guard");
     if (GetEnvironmentVariableW(L"LARES_GUARD_TASKBAR_CLASS", test_class, ARRAYSIZE(test_class)) > 0)
         lstrcatW(name, test_class);
+}
+
+static int run_guard(void)
+{
+    wchar_t name[128];
+    guard_mutex_name(name);
     HANDLE only = CreateMutexW(NULL, FALSE, name);
     if (!only || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
 
@@ -536,15 +540,14 @@ static int run_twin(DWORD guard_pid)
 /* Gives the taskbar back from the state file when no guard is running. */
 static int run_restore(void)
 {
-    lares_guard_state_load(g.dir, &g.st);
-    if (g.st.running && g.st.guard_pid) {
-        HANDLE guard = OpenProcess(SYNCHRONIZE, FALSE, g.st.guard_pid);
-        if (guard) {
-            int alive = WaitForSingleObject(guard, 0) == WAIT_TIMEOUT;
-            CloseHandle(guard);
-            if (alive) return 1;
-        }
+    wchar_t name[128];
+    guard_mutex_name(name);
+    HANDLE running = OpenMutexW(SYNCHRONIZE, FALSE, name);
+    if (running) {
+        CloseHandle(running);
+        return 1; /* a guard is running, and the taskbar is its to give back */
     }
+    lares_guard_state_load(g.dir, &g.st);
     do_restore();
     g.st.running = 0;
     save_state();
