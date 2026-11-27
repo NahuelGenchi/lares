@@ -90,6 +90,11 @@ PadPrefs parse_pad_ini(const std::string& text)
             }
         } else if (group == "window") {
             if (key == "size") p.size = parse_int_clamped(val, p.size, kSizeMin, kSizeMax);
+        } else if (group == "share") {
+            if (key == "media-format") {
+                if (val == "original") p.share_original_media = true;
+                else if (val == "compatible") p.share_original_media = false;
+            }
         } else if (group == "nicknames") {
             if (!key.empty() && !val.empty()) {
                 // Support both literal tab and GLib keyfile \t / \\ escapes
@@ -144,6 +149,11 @@ std::string serialize_pad_ini(const PadPrefs& p)
     if (size != 100) {
         out << "\n[window]\n"
             << "size=" << size << "\n";
+    }
+
+    if (p.share_original_media) {
+        out << "\n[share]\n"
+            << "media-format=original\n";
     }
 
     if (!p.nicknames.empty()) {

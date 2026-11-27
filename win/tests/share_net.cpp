@@ -21,6 +21,7 @@ extern "C" {
 #include "net.h"
 #include "lwip/sockets.h"
 }
+#include "formats.h"
 #include "loop.h"
 #include "session.h"
 #include "share_cms_test.h"
@@ -304,10 +305,12 @@ struct Heard {
     std::condition_variable cv;
     unsigned offers = 0;
     std::string sender;
-    std::vector<std::string> offered, saved;
+    bool offer_links = false;
+    std::vector<std::string> offered, offer_items, saved;
+    std::vector<uint8_t> offer_icon;
     std::string failed;
-    bool received = false, sent = false, declined = false, discovered = false;
-    std::string peer, send_err;
+    bool received = false, received_links = false, sent = false, declined = false, discovered = false;
+    std::string peer, caps, send_err;
     uint64_t progress = 0;
 
     template <class F> bool wait(F done, int seconds)
@@ -316,6 +319,443 @@ struct Heard {
         return cv.wait_for(lock, std::chrono::seconds(seconds), done);
     }
 };
+
+std::vector<uint8_t> make_test_bmp()
+{
+    constexpr uint32_t w = 64, h = 64;
+    constexpr uint32_t data_sz = w * h * 3;
+    constexpr uint32_t file_sz = 54 + data_sz;
+    std::vector<uint8_t> b(file_sz, 0);
+    auto put16 = [&](size_t at, uint16_t v) {
+        b[at] = static_cast<uint8_t>(v & 0xff);
+        b[at + 1] = static_cast<uint8_t>(v >> 8);
+    };
+    auto put32 = [&](size_t at, uint32_t v) {
+        for (int i = 0; i < 4; i++) b[at + i] = static_cast<uint8_t>((v >> (8 * i)) & 0xff);
+    };
+    b[0] = 'B';
+    b[1] = 'M';
+    put32(2, file_sz);
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, w);
+    put32(22, h);
+    put16(26, 1);
+    put16(28, 24);
+    put32(34, data_sz);
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            size_t p = 54 + (y * w + x) * 3;
+            b[p + 0] = static_cast<uint8_t>(x * 4);
+            b[p + 1] = static_cast<uint8_t>(y * 4);
+            b[p + 2] = static_cast<uint8_t>((x + y) * 2);
+        }
+    }
+    return b;
+}
+
+unsigned count_lar_temp_files()
+{
+    wchar_t dir[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, dir)) return 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((std::wstring(dir) + L"lar*.tmp").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    unsigned n = 0;
+    do {
+        n++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+bool read_http_status(lares::tls::Stream& t, unsigned& status_out)
+{
+    namespace ad = lares::airdrop;
+    bool done = false, interim = false, interim_ended = false;
+    unsigned status = 0;
+    ad::HttpCallbacks cb;
+    cb.head = [&](const std::string&, const std::string&, unsigned st, const ad::HttpHeaders&, ad::Error&) {
+        interim = st < 200;
+        if (!interim) status = st;
+        return true;
+    };
+    cb.body = [](const uint8_t*, size_t, ad::Error&) { return true; };
+    cb.done = [&](ad::Error&) {
+        if (interim) interim_ended = true;
+        else done = true;
+        interim = false;
+        return true;
+    };
+    ad::HttpParser p(ad::HttpKind::Response, cb);
+    uint8_t buf[4096];
+    while (!done) {
+        int n = t.read(buf, sizeof buf);
+        if (n < 0) return false;
+        if (n == 0) {
+            ad::Error e;
+            if (!p.eof(&e) || !done) return false;
+            break;
+        }
+        size_t off = 0;
+        while (off < static_cast<size_t>(n) && !done) {
+            size_t used = 0;
+            ad::Error e;
+            if (!p.feed(buf + off, static_cast<size_t>(n) - off, &used, &e)) return false;
+            off += used;
+            if (interim_ended) {
+                interim_ended = false;
+                p.reset();
+            } else if (!done) {
+                break;
+            }
+        }
+    }
+    status_out = status;
+    return true;
+}
+
+void test_issue_117_features()
+{
+    namespace ad = lares::airdrop;
+    std::string err;
+    auto id = lares::tls::identity(err);
+    CHECK(id != nullptr);
+    if (!id) return;
+
+    std::wstring in = temp_folder(L"lares-117-in-"), out = temp_folder(L"lares-117-out-");
+    std::vector<uint8_t> bmp = make_test_bmp();
+    std::vector<uint8_t> blob(140000);
+    for (size_t i = 0; i < blob.size(); i++) blob[i] = static_cast<uint8_t>((i * 29) ^ (i >> 6));
+    write_file(out + L"\\photo.bmp", bmp);
+    write_file(out + L"\\clip.bin", blob);
+
+    lares::Loop loop;
+    std::thread runner([&] { loop.run(); });
+    Heard h;
+    std::atomic<unsigned> lar_tmp_before{ count_lar_temp_files() };
+    std::atomic<unsigned> lar_tmp_at_offer{ 0 };
+    std::unique_ptr<ad::Receiver> receiver;
+    ad::ReceiverCallbacks cb;
+    cb.offer = [&](const ad::Offer& o) {
+        lar_tmp_at_offer = count_lar_temp_files();
+        unsigned oid = o.id;
+        {
+            std::lock_guard<std::mutex> lock(h.mu);
+            h.offers++;
+            h.sender = o.sender;
+            h.offer_links = o.links;
+            h.offered = o.names;
+            h.offer_items = o.items;
+            h.offer_icon = o.file_icon;
+        }
+        receiver->answer(oid, true);
+    };
+    cb.received = [&](unsigned, bool links, const std::vector<std::string>& items) {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.received_links = links;
+        h.saved = items;
+        h.received = true;
+        h.cv.notify_all();
+    };
+    cb.failed = [&](unsigned, const std::string& m) {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.failed = m;
+        h.cv.notify_all();
+    };
+
+    ad::Address here, there;
+    char text[64];
+    net_iface_address(side_b, text);
+    CHECK(ad::parse_address(std::string(text) + "%awdl0", net_iface_index(side_b), here));
+    CHECK(ad::parse_address(text, net_iface_index(side_a), there));
+    std::promise<void> made;
+    loop.post([&] {
+        receiver = ad::Receiver::start(loop, here, "Test PC", in, id, cb, err);
+        made.set_value();
+    });
+    made.get_future().wait();
+    CHECK(receiver != nullptr);
+    if (!receiver) {
+        loop.quit();
+        runner.join();
+        return;
+    }
+
+    auto cancel = std::make_shared<ad::Cancel>();
+    auto discover_caps = [&]() {
+        {
+            std::lock_guard<std::mutex> lock(h.mu);
+            h.discovered = false;
+            h.caps.clear();
+        }
+        ad::discover(loop, there, receiver->port(), cancel, [&](std::optional<ad::Peer> p, const std::string&) {
+            std::lock_guard<std::mutex> lock(h.mu);
+            h.discovered = true;
+            if (p) h.caps = p->media_capabilities;
+            h.cv.notify_all();
+        });
+        CHECK(h.wait([&] { return h.discovered; }, 20));
+        return h.caps;
+    };
+
+    /* 1. ReceiverMediaCapabilities: compatible (default) vs original (HEIC/HEVC). */
+    std::string caps_compat = discover_caps();
+    CHECK(caps_compat == "{\"Version\":1}");
+    receiver->set_original_media(true);
+    std::string caps_orig = discover_caps();
+    CHECK(caps_orig.find("\"hvc1\"") != std::string::npos);
+    CHECK(caps_orig.find("\"public.heic\"") != std::string::npos);
+    receiver->set_original_media(false);
+    CHECK(discover_caps() == "{\"Version\":1}");
+
+    /* 2. Streaming chunked /Upload (DVZip AND gzip), zero %TEMP% spooling, and FileIcon preview. */
+    for (int mode = 0; mode < 2; mode++) {
+        {
+            std::lock_guard<std::mutex> lock(h.mu);
+            h.received = h.sent = h.declined = false;
+            h.offered.clear();
+            h.offer_items.clear();
+            h.offer_icon.clear();
+            h.saved.clear();
+            h.failed.clear();
+            h.send_err.clear();
+        }
+        lar_tmp_before = count_lar_temp_files();
+        ad::SendRequest req;
+        req.addr = there;
+        req.port = receiver->port();
+        req.flags = mode == 0 ? (0x002u | 0x004u) : 0x004u; /* DVZip vs gzip */
+        req.name = "Sender PC";
+        req.id = "0123456789ab";
+        req.paths = { out + L"\\photo.bmp", out + L"\\clip.bin" };
+        ad::send(
+            loop, req, cancel, [](bool, uint64_t, uint64_t) {},
+            [&](bool ok, bool declined, const std::string& e) {
+                std::lock_guard<std::mutex> lock(h.mu);
+                h.sent = ok;
+                h.declined = declined;
+                h.send_err = e;
+                h.cv.notify_all();
+            });
+        CHECK(h.wait([&] { return h.received && h.sent; }, 60));
+        CHECK(lar_tmp_at_offer.load() <= lar_tmp_before.load());
+        CHECK(!h.offer_links);
+        CHECK(h.offered.size() == 2);
+        CHECK(!h.offer_icon.empty() && h.offer_icon.size() <= 64 * 1024);
+        if (h.offer_icon.size() >= 4) {
+            bool jpeg = h.offer_icon[0] == 0xff && h.offer_icon[1] == 0xd8 && h.offer_icon[2] == 0xff;
+            bool png = h.offer_icon[0] == 0x89 && h.offer_icon[1] == 0x50 && h.offer_icon[2] == 0x4e && h.offer_icon[3] == 0x47;
+            CHECK(jpeg || png);
+        }
+        if (mode == 0) {
+            CHECK(read_file(in + L"\\photo.bmp") == bmp);
+            CHECK(read_file(in + L"\\clip.bin") == blob);
+        } else {
+            CHECK(read_file(in + L"\\photo (2).bmp") == bmp);
+            CHECK(read_file(in + L"\\clip (2).bin") == blob);
+        }
+    }
+
+    /* 3. Outgoing URL share (Items only: completes on /Ask 200 OK with no /Upload). */
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.received = h.sent = h.declined = false;
+        h.offered.clear();
+        h.offer_items.clear();
+        h.saved.clear();
+        h.send_err.clear();
+    }
+    {
+        ad::SendRequest req;
+        req.addr = there;
+        req.port = receiver->port();
+        req.name = "Sender PC";
+        req.id = "0123456789ab";
+        req.items = { "https://example.com/lares" };
+        ad::send(
+            loop, req, cancel, [](bool, uint64_t, uint64_t) {},
+            [&](bool ok, bool declined, const std::string& e) {
+                std::lock_guard<std::mutex> lock(h.mu);
+                h.sent = ok;
+                h.declined = declined;
+                h.send_err = e;
+                h.cv.notify_all();
+            });
+        CHECK(h.wait([&] { return h.received && h.sent; }, 30));
+        CHECK(h.offer_links && h.received_links);
+        CHECK(h.offered.size() == 1 && h.offered[0] == "https://example.com/lares");
+        CHECK(h.offer_items.size() == 1 && h.offer_items[0] == "https://example.com/lares");
+        CHECK(h.saved.size() == 1 && h.saved[0] == "https://example.com/lares");
+    }
+
+    /* Unsafe outgoing URL scheme refused locally before connecting. */
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.sent = true;
+        h.send_err.clear();
+    }
+    bool bad_done = false;
+    {
+        ad::SendRequest req;
+        req.addr = there;
+        req.port = receiver->port();
+        req.name = "Sender PC";
+        req.id = "0123456789ab";
+        req.items = { "javascript:alert(1)" };
+        ad::send(
+            loop, req, cancel, [](bool, uint64_t, uint64_t) {},
+            [&](bool ok, bool, const std::string& e) {
+                std::lock_guard<std::mutex> lock(h.mu);
+                h.sent = ok;
+                h.send_err = e;
+                bad_done = true;
+                h.cv.notify_all();
+            });
+        CHECK(h.wait([&] { return bad_done; }, 10));
+        CHECK(!h.sent && !h.send_err.empty());
+    }
+
+    /* 4. Mixed Files + Items /Ask offers: accepted cleanly (HTTP 200), /Upload delivers
+     * listed files while preserving Items, UP-7 still rejects unlisted files, and malformed
+     * Items still fail with HTTP 400. */
+    auto run_raw_mixed = [&](const ad::Value& items_arr, const std::string& listed_name,
+                             const std::string& upload_entry, unsigned& ask_st, unsigned& up_st) {
+        ask_st = up_st = 0;
+        int s = lwip_socket(AF_INET6, SOCK_STREAM, 0);
+        set_timeout(s, 10000);
+        sockaddr_in6 dst = address_of(side_a, side_b, receiver->port());
+        CHECK(lwip_connect(s, reinterpret_cast<sockaddr*>(&dst), sizeof dst) == 0);
+        std::string cerr;
+        auto t = lares::tls::Stream::client(over(s), cerr);
+        CHECK(t != nullptr);
+        if (!t) {
+            lwip_close(s);
+            return;
+        }
+        ad::Value ask = ad::Value::dict();
+        ask.add("BundleID", ad::Value::string("com.apple.finder"));
+        ask.add("ConvertMediaFormats", ad::Value::boolean(false));
+        ad::Value files = ad::Value::array();
+        ad::Value f = ad::Value::dict();
+        f.add("FileBomPath", ad::Value::string("./" + listed_name));
+        f.add("FileIsDirectory", ad::Value::boolean(false));
+        f.add("FileName", ad::Value::string(listed_name));
+        f.add("FileSize", ad::Value::integer(5));
+        f.add("FileType", ad::Value::string("public.plain-text"));
+        files.push(std::move(f));
+        ask.add("Files", std::move(files));
+        ask.add("Items", items_arr);
+        ask.add("SenderComputerName", ad::Value::string("iPhone"));
+        ask.add("SenderID", ad::Value::string("aabbccddeeff"));
+        ad::Value tid = ad::Value::dict();
+        tid.add("id", ad::Value::string("11111111-2222-4333-8444-555555555555"));
+        ask.add("TransferID", std::move(tid));
+
+        ad::Bytes body;
+        CHECK(ad::bplist_encode(ask, body));
+        char head[256];
+        int hn = std::snprintf(head, sizeof head,
+                               "POST /Ask HTTP/1.1\r\nUser-Agent: AirDrop/1.0\r\n"
+                               "Content-Type: application/octet-stream\r\nConnection: keep-alive\r\n"
+                               "Content-Length: %zu\r\n\r\n",
+                               body.size());
+        CHECK(t->write(reinterpret_cast<const uint8_t*>(head), static_cast<size_t>(hn)));
+        CHECK(t->write(body.data(), body.size()));
+        CHECK(read_http_status(*t, ask_st));
+
+        if (ask_st == 200 && !upload_entry.empty()) {
+            ad::Bytes raw_cpio, dvz;
+            ad::Deflater z(true, [&](const uint8_t* b, size_t n, ad::Error&) {
+                dvz.insert(dvz.end(), b, b + n);
+                return true;
+            });
+            ad::CpioWriter cw([&](const uint8_t* b, size_t n, ad::Error& e) { return z.feed(b, n, &e); });
+            CHECK(cw.dir("."));
+            CHECK(cw.file("./" + upload_entry, 5, 0));
+            CHECK(cw.file_data(reinterpret_cast<const uint8_t*>("hello"), 5));
+            CHECK(cw.finish());
+            CHECK(z.finish());
+            char uhead[256];
+            int uhn = std::snprintf(uhead, sizeof uhead,
+                                    "POST /Upload HTTP/1.1\r\nUser-Agent: AirDrop/1.0\r\n"
+                                    "TransferID: 11111111-2222-4333-8444-555555555555\r\nTotalBytes: 5\r\n"
+                                    "Content-Type: application/x-dvzip\r\nConnection: keep-alive\r\n"
+                                    "Transfer-Encoding: chunked\r\n\r\n");
+            CHECK(t->write(reinterpret_cast<const uint8_t*>(uhead), static_cast<size_t>(uhn)));
+            ad::Bytes c1 = ad::http_chunk(dvz.data(), dvz.size());
+            ad::Bytes c0 = ad::http_chunk(nullptr, 0);
+            t->write(c1.data(), c1.size());
+            t->write(c0.data(), c0.size());
+            CHECK(read_http_status(*t, up_st));
+        }
+        t->close();
+        lwip_close(s);
+    };
+
+    /* 4a. Mixed Files + string Items -> 200 OK on both /Ask and /Upload. */
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.received = false;
+        h.offered.clear();
+        h.offer_items.clear();
+        h.saved.clear();
+    }
+    ad::Value items_str = ad::Value::array();
+    items_str.push(ad::Value::string("https://example.com/mixed"));
+    unsigned ask_st = 0, up_st = 0;
+    run_raw_mixed(items_str, "mix.txt", "mix.txt", ask_st, up_st);
+    CHECK(ask_st == 200 && up_st == 200);
+    CHECK(h.wait([&] { return h.received; }, 20));
+    CHECK(!h.offer_links && !h.received_links);
+    CHECK(h.offered.size() == 1 && h.offered[0] == "mix.txt");
+    CHECK(h.offer_items.size() == 1 && h.offer_items[0] == "https://example.com/mixed");
+    std::vector<uint8_t> want_hello = { 'h', 'e', 'l', 'l', 'o' };
+    CHECK(read_file(in + L"\\mix.txt") == want_hello);
+
+    /* 4b. Mixed Files + dict Items ({"URL": ...}) -> 200 OK. */
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.received = false;
+        h.offer_items.clear();
+    }
+    ad::Value items_dict = ad::Value::array();
+    ad::Value entry = ad::Value::dict();
+    entry.add("URL", ad::Value::string("https://example.com/from-dict"));
+    items_dict.push(std::move(entry));
+    run_raw_mixed(items_dict, "mixdict.txt", "mixdict.txt", ask_st, up_st);
+    CHECK(ask_st == 200 && up_st == 200);
+    CHECK(h.wait([&] { return h.received; }, 20));
+    CHECK(h.offer_items.size() == 1 && h.offer_items[0] == "https://example.com/from-dict");
+    CHECK(read_file(in + L"\\mixdict.txt") == want_hello);
+
+    /* 4c. UP-7 still enforced on mixed offer: unlisted file in /Upload returns 400. */
+    {
+        std::lock_guard<std::mutex> lock(h.mu);
+        h.failed.clear();
+    }
+    run_raw_mixed(items_str, "expected.txt", "sneaky.txt", ask_st, up_st);
+    CHECK(ask_st == 200 && up_st == 400);
+    CHECK(GetFileAttributesW((in + L"\\sneaky.txt").c_str()) == INVALID_FILE_ATTRIBUTES);
+
+    /* 4d. Malformed Items (wrong type / empty string) still rejected with 400. */
+    ad::Value items_bad_type = ad::Value::array();
+    items_bad_type.push(ad::Value::integer(42));
+    run_raw_mixed(items_bad_type, "nope.txt", "", ask_st, up_st);
+    CHECK(ask_st == 400);
+    ad::Value items_bad_empty = ad::Value::array();
+    items_bad_empty.push(ad::Value::string(""));
+    run_raw_mixed(items_bad_empty, "nope.txt", "", ask_st, up_st);
+    CHECK(ask_st == 400);
+
+    loop.post([&] {
+        receiver.reset();
+        loop.quit();
+    });
+    runner.join();
+    remove_all(in);
+    remove_all(out);
+}
 
 void test_session(bool accept)
 {
@@ -548,5 +988,6 @@ void run_net_tests()
     test_tls();
     test_session(true);
     test_session(false);
+    test_issue_117_features();
     std::printf("net: %u packets crossed the wire\n", wire_packets.load());
 }

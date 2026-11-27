@@ -31,6 +31,7 @@ struct PadPrefs {
     bool topbar_hide = false;
     bool background = true;
     int size = 100; // [window] size, Windows only
+    bool share_original_media = false; // [share] media-format=original (HEIC/HEVC vs JPEG/H.264)
     std::string key_light = "own";
     uint8_t key_rgb[3] = { 0xff, 0x00, 0x00 };
     std::string nickname_salt;

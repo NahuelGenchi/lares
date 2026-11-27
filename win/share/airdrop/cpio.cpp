@@ -6,18 +6,23 @@
  * entry named TRAILER!!! ends the archive. odc (magic 070707, POSIX's
  * portable format) has a 76-byte header of octal fields and pads nothing.
  * newc (070701) has a 110-byte header of 8-digit hex fields and pads the
- * name and the data to 4 bytes.
+ * name and the data to 4 bytes. afiol (070727, afio large ASCII, read by
+ * libarchive) has a 116-byte header with 16-digit hex sizes (lifting odc's
+ * 8 GiB - 1 single-file cap) and pads nothing.
  *
  * The writer emits odc as Finder lays it out: owner 501:20, one link for a
- * file and two for a directory, inode numbers counting up from 1. The
- * reader takes odc and newc in pieces of any size, holds no more than one
- * header and name, and hands file data straight through. It refuses
- * absolute paths, ".." and anything but directories and regular files:
- * links, hard-linked files, devices, FIFOs and sockets (SEC-1).
+ * file and two for a directory, inode numbers counting up from 1, and can
+ * emit afiol when an archive contains a file larger than odc's 11-octal-
+ * digit limit. The reader takes odc, newc and afiol in pieces of any size,
+ * holds no more than one header and name, and hands file data straight
+ * through. It refuses absolute paths, ".." and anything but directories
+ * and regular files: links, hard-linked files, devices, FIFOs and sockets
+ * (SEC-1).
  *
  * Ported from owly's CPIO reader and writer (MIT). */
 #include "airdrop_text.h"
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -28,20 +33,22 @@ namespace {
 
 constexpr size_t ODC_HEADER = 76;
 constexpr size_t NEWC_HEADER = 110;
+constexpr size_t AFIOL_HEADER = 116;
 constexpr char TRAILER[] = "TRAILER!!!";
 
 constexpr unsigned MODE_TYPE = 0170000;
 constexpr unsigned MODE_DIR = 0040000;
 constexpr unsigned MODE_FILE = 0100000;
 
-constexpr uint64_t ODC_MAX_SIZE = 077777777777ull;   /* 11 octal digits */
-constexpr unsigned ODC_MAX_SIX = 0777777;             /* 6 octal digits */
+constexpr uint64_t ODC_MAX_SIZE = CPIO_ODC_MAX_SIZE;             /* 11 octal digits */
+constexpr uint64_t AFIOL_MAX_SIZE = static_cast<uint64_t>(INT64_MAX);
+constexpr unsigned ODC_MAX_SIX = 0777777;                        /* 6 octal digits */
 
 /* The owner a Mac's archives carry; receivers ignore it. */
 constexpr unsigned UID = 501;
 constexpr unsigned GID = 20;
 
-constexpr int ODC = 1, NEWC = 2;
+constexpr int ODC = 1, NEWC = 2, AFIOL = 3;
 
 bool call_sink(const Sink &sink, const uint8_t *buf, size_t len, Error *error)
 {
@@ -86,7 +93,7 @@ bool check_path(const std::string &path, Error *error)
 
 /* ------------------------------------------------------------ writing */
 
-CpioWriter::CpioWriter(Sink sink) : sink_(std::move(sink)) {}
+CpioWriter::CpioWriter(Sink sink, CpioFormat format) : sink_(std::move(sink)), format_(format) {}
 
 /* Whether a new entry or the trailer may come now. */
 bool CpioWriter::ready(Error *error)
@@ -100,18 +107,29 @@ bool CpioWriter::ready(Error *error)
     return false;
 }
 
-/* An odc header and the name after it, in one piece. */
+/* An odc or afiol header and the name after it, in one piece. */
 bool CpioWriter::put_header(const char *name, size_t namelen, unsigned mode, unsigned uid, unsigned gid,
                             unsigned nlink, unsigned ino, uint64_t mtime, uint64_t size, Error *error)
 {
     size_t namesize = namelen + 1;
-    uint8_t buf[ODC_HEADER + CPIO_MAX_NAME + 1];
-    std::snprintf(reinterpret_cast<char *>(buf), sizeof buf, "070707%06o%06o%06o%06o%06o%06o%06o%011llo%06o%011llo",
-                  0u, ino & ODC_MAX_SIX, mode, uid, gid, nlink, 0u, static_cast<unsigned long long>(mtime),
-                  static_cast<unsigned>(namesize), static_cast<unsigned long long>(size));
-    std::memcpy(buf + ODC_HEADER, name, namelen);
-    buf[ODC_HEADER + namelen] = 0;
-    if (call_sink(sink_, buf, ODC_HEADER + namesize, error)) return true;
+    uint8_t buf[AFIOL_HEADER + CPIO_MAX_NAME + 1];
+    size_t hl = 0;
+    if (format_ == CpioFormat::AfioLarge) {
+        hl = AFIOL_HEADER;
+        std::snprintf(reinterpret_cast<char *>(buf), sizeof buf,
+                      "070727%08x%016llxm%06o%08x%08x%08x%08x%016llxn%04x00000000s%016llx:",
+                      0u, static_cast<unsigned long long>(ino), mode, uid, gid, nlink, 0u,
+                      static_cast<unsigned long long>(mtime), static_cast<unsigned>(namesize),
+                      static_cast<unsigned long long>(size));
+    } else {
+        hl = ODC_HEADER;
+        std::snprintf(reinterpret_cast<char *>(buf), sizeof buf, "070707%06o%06o%06o%06o%06o%06o%06o%011llo%06o%011llo",
+                      0u, ino & ODC_MAX_SIX, mode, uid, gid, nlink, 0u, static_cast<unsigned long long>(mtime),
+                      static_cast<unsigned>(namesize), static_cast<unsigned long long>(size));
+    }
+    std::memcpy(buf + hl, name, namelen);
+    buf[hl + namelen] = 0;
+    if (call_sink(sink_, buf, hl + namesize, error)) return true;
     failed_ = true;
     return false;
 }
@@ -120,18 +138,20 @@ bool CpioWriter::put_header(const char *name, size_t namelen, unsigned mode, uns
 bool CpioWriter::dir(const std::string &path, Error *error)
 {
     if (!ready(error) || !check_path(path, error)) return false;
-    uint64_t now = std::min(static_cast<uint64_t>(std::time(nullptr)), ODC_MAX_SIZE);
+    uint64_t max_time = format_ == CpioFormat::AfioLarge ? AFIOL_MAX_SIZE : ODC_MAX_SIZE;
+    uint64_t now = std::min(static_cast<uint64_t>(std::time(nullptr)), max_time);
     return put_header(path.c_str(), path.size(), MODE_DIR | 0755, UID, GID, 2, ino_++, now, 0, error);
 }
 
 bool CpioWriter::file(const std::string &path, uint64_t size, int64_t mtime, Error *error)
 {
     if (!ready(error) || !check_path(path, error)) return false;
-    if (size > ODC_MAX_SIZE) {
+    uint64_t max_size = format_ == CpioFormat::AfioLarge ? AFIOL_MAX_SIZE : ODC_MAX_SIZE;
+    if (size > max_size) {
         set_error(error, ErrorCode::Limit, "A file too large to archive");
         return false;
     }
-    uint64_t when = mtime < 0 ? 0 : std::min(static_cast<uint64_t>(mtime), ODC_MAX_SIZE);
+    uint64_t when = mtime < 0 ? 0 : std::min(static_cast<uint64_t>(mtime), max_size);
     if (!put_header(path.c_str(), path.size(), MODE_FILE | 0644, UID, GID, 1, ino_++, when, size, error))
         return false;
     left_ = size;
@@ -176,8 +196,14 @@ const struct {
     { 12, 6 }, { 18, 6 }, { 24, 6 }, { 30, 6 }, { 36, 6 }, { 48, 11 }, { 59, 6 }, { 65, 11 },
 };
 const uint8_t NEWC_FIELDS[F_COUNT] = { 0, 1, 2, 3, 4, 5, 11, 6 };
+const struct {
+    uint8_t at, len, base;
+} AFIOL_FIELDS[F_COUNT] = {
+    { 14, 16, 16 }, { 31, 6, 8 },  { 37, 8, 16 }, { 45, 8, 16 },
+    { 53, 8, 16 },  { 69, 16, 16 }, { 86, 4, 16 }, { 99, 16, 16 },
+};
 
-/* Padding after `n` bytes: newc's to 4, odc's none. */
+/* Padding after `n` bytes: newc's to 4, odc's and afiol's none. */
 unsigned pad_to_4(int format, uint64_t n)
 {
     return format == NEWC ? static_cast<unsigned>((4 - n % 4) % 4) : 0;
@@ -189,22 +215,51 @@ CpioReader::CpioReader(CpioCallbacks cb) : cb_(std::move(cb)) {}
 
 size_t CpioReader::header_len() const
 {
-    return format_ == ODC ? ODC_HEADER : NEWC_HEADER;
+    return format_ == ODC ? ODC_HEADER : format_ == AFIOL ? AFIOL_HEADER : NEWC_HEADER;
 }
 
 uint64_t CpioReader::field(int which) const
 {
-    size_t at = format_ == ODC ? ODC_FIELDS[which].at : 6u + 8u * NEWC_FIELDS[which];
-    size_t len = format_ == ODC ? ODC_FIELDS[which].len : 8;
+    size_t at, len;
+    uint64_t base;
+    if (format_ == ODC) {
+        at = ODC_FIELDS[which].at;
+        len = ODC_FIELDS[which].len;
+        base = 8;
+    } else if (format_ == AFIOL) {
+        at = AFIOL_FIELDS[which].at;
+        len = AFIOL_FIELDS[which].len;
+        base = AFIOL_FIELDS[which].base;
+    } else {
+        at = 6u + 8u * NEWC_FIELDS[which];
+        len = 8;
+        base = 16;
+    }
     uint64_t v = 0;
     for (size_t i = 0; i < len; i++)
-        v = v * (format_ == ODC ? 8 : 16) + static_cast<uint64_t>(xdigit_value(buf_[at + i]));
+        v = v * base + static_cast<uint64_t>(xdigit_value(buf_[at + i]));
     return v;
 }
 
 /* Every digit of the header after the magic is one of its base's. */
 bool CpioReader::digits_ok() const
 {
+    if (format_ == AFIOL) {
+        if (buf_[30] != 'm' || buf_[85] != 'n' || buf_[98] != 's' || buf_[115] != ':') return false;
+        /* Refuse afiol extended header/link payloads (xsize != 0) and signed-negative 64-bit sizes. */
+        if (std::memcmp(buf_ + 94, "0000", 4) != 0) return false;
+        if (buf_[99] < '0' || buf_[99] > '7') return false;
+        for (size_t i = 6; i < AFIOL_HEADER; i++) {
+            if (i == 30 || i == 85 || i == 98 || i == 115) continue;
+            uint8_t c = buf_[i];
+            if (i >= 31 && i < 37) {
+                if (c < '0' || c > '7') return false;
+            } else if (xdigit_value(c) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
     for (size_t i = 6; i < header_len(); i++) {
         uint8_t c = buf_[i];
         if (format_ == ODC ? (c < '0' || c > '7') : xdigit_value(c) < 0) return false;
@@ -299,9 +354,11 @@ bool CpioReader::feed(const uint8_t *buf, size_t len, bool *done, Error *error)
         case State::Header: {
             if (have_ < 6) {
                 if (!collect(buf, len, pos, 6)) break;
-                int f = std::memcmp(buf_, "070707", 6) == 0 ? ODC : std::memcmp(buf_, "070701", 6) == 0 ? NEWC : 0;
+                int f = std::memcmp(buf_, "070707", 6) == 0 ? ODC
+                      : std::memcmp(buf_, "070701", 6) == 0 ? NEWC
+                      : std::memcmp(buf_, "070727", 6) == 0 ? AFIOL : 0;
                 if (!f) {
-                    ok = fail(error, ErrorCode::Invalid, "not an odc or newc archive");
+                    ok = fail(error, ErrorCode::Invalid, "not an odc, newc or afiol archive");
                     break;
                 }
                 if (format_ && f != format_) {

@@ -532,6 +532,8 @@ struct awdl_node {
 
 void awdl_node_init(struct awdl_node *n, const struct awdl_config *cfg, const struct awdl_host *host,
                     awdl_time now);
+/* Updates the ARPA TLV hostname advertised in subsequent MIF frames. */
+void awdl_node_set_name(struct awdl_node *n, const char *name);
 /* A frame the radio heard at `now`, from its MAC header on, without FCS. */
 void awdl_node_frame(struct awdl_node *n, awdl_time now, bool has_rssi, int8_t rssi,
                      const uint8_t *bytes, size_t len);

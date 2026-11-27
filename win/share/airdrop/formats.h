@@ -159,12 +159,18 @@ bool airdrop_verify_apple_cert(const uint8_t *cert_der, size_t len);
 
 /* ---- CPIO archives, UP-2 ----
  *
- * The writer emits odc (magic 070707); the reader accepts odc and newc
- * (070701). Both stream: nothing holds a whole file. */
+ * The writer emits odc (magic 070707) by default, and afio large ASCII
+ * (070727) when a file exceeds odc's 11-octal-digit (8 GiB - 1) cap; the
+ * reader accepts odc, newc (070701) and afiol (070727). Both stream:
+ * nothing holds a whole file. */
+
+constexpr uint64_t CPIO_ODC_MAX_SIZE = 077777777777ull; /* 8 GiB - 1 */
+
+enum class CpioFormat { Odc, AfioLarge };
 
 class CpioWriter {
 public:
-    explicit CpioWriter(Sink sink);
+    explicit CpioWriter(Sink sink, CpioFormat format = CpioFormat::Odc);
     /* A directory, dated now. */
     bool dir(const std::string &path, Error *error = nullptr);
     /* A regular file of exactly `size` bytes, given next through file_data. */
@@ -177,6 +183,7 @@ private:
     bool put_header(const char *name, size_t namelen, unsigned mode, unsigned uid, unsigned gid, unsigned nlink,
                     unsigned ino, uint64_t mtime, uint64_t size, Error *error);
     Sink sink_;
+    CpioFormat format_ = CpioFormat::Odc;
     uint32_t ino_ = 1;     /* the next entry's */
     uint64_t left_ = 0;    /* bytes the current file still needs */
     bool finished_ = false;
@@ -219,7 +226,7 @@ private:
     CpioCallbacks cb_;
     State state_ = State::Header;
     int format_ = 0;   /* the first entry's, which every entry must share */
-    uint8_t buf_[110 + CPIO_MAX_NAME + 3] = {};   /* a header, its name and padding */
+    uint8_t buf_[116 + CPIO_MAX_NAME + 3] = {};   /* a header, its name and padding */
     size_t have_ = 0;
     size_t want_ = 0;   /* the header, name and padding together */
     size_t namesize_ = 0;

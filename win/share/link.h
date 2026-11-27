@@ -44,6 +44,8 @@ struct link *link_start(const struct link_config *cfg, const struct link_callbac
 /* An IPv6 packet from the IP stack, with its Ethernet addresses; queued for
  * the link's thread, dropped if the queue is full. Any thread. */
 void link_send(struct link *l, const awdl_mac *dst, const awdl_mac *src, const uint8_t *ip, size_t len);
+/* Updates the AWDL node's ARPA TLV hostname from any thread. */
+void link_set_name(struct link *l, const char *name);
 /* Stops the thread, powers the chip down and closes the adapter. */
 void link_stop(struct link *l);
 

@@ -39,8 +39,9 @@ struct ShareIncoming {
     ShareIncomingState state = ShareIncomingState::Asking;
     bool links = false;
     std::string sender, sender_model, thumb_path, matched_hash, message;
-    std::vector<std::string> names;   // file names, or URLs
-    std::vector<std::string> saved;   // where they were saved (UTF-8), once done
+    std::vector<std::string> names;         // file names, or URLs
+    std::vector<std::string> offered_links; // URLs offered alongside files in mixed offers
+    std::vector<std::string> saved;         // where they were saved (UTF-8), once done
     uint64_t done = 0, total = 0;
 };
 
@@ -60,6 +61,7 @@ struct ShareSession {
     ShareLink link = ShareLink::Off;
     ShareDiscoverMode mode = ShareDiscoverMode::Off;
     bool receiving = false;
+    bool original_media = false; // ReceiverMediaCapabilities: false=compatible JPEG/H.264, true=original HEIC/HEVC
     int left = 0;            // seconds of Everyone for 10 Minutes left
     bool browsing = false;   // actively discovering nearby AirDrop devices
     bool sending = false;
@@ -85,6 +87,10 @@ std::string share_send_line(const std::vector<std::wstring>& paths, std::vector<
 /* Direct send to a specific discovered device key on the radar. */
 std::string share_send_to_line(const std::string& key, const std::vector<std::wstring>& paths,
                                std::vector<std::wstring>* names);
+/* Sends validated http/https URLs in Items, either staged or straight to `key`. */
+std::string share_send_url_line(const std::vector<std::string>& urls, std::vector<std::string>* accepted = nullptr);
+std::string share_send_url_to_line(const std::string& key, const std::vector<std::string>& urls,
+                                   std::vector<std::string>* accepted = nullptr);
 
 /* "IMG_0412.HEIC and 1 more": what a sender offers, briefly. */
 std::string share_offer_text(const ShareIncoming& in);
@@ -141,6 +147,7 @@ struct ShareView {
     ULONGLONG xfer_start_ms = 0;   // when the active transfer began, for ETA
     std::vector<std::wstring> files;       // what's being sent (basenames)
     std::vector<std::wstring> file_paths;  // full local paths for thumbnail preview
+    std::vector<std::string> send_urls;    // URLs being sent (Items)
     std::vector<ShareContact> contacts;    // saved AirDrop contacts and profile photos
     std::string error;             // why a session ended by itself, or files couldn't be sent
 };
@@ -172,12 +179,15 @@ public:
 
     void set_discover_mode(ShareDiscoverMode mode);
     void set_receiving(bool on);
+    void set_original_media(bool original);
     void set_browsing(bool on);
     void answer(bool accept);
     void dismiss_incoming();
     void set_looking(bool on);
     void send(const std::vector<std::wstring>& paths);
     void send_files_to(const std::string& key, const std::vector<std::wstring>& paths);
+    void send_urls(const std::vector<std::string>& urls);
+    void send_urls_to(const std::string& key, const std::vector<std::string>& urls);
     void stop_sending();
     void send_to(const std::string& key);
     void dismiss_device(const std::string& key);
@@ -205,6 +215,7 @@ private:
 
     mutable std::mutex mu_;
     ShareView view_;
+    bool original_media_ = false;
     ShareDiscoverMode dry_prev_mode_ = ShareDiscoverMode::Off;
     std::vector<std::string> pending_;   // commands for the session that follows one that's ending
     bool armed_ = false;                 // the session has been used: it may end once idle
