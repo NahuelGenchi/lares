@@ -6,15 +6,19 @@
  *
  *   lares-guard-test              every case, against a stand-in taskbar
  *   lares-guard-test --real       a few cases against the real Windows
- *                                 taskbar; it hides and shows it, so this is
- *                                 for a test machine, never a working PC
+ *                                 taskbar; it hides and shows it, so it does
+ *                                 nothing unless LARES_TEST_REAL_TASKBAR=1,
+ *                                 which only the Checks workflow sets
  *   lares-guard-test --measure N  the guard's memory and processor time
  *                                 over N idle seconds
+ *   lares-guard-test --only NAME  one group: display, sign-out, stale, safe
  *
  * The stand-in taskbar is one or two windows of this program, placed off
- * screen. The guard is pointed at them with LARES_GUARD_TASKBAR_CLASS and
- * keeps its state in a temporary folder (LARES_GUARD_STATE_DIR), so nothing
- * of the PC's own desktop is touched.
+ * screen, and its auto-hide is a property of one more window. The guard is
+ * pointed at them with LARES_GUARD_TASKBAR_CLASS and keeps its state in a
+ * temporary folder (LARES_GUARD_STATE_DIR), so nothing of the PC's own
+ * desktop is touched. With a stand-in the guard shows nothing either: its
+ * question after two crashes goes through a file in that folder.
  */
 #include <windows.h>
 
@@ -302,7 +306,8 @@ static BOOL CALLBACK find_message_window(HWND w, LPARAM out)
     return FALSE;
 }
 
-/* The guard's "stopped twice" message, when it is on screen. */
+/* A window of the guard's on the desktop: with a stand-in taskbar there must
+ * never be one. */
 static HWND message_window(void)
 {
     HWND w = NULL;
@@ -310,14 +315,28 @@ static HWND message_window(void)
     return w;
 }
 
+/* With a stand-in taskbar the guard asks its question through a file in the
+ * state folder and shows nothing (guard.c, test_ask). */
+static void ask_file(wchar_t *path, const wchar_t *name)
+{
+    swprintf(path, MAX_PATH + 16, L"%ls\\%ls", g_dir, name);
+}
+
+static int asked(void)
+{
+    wchar_t pending[MAX_PATH + 16];
+    ask_file(pending, L"ask.pending");
+    return GetFileAttributesW(pending) != INVALID_FILE_ATTRIBUTES;
+}
+
 static void answer_message(int button)
 {
-    DWORD_PTR r = 0;
-    HWND w = message_window();
-    if (!w) return;
-    SendMessageTimeoutW(w, CLICK_BUTTON, (WPARAM)button, 0, SMTO_ABORTIFHUNG, 2000, &r);
-    Sleep(300);
-    if (IsWindow(w)) PostMessageW(w, WM_COMMAND, (WPARAM)button, 0);
+    wchar_t answer[MAX_PATH + 16];
+    ask_file(answer, L"ask.answer");
+    FILE *f = _wfopen(answer, L"wb");
+    if (!f) return;
+    fputs(button == IDRETRY ? "retry" : "keep", f);
+    fclose(f);
 }
 
 /* ---- conditions and waiting ----------------------------------------- */
@@ -326,7 +345,7 @@ static int g_before; /* auto-hide before the guard touched it */
 
 static int taskbar_back(void) { return bars_total() > 0 && bars_visible() == bars_total() && bars_autohide() == g_before; }
 static int taskbar_hidden(void) { return bars_visible() == 0 && bars_autohide() == 1; }
-static int message_up(void) { return message_window() != NULL; }
+static int message_up(void) { return asked(); }
 static int nothing_runs(void) { return our_processes(0) == 0; }
 
 /* A guard, its twin and a ready shell, with the taskbar hidden. */
@@ -461,12 +480,15 @@ static void tell_shell(UINT message)
 static void clean_up(void)
 {
     int quiet = 0;
+    wchar_t ask[MAX_PATH + 16];
     for (int i = 0; i < 200 && quiet < 3; ++i) {
-        HWND w = message_window();
-        if (w) PostMessageW(w, WM_COMMAND, IDCANCEL, 0);
         quiet = our_processes(1) ? 0 : quiet + 1;
         Sleep(20);
     }
+    ask_file(ask, L"ask.pending");
+    DeleteFileW(ask);
+    ask_file(ask, L"ask.answer");
+    DeleteFileW(ask);
     /* The real taskbar's auto-hide is put back by the guard itself, from
      * the journal; the stand-in's journal is just thrown away. */
     if (g_real) run_guard_command(L"restore");
@@ -621,26 +643,38 @@ static void case_orders(void)
     }
 }
 
+/* Healthy again, with a shell that is not the one that just crashed: right
+ * after a crash the old one can still look alive for a moment. */
+static DWORD g_crashed_shell;
+static int healthy_new(void) { return healthy() && read_state().shell != g_crashed_shell; }
+
+static void crash_shell(void)
+{
+    g_crashed_shell = read_state().shell;
+    tell_shell(SHELL_CRASH);
+}
+
 static void case_crash_loop(void)
 {
     begin_running("crash loop", 1, 0);
-    tell_shell(SHELL_CRASH);
+    crash_shell();
     check_within(taskbar_back, LIMIT_MS, "taskbar back after the first crash");
-    check_within(healthy, 5000, "shell started again");
-    tell_shell(SHELL_CRASH);
+    check_within(healthy_new, 5000, "shell started again");
+    crash_shell();
     check_within(taskbar_back, LIMIT_MS, "taskbar back after the second crash");
-    check_within(message_up, 5000, "the message is shown");
+    check_within(message_up, 5000, "the message is asked");
+    check(message_window() == NULL, "nothing is shown on the desktop");
     Sleep(300);
     check(!shell_alive(read_state().shell), "no shell is started while the message waits");
     check(taskbar_back(), "taskbar stays visible while the message waits");
 
     answer_message(IDRETRY);
-    check_within(healthy, 5000, "Try again starts the shell");
-    tell_shell(SHELL_CRASH);
-    check_within(healthy, 5000, "one crash after Try again just restarts");
-    Sleep(100);
-    tell_shell(SHELL_CRASH);
-    check_within(message_up, 5000, "the message is shown again");
+    g_crashed_shell = 0;
+    check_within(healthy_new, 5000, "Try again starts the shell");
+    crash_shell();
+    check_within(healthy_new, 5000, "one crash after Try again just restarts");
+    crash_shell();
+    check_within(message_up, 5000, "the message is asked again");
     answer_message(IDCANCEL);
     check_within(nothing_runs, 3000, "Keep Windows' own taskbar ends guard and twin");
     check(taskbar_back(), "taskbar visible, auto-hide as before");
@@ -651,7 +685,8 @@ static void case_missing_shell(void)
 {
     begin("shell cannot be started", 1, 0);
     start_guard(L"\"no-such-program.exe\"");
-    check_within(message_up, 5000, "the message is shown");
+    check_within(message_up, 5000, "the message is asked");
+    check(message_window() == NULL, "nothing is shown on the desktop");
     check(taskbar_back(), "taskbar never hidden");
     answer_message(IDCANCEL);
     check_within(nothing_runs, 3000, "guard and twin left");
@@ -902,6 +937,14 @@ int wmain(int argc, wchar_t **argv)
 
     if (g_real) {
         HWND bar = FindWindowW(L"Shell_TrayWnd", NULL);
+        wchar_t opt_in[8] = L"";
+        GetEnvironmentVariableW(L"LARES_TEST_REAL_TASKBAR", opt_in, ARRAYSIZE(opt_in));
+        if (wcscmp(opt_in, L"1") != 0) {
+            printf("SKIPPED: the real taskbar is touched only with LARES_TEST_REAL_TASKBAR=1, which the Checks\n"
+                   "workflow sets on its throwaway machine. Never set it on a PC someone works on.\n");
+            RemoveDirectoryW(g_dir);
+            return 0;
+        }
         if (!bar || !IsWindowVisible(bar)) {
             printf("SKIPPED: this machine shows no Windows taskbar, so the real one was not checked.\n");
             RemoveDirectoryW(g_dir);

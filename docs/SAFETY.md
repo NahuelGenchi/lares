@@ -124,7 +124,7 @@ The file is plain text, one record a line, each with a CRC-32. It holds setting 
 
 ## What was checked
 
-`win/tests/guard_test.c` builds `lares-guard-test.exe`, which runs the real `lares-guard.exe` with the stand-in shell and kills things. By default it points the guard at a stand-in taskbar (windows of its own, off screen) and a temporary state folder, so it changes nothing on the PC it runs on. With `--real` it uses the PC's own taskbar; the Checks workflow does that on GitHub's Windows runner.
+`win/tests/guard_test.c` builds `lares-guard-test.exe`, which runs the real `lares-guard.exe` with the stand-in shell and kills things. By default it points the guard at a stand-in taskbar (windows of its own, off screen, with one auto-hide setting for all of them as Windows has) and a temporary state folder, so it changes nothing on the PC it runs on and shows nothing on its desktop: with a stand-in, the guard's question after two crashes goes through a file in that folder instead of a window, and the test answers it. With `--real` it uses the PC's own taskbar, but only when `LARES_TEST_REAL_TASKBAR=1` is set, which only the Checks workflow does, on GitHub's throwaway Windows runner; on a PC someone works on, those cases do nothing.
 
 | Case | How | Result | Status |
 | :--- | :--- | :--- | :--- |
@@ -135,7 +135,7 @@ The file is plain text, one record a line, each with a CRC-32. It holds setting 
 | Twin killed, then guard | automatic, stand-in taskbar | new twin, taskbar stays hidden; then back when the guard is killed | confirmed |
 | Shell, guard and twin killed in all 12 orders of two and three, 250 ms apart | automatic, stand-in taskbar | usable desktop (taskbar back, or a whole new guard, twin and shell) in under 20 ms of the last kill | confirmed |
 | The same 12 orders with no time between the kills | automatic, stand-in taskbar | 4 to 10 of 12 come back by themselves, depending on the machine; the others come back from the state file with `lares-guard restore` | confirmed, and a known limit |
-| Crash loop: two crashes | automatic, stand-in taskbar | taskbar stays visible, the message is shown, no shell is started; **Try again** starts it, **Keep Windows' own taskbar** ends guard and twin | confirmed |
+| Crash loop: two crashes | automatic, stand-in taskbar | taskbar stays visible, the question is asked, no shell is started; **Try again** starts it, **Keep Windows' own taskbar** ends guard and twin | confirmed for the logic; the message window itself is not shown in tests and was not looked at |
 | A shell that cannot be started | automatic | the message, taskbar never hidden | confirmed |
 | State left by a guard that is gone | automatic | `lares-guard restore`, and a guard that starts, both give the taskbar back | confirmed |
 | Explorer restart | automatic, stand-in: a new taskbar window and the `TaskbarCreated` message | new taskbar hidden again; one shown again by its owner is hidden again | confirmed for the stand-in; a real Explorer restart is **not checked** |

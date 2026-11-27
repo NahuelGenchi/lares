@@ -48,6 +48,11 @@ void lares_taskbar_use_test_class(const wchar_t *window_class)
     if (window_class) lstrcpynW(test_class, window_class, ARRAYSIZE(test_class));
 }
 
+int lares_taskbar_testing(void)
+{
+    return test_class[0] != 0;
+}
+
 /* Every taskbar is found first and acted on after, so that showing or hiding
  * one cannot make the search skip the next. */
 #define MAX_TASKBARS 16

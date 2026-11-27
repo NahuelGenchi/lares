@@ -299,8 +299,40 @@ static HRESULT CALLBACK on_message_shown(HWND window, UINT message, WPARAM wp, L
 typedef HRESULT (WINAPI *task_dialog_fn)(const TASKDIALOGCONFIG *, int *, int *, BOOL *);
 
 /* The one message. Closing it means "Keep Windows' own taskbar". */
+/* Tests only, and only with a stand-in taskbar (LARES_GUARD_TASKBAR_CLASS):
+ * nothing is shown on the desktop. The question becomes a file, ask.pending,
+ * in the state folder, and the test answers with a file, ask.answer, holding
+ * "retry" or "keep". A guard working on the real taskbar never comes here. */
+static int test_ask(void)
+{
+    wchar_t pending[MAX_PATH + 16], answer[MAX_PATH + 16];
+    char text[8];
+    DWORD got = 0;
+    lstrcpyW(pending, g.dir);
+    lstrcatW(pending, L"\\ask.pending");
+    lstrcpyW(answer, g.dir);
+    lstrcatW(answer, L"\\ask.answer");
+    HANDLE f = CreateFileW(pending, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    /* Up to a minute; a test that never answers means "keep". */
+    for (int i = 0; i < 3000; ++i) {
+        f = CreateFileW(answer, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+        if (f != INVALID_HANDLE_VALUE) {
+            if (!ReadFile(f, text, sizeof text, &got, NULL)) got = 0;
+            CloseHandle(f);
+            break;
+        }
+        Sleep(20);
+    }
+    DeleteFileW(answer);
+    DeleteFileW(pending);
+    return got > 0 && text[0] == 'r' ? ANSWER_TRY_AGAIN : ANSWER_KEEP;
+}
+
 static int do_ask(void)
 {
+    if (lares_taskbar_testing()) return test_ask();
+
     static const TASKDIALOG_BUTTON buttons[] = {
         { IDRETRY, L"Try again" },
         { IDCANCEL, L"Keep Windows' own taskbar" },
