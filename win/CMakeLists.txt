@@ -57,8 +57,10 @@ add_library(lares_win_core STATIC
     src/livelight.cpp
     src/hw.cpp
     src/pad.cpp
+    src/programs.cpp
     src/remote.cpp
     src/share_win.cpp
+    src/shell_prefs.cpp
     src/theme.cpp
     ../src/art.c
 )
@@ -71,6 +73,7 @@ target_link_libraries(lares_win_core PUBLIC
     pdh
     advapi32
     shell32
+    shlwapi
     user32
     gdi32
     setupapi
@@ -242,7 +245,21 @@ add_test(NAME lares-crash-test COMMAND lares-crash-test)
 add_executable(lares-draw-bench bench/draw_bench.cpp)
 # Each engine's libraries load only in the process that uses them.
 target_link_libraries(lares-draw-bench PRIVATE gdiplus d2d1 dwrite windowscodecs ole32 psapi gdi32 user32 delayimp)
-target_link_options(lares-draw-bench PRIVATE /DELAYLOAD:gdiplus.dll /DELAYLOAD:d2d1.dll /DELAYLOAD:dwrite.dll /DELAYLOAD:windowscodecs.dll)
+target_link_options(lares-draw-bench PRIVATE /DELAYLOAD:gdiplus.dll /DELAYLOAD:d2d1.dll /DELAYLOAD:dwrite.dll)
+
+# ---------------------------------------------------------------------------
+# The desktop shell (stage 2, issue #139). Its drawing layer (issue #141):
+# GDI+ for shapes and pictures, DirectWrite glyphs blended by draw.c, the
+# engine chosen in #140. Plain C.
+add_library(lares_shell_draw STATIC
+    shell/draw.c
+    shell/palette.c)
+target_include_directories(lares_shell_draw PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/shell)
+target_link_libraries(lares_shell_draw PUBLIC gdiplus dwrite gdi32 user32 advapi32)
+
+add_executable(lares-shell-draw-test tests/shell_draw_test.c)
+target_link_libraries(lares-shell-draw-test PRIVATE lares_shell_draw)
+add_test(NAME lares-shell-draw-test COMMAND lares-shell-draw-test)
 
 # ---------------------------------------------------------------------------
 # AirDrop without WSL (issue #109): lares-share.exe runs the Wi-Fi adapter

@@ -52,6 +52,7 @@ Lares for Windows is getting its own top bar, dock, launcher, Files and viewers,
 | Part | Status |
 | :--- | :--- |
 | One drawing engine for every shell part: GDI+ with Lares' own ClearType blending, chosen over Direct2D's software target by measurement | confirmed ([docs/SHELL.md](docs/SHELL.md)) |
+| The drawing layer, and the shell's settings in Lares' own configuration with every part off; Tailscale, Sunshine, a terminal and the browser found the way Windows finds them | confirmed by tests; nothing on screen yet |
 | Top bar and dock, launcher and popups, Files and viewers, the AirDrop panel and device indicators | planned |
 
 ## Build and install

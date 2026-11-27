@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "remote.h"
 #include "config.h"
+#include "programs.h"
 
 #include <algorithm>
 #include <cctype>
@@ -268,6 +269,47 @@ bool file_exists_w(const wchar_t* path)
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+std::wstring tailscale_cli()
+{
+    wchar_t buf[MAX_PATH];
+    return lares_find_tailscale(buf, MAX_PATH) ? std::wstring(buf) : std::wstring();
+}
+
+// Sunshine's install folder, from the program its Windows service runs:
+// that program sits in the install folder or in its "tools" folder.
+std::wstring sunshine_folder()
+{
+    std::wstring result;
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm) return result;
+    SC_HANDLE svc = OpenServiceW(scm, L"SunshineService", SERVICE_QUERY_CONFIG);
+    if (svc) {
+        DWORD need = 0;
+        QueryServiceConfigW(svc, nullptr, 0, &need);
+        if (need > 0 && need < 64 * 1024) {
+            std::vector<BYTE> buf(need);
+            auto* cfg = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buf.data());
+            wchar_t folder[MAX_PATH];
+            if (QueryServiceConfigW(svc, cfg, need, &need) && cfg->lpBinaryPathName &&
+                lares_service_program_folder(cfg->lpBinaryPathName, folder, MAX_PATH)) {
+                std::wstring dir(folder);
+                if (file_exists_w((dir + L"\\sunshine.exe").c_str())) {
+                    result = dir;
+                } else {
+                    size_t slash = dir.find_last_of(L'\\');
+                    if (slash != std::wstring::npos &&
+                        file_exists_w((dir.substr(0, slash) + L"\\sunshine.exe").c_str())) {
+                        result = dir.substr(0, slash);
+                    }
+                }
+            }
+        }
+        CloseServiceHandle(svc);
+    }
+    CloseServiceHandle(scm);
+    return result;
+}
+
 // Runs a process silently without flashing a console window, capturing stdout/stderr.
 int run_process_hidden(const std::wstring& cmdline, std::string& out_stdout, DWORD timeout_ms = 15000)
 {
@@ -419,11 +461,13 @@ void read_screen_live(RemoteLive& out)
 
 void read_sunshine_live(RemoteLive& out, bool dry_stream)
 {
-    const wchar_t* sun_exe = L"C:\\Program Files\\Sunshine\\sunshine.exe";
-    const wchar_t* sun_state = L"C:\\Program Files\\Sunshine\\config\\sunshine_state.json";
-    const wchar_t* sun_log = L"C:\\Program Files\\Sunshine\\config\\sunshine.log";
+    // Sunshine's folder comes from its own service, never a fixed place (#141).
+    std::wstring sun_dir = sunshine_folder();
+    std::wstring sun_exe = sun_dir.empty() ? std::wstring() : sun_dir + L"\\sunshine.exe";
+    std::wstring sun_state = sun_dir.empty() ? std::wstring() : sun_dir + L"\\config\\sunshine_state.json";
+    std::wstring sun_log = sun_dir.empty() ? std::wstring() : sun_dir + L"\\config\\sunshine.log";
 
-    out.sunshine_installed = file_exists_w(sun_exe);
+    out.sunshine_installed = !sun_exe.empty() && file_exists_w(sun_exe.c_str());
     out.sunshine = 0;
 
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
@@ -492,8 +536,9 @@ static std::string extract_json_string(const std::string& json, const char* key,
 
 void read_tailscale_live(RemoteLive& out)
 {
-    const wchar_t* ts_exe = L"C:\\Program Files\\Tailscale\\tailscale.exe";
-    out.tailscale_installed = file_exists_w(ts_exe);
+    // Found through Tailscale's own service, else the PATH (issue #141).
+    std::wstring ts_exe = tailscale_cli();
+    out.tailscale_installed = !ts_exe.empty();
     out.tailscale = 0;
     out.tailscale_signed_in = false;
     out.tailscale_host.clear();
@@ -502,7 +547,7 @@ void read_tailscale_live(RemoteLive& out)
     if (!out.tailscale_installed) return;
 
     std::string json;
-    int rc = run_process_hidden(L"\"C:\\Program Files\\Tailscale\\tailscale.exe\" status --json", json, 5000);
+    int rc = run_process_hidden(L"\"" + ts_exe + L"\" status --json", json, 5000);
     if (rc < 0 || json.empty()) return;
 
     std::string state = extract_json_string(json, "BackendState");
@@ -732,9 +777,13 @@ RemoteStepResult RemoteController::apply_item_sync(RemoteItem item, const std::s
     }
 
     if (item == RemoteItem::Tailscale) {
-        std::wstring cmd = is_on(value)
-            ? L"\"C:\\Program Files\\Tailscale\\tailscale.exe\" up"
-            : L"\"C:\\Program Files\\Tailscale\\tailscale.exe\" down";
+        std::wstring ts_exe = tailscale_cli();
+        if (ts_exe.empty()) {
+            res.ok = false;
+            res.message = "Tailscale isn't installed";
+            return res;
+        }
+        std::wstring cmd = L"\"" + ts_exe + (is_on(value) ? L"\" up" : L"\" down");
         std::string out;
         int rc = run_process_hidden(cmd, out, 30000);
         if (rc != 0) {

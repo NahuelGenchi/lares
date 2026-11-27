@@ -113,6 +113,191 @@ PadPrefs parse_pad_ini(const std::string& text)
     return p;
 }
 
+// ---------------------------------------------------------------------------
+// The Windows shell (issue #141)
+
+static const char* dock_hide_name(DockHide h)
+{
+    switch (h) {
+    case DockHide::AlwaysShown: return "always-shown";
+    case DockHide::AutoHide: return "auto-hide";
+    case DockHide::WhenCovered: break;
+    }
+    return "when-covered";
+}
+
+ShellPrefs parse_shell_ini(const std::string& text)
+{
+    ShellPrefs p;
+    std::istringstream in(text);
+    std::string line;
+    std::string group;
+    DockPin* pin = nullptr;
+    while (std::getline(in, line)) {
+        std::string t = trim(line);
+        if (t.empty() || t[0] == '#' || t[0] == ';') continue;
+        if (t.front() == '[' && t.back() == ']') {
+            group = trim(t.substr(1, t.size() - 2));
+            pin = nullptr;
+            if (group.rfind("dock-pin", 0) == 0) {
+                p.pins_saved = true;
+                if (p.pins.size() < kMaxDockPins) {
+                    p.pins.emplace_back();
+                    pin = &p.pins.back();
+                }
+            } else if (group == "dock-pins") {
+                // An empty list the user left on purpose.
+                p.pins_saved = true;
+            }
+            continue;
+        }
+        size_t eq = t.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(t.substr(0, eq));
+        std::string val = trim(t.substr(eq + 1));
+
+        if (group == "parts") {
+            if (key == "top-bar") p.bar = parse_bool(val, p.bar);
+            else if (key == "dock") p.dock = parse_bool(val, p.dock);
+            else if (key == "launcher") p.launcher = parse_bool(val, p.launcher);
+            else if (key == "launcher-windows-key") p.launcher_windows_key = parse_bool(val, p.launcher_windows_key);
+            else if (key == "clipboard-history") p.clipboard = parse_bool(val, p.clipboard);
+            else if (key == "screenshot") p.screenshot = parse_bool(val, p.screenshot);
+            else if (key == "files") p.files = parse_bool(val, p.files);
+            else if (key == "viewers") p.viewers = parse_bool(val, p.viewers);
+        } else if (group == "top-bar") {
+            if (key == "auto-hide") p.bar_auto_hide = parse_bool(val, p.bar_auto_hide);
+            else if (key == "week-starts") p.week_starts_monday = (val == "monday");
+        } else if (group == "dock") {
+            if (key == "hide") {
+                if (val == "always-shown") p.dock_hide = DockHide::AlwaysShown;
+                else if (val == "auto-hide") p.dock_hide = DockHide::AutoHide;
+                else p.dock_hide = DockHide::WhenCovered;
+            } else if (key == "window-counts") p.dock_window_counts = parse_bool(val, p.dock_window_counts);
+            else if (key == "middle-click-new-window") p.dock_middle_click_new = parse_bool(val, p.dock_middle_click_new);
+            else if (key == "media") p.dock_media = parse_bool(val, p.dock_media);
+        } else if (group == "general") {
+            if (key == "animations") p.animations = parse_bool(val, p.animations);
+        } else if (pin) {
+            if (key == "name") pin->name = val;
+            else if (key == "app-id") pin->app_id = val;
+            else if (key == "path") pin->path = val;
+            else if (key == "args") pin->args = val;
+            else if (key == "icon") pin->icon = val;
+        }
+    }
+    // A pin that names nothing to start is dropped.
+    p.pins.erase(std::remove_if(p.pins.begin(), p.pins.end(),
+                                [](const DockPin& d) { return d.app_id.empty() && d.path.empty(); }),
+                 p.pins.end());
+    return p;
+}
+
+// One value on one line: line breaks would start a new key.
+static std::string one_line(const std::string& v)
+{
+    std::string out;
+    for (char c : v) out.push_back((c == '\r' || c == '\n') ? ' ' : c);
+    return trim(out);
+}
+
+std::string serialize_shell_ini(const ShellPrefs& p)
+{
+    auto b = [](bool v) { return v ? "true" : "false"; };
+    std::ostringstream out;
+    out << "[parts]\n"
+        << "top-bar=" << b(p.bar) << "\n"
+        << "dock=" << b(p.dock) << "\n"
+        << "launcher=" << b(p.launcher) << "\n"
+        << "launcher-windows-key=" << b(p.launcher_windows_key) << "\n"
+        << "clipboard-history=" << b(p.clipboard) << "\n"
+        << "screenshot=" << b(p.screenshot) << "\n"
+        << "files=" << b(p.files) << "\n"
+        << "viewers=" << b(p.viewers) << "\n"
+        << "\n[top-bar]\n"
+        << "auto-hide=" << b(p.bar_auto_hide) << "\n"
+        << "week-starts=" << (p.week_starts_monday ? "monday" : "sunday") << "\n"
+        << "\n[dock]\n"
+        << "hide=" << dock_hide_name(p.dock_hide) << "\n"
+        << "window-counts=" << b(p.dock_window_counts) << "\n"
+        << "middle-click-new-window=" << b(p.dock_middle_click_new) << "\n"
+        << "media=" << b(p.dock_media) << "\n"
+        << "\n[general]\n"
+        << "animations=" << b(p.animations) << "\n";
+    if (p.pins_saved) {
+        if (p.pins.empty()) out << "\n[dock-pins]\n";
+        size_t n = 0;
+        for (const DockPin& pin : p.pins) {
+            if (pin.app_id.empty() && pin.path.empty()) continue;
+            if (++n > kMaxDockPins) break;
+            out << "\n[dock-pin " << n << "]\n";
+            out << "name=" << one_line(pin.name) << "\n";
+            if (!pin.app_id.empty()) out << "app-id=" << one_line(pin.app_id) << "\n";
+            if (!pin.path.empty()) out << "path=" << one_line(pin.path) << "\n";
+            if (!pin.args.empty()) out << "args=" << one_line(pin.args) << "\n";
+            if (!pin.icon.empty()) out << "icon=" << one_line(pin.icon) << "\n";
+        }
+    }
+    return out.str();
+}
+
+std::wstring shell_ini_path(bool dry_run)
+{
+    return config_dir_path() + (dry_run ? L"\\shell-dry.ini" : L"\\shell.ini");
+}
+
+static bool read_whole_file(const std::wstring& path, std::string& out)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+// Written to a temporary file next to it and moved into place, so a crash
+// leaves the old file or the new one, never half of one.
+static bool replace_file(const std::wstring& path, const std::string& content)
+{
+#ifdef _WIN32
+    size_t slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
+    std::wstring tmp = path + L".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        out.write(content.data(), static_cast<std::streamsize>(content.size()));
+        out.flush();
+        if (!out.good()) return false;
+    }
+    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    DeleteFileW(tmp.c_str());
+    return false;
+#else
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    return out.good();
+#endif
+}
+
+bool load_shell_prefs(const std::wstring& path, ShellPrefs& out)
+{
+    std::string text;
+    if (!read_whole_file(path, text)) {
+        out = ShellPrefs{};
+        return false;
+    }
+    out = parse_shell_ini(text);
+    return true;
+}
+
+bool save_shell_prefs(const std::wstring& path, const ShellPrefs& prefs)
+{
+    return replace_file(path, serialize_shell_ini(prefs));
+}
+
 bool padconf_needs_helper(const PadPrefs& p)
 {
     if (!p.background) return false;
