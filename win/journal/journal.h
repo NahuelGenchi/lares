@@ -113,6 +113,13 @@ typedef struct lares_journal_undo_result {
 int lares_journal_undo(lares_journal *journal, const char *feature, ULONGLONG id, int force,
                        lares_journal_undo_result *result);
 
+/* Makes an owed change hold again: when the newest entry for this target
+ * is not undone and the setting no longer has the value it set (Windows put
+ * it back by itself, say), writes that value again. No new entry. Done
+ * under the journal's lock, so it can never land after an undo of the same
+ * entry. Returns nonzero when the change is owed and holds now. */
+int lares_journal_reapply(lares_journal *journal, const char *feature, const char *kind, const wchar_t *target);
+
 /* Gives up on entries without touching their settings: they are marked
  * undone as they are. For a setting someone else has changed since, when
  * their value is to stay for good. Same choice of entries as undo. */

@@ -48,6 +48,11 @@ void lares_shell_autohide_back(lares_journal *journal)
     if (result.changed) lares_journal_forget(journal, LARES_SHELL_FEATURE, 0);
 }
 
+int lares_shell_autohide_reapply(lares_journal *journal)
+{
+    return lares_journal_reapply(journal, LARES_SHELL_FEATURE, LARES_TASKBAR_KIND, LARES_TASKBAR_AUTOHIDE);
+}
+
 static int is_autohide(const lares_journal_entry *entry, void *found)
 {
     if (lstrcmpA(entry->feature, LARES_SHELL_FEATURE) == 0 && lstrcmpA(entry->kind, LARES_TASKBAR_KIND) == 0 &&

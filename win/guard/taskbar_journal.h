@@ -33,6 +33,11 @@ int lares_shell_autohide_on(lares_journal *journal);
  * it since, their value stays and Lares forgets its own. */
 void lares_shell_autohide_back(lares_journal *journal);
 
+/* Switches auto-hide on again when the journal still owes it and Windows
+ * put it back by itself (a new Explorer). Under the journal's lock, so it can
+ * never land after the guard has given it back. */
+int lares_shell_autohide_reapply(lares_journal *journal);
+
 /* Whether the journal still holds Lares' switching on of auto-hide. */
 int lares_shell_autohide_owed(lares_journal *journal);
 

@@ -48,23 +48,40 @@ void lares_taskbar_use_test_class(const wchar_t *window_class)
     if (window_class) lstrcpynW(test_class, window_class, ARRAYSIZE(test_class));
 }
 
+/* Every taskbar is found first and acted on after, so that showing or hiding
+ * one cannot make the search skip the next. */
+#define MAX_TASKBARS 16
+
 static void each_taskbar(each_fn fn, void *ctx)
 {
-    HWND w = NULL;
+    HWND found[MAX_TASKBARS], w = NULL;
+    int n = 0;
     if (test_class[0]) {
-        while ((w = FindWindowExW(NULL, w, test_class, NULL)) != NULL) fn(w, ctx);
-        return;
+        while (n < MAX_TASKBARS && (w = FindWindowExW(NULL, w, test_class, NULL)) != NULL) found[n++] = w;
+    } else {
+        w = FindWindowW(MAIN_CLASS, NULL);
+        if (w) found[n++] = w;
+        w = NULL;
+        while (n < MAX_TASKBARS && (w = FindWindowExW(NULL, w, SECONDARY_CLASS, NULL)) != NULL) found[n++] = w;
     }
-    w = FindWindowW(MAIN_CLASS, NULL);
-    if (w) fn(w, ctx);
-    w = NULL;
-    while ((w = FindWindowExW(NULL, w, SECONDARY_CLASS, NULL)) != NULL) fn(w, ctx);
+    for (int i = 0; i < n; ++i) fn(found[i], ctx);
 }
 
 static HWND main_taskbar(void)
 {
     if (test_class[0]) return FindWindowExW(NULL, NULL, test_class, NULL);
     return FindWindowW(MAIN_CLASS, NULL);
+}
+
+/* The stand-in's auto-hide is one setting for all its taskbars, as Windows'
+ * is: a property of one more window, never shown, of the class named after
+ * the taskbars' with "AutoHide" added. */
+static HWND test_setting_window(void)
+{
+    wchar_t name[80];
+    lstrcpyW(name, test_class);
+    lstrcatW(name, L"AutoHide");
+    return FindWindowW(name, NULL);
 }
 
 static void count_one(HWND window, void *ctx)
@@ -122,7 +139,10 @@ int lares_taskbar_get_autohide(void)
 {
     HWND w = main_taskbar();
     if (!w) return -1;
-    if (test_class[0]) return (INT_PTR)GetPropW(w, TEST_AUTOHIDE_PROP) == 2 ? 1 : 0;
+    if (test_class[0]) {
+        HWND setting = test_setting_window();
+        return setting ? ((INT_PTR)GetPropW(setting, TEST_AUTOHIDE_PROP) == 2 ? 1 : 0) : -1;
+    }
 
     appbar_fn fn = appbar();
     if (!fn) return -1;
@@ -133,17 +153,13 @@ int lares_taskbar_get_autohide(void)
     return (fn(ABM_GETSTATE, &d) & ABS_AUTOHIDE) ? 1 : 0;
 }
 
-static void set_test_autohide(HWND window, void *ctx)
-{
-    SetPropW(window, TEST_AUTOHIDE_PROP, (HANDLE)(INT_PTR)(*(int *)ctx ? 2 : 1));
-}
-
 void lares_taskbar_set_autohide(int on)
 {
     HWND w = main_taskbar();
     if (!w) return;
     if (test_class[0]) {
-        each_taskbar(set_test_autohide, &on);
+        HWND setting = test_setting_window();
+        if (setting) SetPropW(setting, TEST_AUTOHIDE_PROP, (HANDLE)(INT_PTR)(on ? 2 : 1));
         return;
     }
     appbar_fn fn = appbar();

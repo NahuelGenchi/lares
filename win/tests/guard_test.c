@@ -37,6 +37,8 @@
 #define LIMIT_MS 2000
 
 static wchar_t g_dir[MAX_PATH], g_state_file[MAX_PATH], g_journal_file[MAX_PATH], g_class[64];
+static wchar_t g_setting_class[80];
+static HWND g_setting;
 static wchar_t g_guard[MAX_PATH], g_shell[MAX_PATH];
 static int g_real, g_failures, g_checks;
 static DWORD g_bar_thread;
@@ -82,6 +84,12 @@ static DWORD WINAPI bar_thread(void *unused)
     wc.hInstance = GetModuleHandleW(NULL);
     wc.lpszClassName = g_class;
     RegisterClassW(&wc);
+    /* The stand-in's auto-hide: one setting for all its taskbars, as Windows'
+     * is, kept on a window that is never shown (win/guard/taskbar.c). */
+    wc.lpszClassName = g_setting_class;
+    RegisterClassW(&wc);
+    g_setting = CreateWindowExW(WS_EX_TOOLWINDOW, g_setting_class, L"", WS_POPUP, 0, 0, 0, 0, NULL, NULL, wc.hInstance,
+                                NULL);
     PeekMessageW(&m, NULL, 0, 0, PM_NOREMOVE);
     SetEvent(g_bar_done);
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
@@ -98,16 +106,19 @@ static DWORD WINAPI bar_thread(void *unused)
     return 0;
 }
 
+static void set_bars_autohide(int on)
+{
+    SetPropW(g_setting, AUTOHIDE_PROP, (HANDLE)(INT_PTR)(on ? 2 : 1));
+}
+
 /* A fresh stand-in taskbar: `count` visible windows, auto-hide as given. */
 static void bars_reset(int count, int autohide)
 {
-    HWND w = NULL;
     if (g_real) return;
     ResetEvent(g_bar_done);
     PostThreadMessageW(g_bar_thread, BARS_RESET, (WPARAM)count, 0);
     WaitForSingleObject(g_bar_done, 5000);
-    while ((w = FindWindowExW(NULL, w, g_class, NULL)) != NULL)
-        SetPropW(w, AUTOHIDE_PROP, (HANDLE)(INT_PTR)(autohide ? 2 : 1));
+    set_bars_autohide(autohide);
 }
 
 static int bars_total(void)
@@ -166,7 +177,7 @@ static int bars_autohide(void)
         if (thread) CloseHandle(thread);
         return result;
     }
-    return (INT_PTR)GetPropW(FindWindowExW(NULL, NULL, g_class, NULL), AUTOHIDE_PROP) == 2;
+    return (INT_PTR)GetPropW(g_setting, AUTOHIDE_PROP) == 2;
 }
 
 /* ---- the guard's state file and processes --------------------------- */
@@ -181,9 +192,16 @@ static snapshot read_state(void)
     snapshot s = { 0 };
     char text[1024], *line, *next = NULL;
     DWORD got = 0;
-    /* Opened so that the guard can replace the file meanwhile. */
-    HANDLE f = CreateFileW(g_state_file, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-                           OPEN_EXISTING, 0, NULL);
+    /* Opened so that the guard can replace the file meanwhile, and tried
+     * again while another program (a scanner) holds it for a moment, as the
+     * guard itself does: a read that fails here would aim a kill at nobody. */
+    HANDLE f = INVALID_HANDLE_VALUE;
+    for (int i = 0; i < 100; ++i) {
+        f = CreateFileW(g_state_file, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                        OPEN_EXISTING, 0, NULL);
+        if (f != INVALID_HANDLE_VALUE || GetLastError() == ERROR_FILE_NOT_FOUND) break;
+        Sleep(5);
+    }
     if (f == INVALID_HANDLE_VALUE) return s;
     if (!ReadFile(f, text, sizeof text - 1, &got, NULL)) got = 0;
     CloseHandle(f);
@@ -323,15 +341,56 @@ static int safe(void) { return taskbar_back() || healthy(); }
 
 /* Milliseconds from the last mark() until `condition` held, or -1 when it
  * did not within the limit (counted from this call). */
+/* What the taskbar did during the last wait, printed when a check fails:
+ * each change of (visible taskbars, auto-hide) and when it came. */
+static struct {
+    int count;
+    int ms[16], visible[16], autohide[16], journal[16];
+} g_seen;
+
+static int journal_exists(void);
+
+static void see(int ms)
+{
+    int v = bars_visible(), a = bars_autohide(), j = journal_exists();
+    int last = g_seen.count - 1;
+    if (g_seen.count && g_seen.visible[last] == v && g_seen.autohide[last] == a && g_seen.journal[last] == j) return;
+    if (g_seen.count == 16) return;
+    g_seen.ms[g_seen.count] = ms;
+    g_seen.visible[g_seen.count] = v;
+    g_seen.autohide[g_seen.count] = a;
+    g_seen.journal[g_seen.count++] = j;
+}
+
 static int wait_for(int (*condition)(void), int limit_ms)
 {
     int start = since_mark();
+    g_seen.count = 0;
     for (;;) {
         int elapsed = since_mark();
+        see(elapsed);
         if (condition()) return elapsed;
         if (elapsed - start > limit_ms) return -1;
         Sleep(1);
     }
+}
+
+
+/* After a failed check: the change journal's raw lines. */
+static void journal_dump(void)
+{
+    char text[2048];
+    DWORD got = 0;
+    HANDLE f = CreateFileW(g_journal_file, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        note("    no change journal (error %lu)", GetLastError());
+        return;
+    }
+    if (!ReadFile(f, text, sizeof text - 1, &got, NULL)) got = 0;
+    CloseHandle(f);
+    text[got] = 0;
+    printf("    change journal:\n%s", text);
 }
 
 static void check_within(int (*condition)(void), int limit_ms, const char *what)
@@ -341,8 +400,15 @@ static void check_within(int (*condition)(void), int limit_ms, const char *what)
     snprintf(text, sizeof text, "%s (limit %d ms)", what, limit_ms);
     check(ms >= 0, text);
     if (ms >= 0) note("%s: %d ms", what, ms);
-    else note("  taskbars: %d of %d visible, auto-hide %d (was %d before); state hidden %d", bars_visible(), bars_total(),
-              bars_autohide(), g_before, read_state().hidden);
+    else {
+        snapshot s = read_state();
+        note("  taskbars: %d of %d visible, auto-hide %d (was %d before); state hidden %d, shell %s", bars_visible(),
+             bars_total(), bars_autohide(), g_before, s.hidden, shell_alive(s.shell) ? "alive" : "gone");
+        for (int i = 0; i < g_seen.count; ++i)
+            note("    at %d ms: %d visible, auto-hide %d, journal %d", g_seen.ms[i], g_seen.visible[i], g_seen.autohide[i],
+                 g_seen.journal[i]);
+        journal_dump();
+    }
 }
 
 static void start_guard(const wchar_t *shell_command)
@@ -611,12 +677,13 @@ static void case_explorer_restart(void)
 static void case_display_change(void)
 {
     begin_running("display change (stand-in: a second taskbar, WM_DISPLAYCHANGE)", 1, 0);
-    HWND shell = window_of(SHELL_WINDOW_CLASS, read_state().shell);
+    DWORD shell_pid = read_state().shell;
+    HWND shell = window_of(SHELL_WINDOW_CLASS, shell_pid);
     bars_reset(2, 1); /* Explorer keeps auto-hide across a display change */
     mark();
     PostMessageW(shell, WM_DISPLAYCHANGE, 32, MAKELPARAM(1920, 1080));
     check_within(taskbar_hidden, LIMIT_MS, "both taskbars hidden");
-    kill_pid(read_state().shell);
+    kill_pid(shell_pid);
     check_within(taskbar_back, LIMIT_MS, "both taskbars back after a crash");
 }
 
@@ -658,10 +725,8 @@ static int stand_in_read(const wchar_t *target, lares_journal_value *value, void
 
 static int stand_in_write(const wchar_t *target, const lares_journal_value *value, void *ctx)
 {
-    HWND w = NULL;
     (void)target, (void)ctx;
-    while ((w = FindWindowExW(NULL, w, g_class, NULL)) != NULL)
-        SetPropW(w, AUTOHIDE_PROP, (HANDLE)(INT_PTR)(value->data[0] ? 2 : 1));
+    set_bars_autohide(value->data[0] != 0);
     return 1;
 }
 
@@ -846,6 +911,7 @@ int wmain(int argc, wchar_t **argv)
         case_real();
     } else {
         swprintf(g_class, ARRAYSIZE(g_class), L"LaresTestTaskbar%lu", GetCurrentProcessId());
+        swprintf(g_setting_class, ARRAYSIZE(g_setting_class), L"%lsAutoHide", g_class);
         SetEnvironmentVariableW(L"LARES_GUARD_TASKBAR_CLASS", g_class);
         g_bar_done = CreateEventW(NULL, TRUE, FALSE, NULL);
         CloseHandle(CreateThread(NULL, 0, bar_thread, NULL, 0, &g_bar_thread));
@@ -855,6 +921,9 @@ int wmain(int argc, wchar_t **argv)
             measure(seconds);
         } else if (only && !wcscmp(only, L"sign-out")) {
             case_sign_out();
+        } else if (only && !wcscmp(only, L"display")) {
+            case_explorer_restart();
+            case_display_change();
         } else if (only && !wcscmp(only, L"stale")) {
             case_stale_state();
         } else if (only && !wcscmp(only, L"safe")) {

@@ -61,9 +61,10 @@ static void hide_again(void)
     if (s.hidden != LARES_TASKBAR_HIDDEN) return;
     lares_taskbar_show(0);
     /* Auto-hide that the journal says Lares switched on, and that a new
-     * Explorer came up without: on again, with no new entry. */
-    if (lares_taskbar_get_autohide() == 0 && lares_shell_journal(&journal) && lares_shell_autohide_owed(&journal))
-        lares_taskbar_set_autohide(1);
+     * Explorer came up without: on again, with no new entry. Checked and
+     * written under the journal's lock: checked here and written after, it
+     * could land just after the guard had given it back. */
+    if (lares_taskbar_get_autohide() == 0 && lares_shell_journal(&journal)) lares_shell_autohide_reapply(&journal);
 }
 
 static void CALLBACK on_shown(HWINEVENTHOOK hook, DWORD event, HWND window, LONG object, LONG child, DWORD thread,
