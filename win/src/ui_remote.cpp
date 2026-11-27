@@ -153,6 +153,7 @@ void MainWindow::settings_action(SettingsAction action)
         changes_undo(opts_.dry_run, said);
         changes_said_.assign(said.begin(), said.end()); // plain English, so each byte is a letter
         changes_open_ = -1;
+        load_pad_prefs(pad_path_, pad_prefs_); // Run in the background may be off now
         break;
     }
     }

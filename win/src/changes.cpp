@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "changes.h"
 
+#include "config.h"
+#include "helper.h"
+
 #include <windows.h>
 
 extern "C" {
@@ -38,6 +41,25 @@ int changes_open(bool dry_run)
     return lares_journal_list(&journal, nullptr, nullptr);
 }
 
+struct FeatureCount {
+    const char* feature;
+    int n;
+};
+
+static int count_one(const lares_journal_entry* e, void* ctx)
+{
+    auto* c = static_cast<FeatureCount*>(ctx);
+    if (lstrcmpA(e->feature, c->feature) == 0) ++c->n;
+    return 1;
+}
+
+static int count_feature(lares_journal& journal, const char* feature)
+{
+    FeatureCount c = { feature, 0 };
+    lares_journal_list(&journal, count_one, &c);
+    return c.n;
+}
+
 static std::string counted(int n, const char* one, const char* many)
 {
     return n == 1 ? std::string(one) : std::to_string(n) + many;
@@ -52,7 +74,21 @@ bool changes_undo(bool dry_run, std::string& said)
         return false;
     }
     if (!dry_run) guard_command(L"stop");
+    int helper_before = count_feature(journal, kPadHelperFeature);
     bool ok = lares_journal_undo(&journal, nullptr, 0, 0, &r) != 0;
+    bool helper_undone = helper_before > 0 && count_feature(journal, kPadHelperFeature) == 0;
+
+    /* The start-up entry has its own switch, Run in the background. With the
+     * entry taken away the switch goes off too, or the next start would put
+     * the entry back; and the helper stops. */
+    if (helper_undone) {
+        std::wstring prefs_path = pad_ini_path(dry_run);
+        PadPrefs prefs;
+        load_pad_prefs(prefs_path, prefs);
+        prefs.background = false;
+        save_pad_prefs(prefs_path, prefs);
+        pad_service_sync(prefs, dry_run);
+    }
 
     int back = r.restored + r.already;
     if (back + r.changed + r.failed == 0) {
@@ -69,6 +105,7 @@ bool changes_undo(bool dry_run, std::string& said)
         if (!said.empty()) said += " ";
         said += counted(r.failed, "1 could", " could") + " not be put back.";
     }
+    if (helper_undone) said += " Run in the background is off now.";
     return ok;
 }
 

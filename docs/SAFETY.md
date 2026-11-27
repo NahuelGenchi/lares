@@ -120,7 +120,20 @@ The file is plain text, one record a line, each with a CRC-32. It holds setting 
 | **Undo all** in Settings | window check in a dry run, light and dark, with a journal of two registry values under a test key | "2 settings are back as before", the values gone, the file removed | confirmed |
 | A real power cut (the machine losing power) | | | **not checked**: a killed process stands in for it. What the journal relies on is `FlushFileBuffers` reaching the disk before the change |
 
-**Not done yet:** the changes Lares for Windows already makes outside the shell (the helper's start-up entry, for one) do not go through the journal. That is its own issue, [#133](https://github.com/NahuelGenchi/lares/issues/133).
+### What else Lares changes in Windows
+
+Every place the Windows code changes something outside its own files was looked for (issue [#133](https://github.com/NahuelGenchi/lares/issues/133)). This is the list, and what each does with the journal:
+
+| Change | Where | Journal | Why |
+| :--- | :--- | :--- | :--- |
+| The taskbar's auto-hide | `win/guard/` | yes, feature `shell` | a setting of Windows' own that outlives Lares |
+| The helper's start-up entry, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `LaresPad` | `win/src/helper.cpp` | yes, feature `pad-helper` | a setting that outlives Lares. An entry made by a Lares from before the journal is written down as Lares' own the first time, so undo removes it instead of putting it back. **Undo all** also turns Run in the background off, or the next start would add the entry again, and stops the helper |
+| The screen's size, for Remote | `win/src/remote.cpp` | no | changed without being saved (`ChangeDisplaySettingsExW` without `CDS_UPDATEREGISTRY`), so Windows forgets it at sign-out; Home puts it back |
+| Tailscale up and down, Sunshine started and stopped | `win/src/remote.cpp` | no | switched on and off, not configured: the Remote and Home modes are the switch |
+| Sunshine's service permission, so the user can start and stop it | `win/src/remote.cpp`, the **Allow** button | no, not yet | a lasting change, but made once with administrator rights from an elevated window; putting it back needs them too. Its own follow-up |
+| The Wi-Fi adapter's WinUSB driver, for AirDrop | `win/share/driver_setup.cpp`, **Set up** | no, not yet | a lasting change made with administrator rights; Share's own **Give back** undoes it. Its own follow-up |
+
+Nothing else in the Windows code writes the registry, a system setting or a service.
 
 ## What was checked
 
