@@ -49,7 +49,7 @@ PRs inherit a missing milestone from their first valid closing issue. PRs withou
 
 The job uses inline Node.js and the repository's `GITHUB_TOKEN` with only issue and PR write permissions. It has no checkout, third-party action, build, or test. PR text is parsed as data, never executed. To repair metadata after a missed run, use **Actions → Project tracking → Run workflow**.
 
-Software checks run separately: [`.github/workflows/checks.yml`](../.github/workflows/checks.yml) runs `make check` on every PR and every push to `main`, in an Ubuntu 26.04 container, with read-only access to the repository. Its only action, `actions/checkout`, is pinned to a commit.
+Software checks run separately: [`.github/workflows/checks.yml`](../.github/workflows/checks.yml) runs the privacy gate (`tools/privacy-gate.mjs`) and `make check` on every PR and every push to `main`, in an Ubuntu 26.04 container, with read-only access to the repository; its Windows job builds the port, runs its tests and runs the gate over the built programs. Its only action, `actions/checkout`, is pinned to a commit.
 
 ## Branch rules
 

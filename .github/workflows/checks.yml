@@ -26,6 +26,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The privacy gate reads the pull request's commits.
+          fetch-depth: 0
+      - name: Privacy gate (tracked files and commits)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          node tools/privacy-gate.mjs --self-test
+          node tools/privacy-gate.mjs
+          if [ -n "$BASE" ]; then node tools/privacy-gate.mjs --commits "$BASE..$HEAD"; fi
       - name: Build and test
         run: make check
 
@@ -43,3 +54,5 @@ jobs:
           cmake --build win/build --config Release
       - name: Run Windows unit tests
         run: ctest --test-dir win/build -C Release --output-on-failure
+      - name: Privacy gate (built programs)
+        run: node tools/privacy-gate.mjs --binaries win/build/Release

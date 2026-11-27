@@ -1,0 +1,16 @@
+# Exceptions to tools/privacy-gate.mjs: values that are public by nature.
+# One per line: rule, path pattern (* matches anything), exact value (* for any).
+# Programs are matched by file name alone, commits by the word "commit".
+
+# The top-bar addon's identifier has the shape of an address; it is not one.
+email            *                      lares@nahuelgenchi.github.io
+
+# Upstream authors' addresses in the licence headers of vendored code.
+email            win/third_party/*      *
+
+# A made-up address from the carrier-grade NAT range, shown in a dry run.
+private-address  win/src/remote.cpp     100.64.0.1
+
+# The same made-up address, inside the program that shows it, and in this list.
+private-address  lares.exe              100.64.0.1
+private-address  tools/privacy-allow.txt  100.64.0.1
