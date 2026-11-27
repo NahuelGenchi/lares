@@ -13,8 +13,12 @@ static void open_file(const wchar_t *file, const wchar_t *args) {
     ShellExecuteW(NULL, L"open", file, args, NULL, SW_SHOWNORMAL);
 }
 
-/* Windows' own Start menu, as Ctrl+Esc opens it. */
+/* The launcher when it is on, else Windows' own Start menu, as Ctrl+Esc opens it. */
 void action_open_start(void) {
+    if (g_cfg.launcher_enabled) {
+        if (g_hHostWnd) PostMessageW(g_hHostWnd, WM_LARES_TOGGLE_LAUNCHER, 0, 0);
+        return;
+    }
     INPUT in[4];
     ZeroMemory(in, sizeof(in));
     for (int i = 0; i < 4; ++i) in[i].type = INPUT_KEYBOARD;

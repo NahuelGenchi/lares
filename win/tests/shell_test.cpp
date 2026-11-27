@@ -151,15 +151,59 @@ static int count_processes(const wchar_t* name)
 
 static ShellPrefs g_prefs;
 
-static bool set_parts(bool bar, bool dock)
+static bool set_parts(bool bar, bool dock, bool launcher = false, bool clipboard = false)
 {
     g_prefs.bar = bar;
     g_prefs.dock = dock;
-    if (!save_shell_prefs(shell_ini_path(false), g_prefs)) return false;
+    g_prefs.launcher = launcher;
+    g_prefs.clipboard = clipboard;
+    if (!save_shell_prefs(shell_ini_path(false), g_prefs)) {
+        std::printf("  the settings file could not be saved (%lu)\n", GetLastError());
+        return false;
+    }
     std::string said;
     bool ok = shell_service_sync(g_prefs, false, &said);
     if (!ok) std::printf("  sync said: %s\n", said.c_str());
     return ok;
+}
+
+// A shortcut someone else holds cannot be registered again.
+static bool shortcut_taken(UINT mods, UINT vk)
+{
+    if (RegisterHotKey(nullptr, 0x7a00, mods | MOD_NOREPEAT, vk)) {
+        UnregisterHotKey(nullptr, 0x7a00);
+        return false;
+    }
+    return true;
+}
+
+// The launcher and clipboard history: the shell runs for them alone, the
+// taskbar stays, and their shortcuts exist only while they are on. A test
+// copy registers no shortcut, so those are only looked at with --real.
+static void cycle_tools(int i)
+{
+    std::printf("cycle %d: launcher and clipboard history\n", i);
+    check(set_parts(false, false, true, false), "launcher on");
+    check(wait_for([] { return shell_window() != nullptr; }, 10000), "launcher on: the shell runs");
+    Sleep(1000);
+    check(taskbar_visible() != 0, "launcher on: the taskbar stays");
+    if (g_real) check(shortcut_taken(MOD_ALT, VK_SPACE), "launcher on: Alt+Space is the launcher's");
+    if (g_real) check(!shortcut_taken(MOD_ALT, 'V'), "launcher on: Alt+V stays free");
+
+    DWORD pid = shell_pid();
+    check(set_parts(false, false, true, true), "clipboard history on beside the launcher");
+    if (g_real) check(wait_for([] { return shortcut_taken(MOD_ALT, 'V'); }, 5000), "clipboard history on: Alt+V is taken");
+    check(shell_pid() == pid, "clipboard history on: the same shell");
+
+    check(set_parts(false, false, false, true), "launcher off");
+    if (g_real) check(wait_for([] { return !shortcut_taken(MOD_ALT, VK_SPACE); }, 5000), "launcher off: Alt+Space is free");
+    check(shell_window() != nullptr, "launcher off: the shell stays for clipboard history");
+
+    check(set_parts(false, false, false, false), "clipboard history off");
+    check(wait_for([] { return shell_window() == nullptr; }, 10000), "clipboard history off: the shell is gone");
+    if (g_real) check(!shortcut_taken(MOD_ALT, 'V'), "clipboard history off: Alt+V is free");
+    check(run_value().empty(), "clipboard history off: the start-up entry is gone");
+    check(wait_for([] { return count_processes(L"lares-guard.exe") == 0; }, 10000), "clipboard history off: no guard is left");
 }
 
 // ---- the cases ---------------------------------------------------------------
@@ -354,7 +398,10 @@ int wmain(int argc, wchar_t** argv)
     }
 
     fresh_account();
-    for (int i = 1; i <= cycles; ++i) cycle(i);
+    for (int i = 1; i <= cycles; ++i) {
+        cycle(i);
+        cycle_tools(i);
+    }
     if (seconds > 0) measure(seconds);
 
     // What the journal still holds after every switch went off: nothing owed.
@@ -363,6 +410,28 @@ int wmain(int argc, wchar_t** argv)
     if (lares_journal_open(&journal, nullptr) && lares_journal_add_backend(&journal, &lares_journal_registry)) {
         lares_journal_undo(&journal, kShellFeature, 0, 0, &result);
         check(run_value().empty(), "after undo: no start-up entry");
+    }
+    // No shell or guard crashed along the way.
+    {
+        WIN32_FIND_DATAW fd;
+        std::wstring pattern = std::wstring(g_dir) + L"\\crash\\*.txt";
+        HANDLE f = FindFirstFileW(pattern.c_str(), &fd);
+        int reports = 0;
+        if (f != INVALID_HANDLE_VALUE) {
+            do {
+                ++reports;
+                std::printf("  crash report: %ls\n", fd.cFileName);
+                std::wstring path = std::wstring(g_dir) + L"\\crash\\" + fd.cFileName;
+                FILE* r = _wfopen(path.c_str(), L"rb");
+                if (r) {
+                    char line[256];
+                    while (fgets(line, sizeof(line), r)) std::printf("    %s", line);
+                    fclose(r);
+                }
+            } while (FindNextFileW(f, &fd));
+            FindClose(f);
+        }
+        check(reports == 0, "nothing crashed");
     }
     cleanup();
     if (!g_real) PostThreadMessageW(g_bar_thread, WM_QUIT, 0, 0);

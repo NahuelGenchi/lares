@@ -123,7 +123,7 @@ bool start_shell(const std::wstring& guard_exe, const std::wstring& shell_exe)
 
 bool shell_needs_process(const ShellPrefs& prefs)
 {
-    return prefs.bar || prefs.dock;
+    return prefs.bar || prefs.dock || prefs.launcher || prefs.clipboard;
 }
 
 std::wstring shell_autostart_command(const std::wstring& guard_exe, const std::wstring& shell_exe)

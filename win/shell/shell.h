@@ -32,6 +32,7 @@
 #define WM_LARES_BT_SCAN_DONE      (WM_APP + 18)
 #define WM_LARES_QUIT_CLEAN        (WM_APP + 20)
 #define WM_LARES_RESTORE_TOPMOST   (WM_APP + 21)
+#define WM_LARES_TOGGLE_CLIPBOARD  (WM_APP + 25)
 
 /* Lares' window and Settings ask a running shell to read its settings again
  * with this registered message, posted to the host window. */
@@ -98,7 +99,9 @@ typedef struct {
     bool dock_middle_click_new;
     bool dock_show_media_widget;
 
+    bool launcher_enabled;
     bool launcher_win_key;
+    bool clipboard_enabled;
     bool screenshot_enabled;
 } AppConfig;
 
@@ -260,7 +263,28 @@ void dock_on_explorer_restart(void);
 void dock_apply_settings(void);
 int  dock_snapshot(const wchar_t *png_path);
 
-/* hotkeys.c */
+/* launcher.c (issue #148) */
+void launcher_init(HINSTANCE hInst);
+void launcher_toggle(void);
+void launcher_hide(void);
+HWND launcher_get_prev_fg(void);
+void launcher_on_theme_changed(void);
+void launcher_shutdown(void);
+int  launcher_snapshot(const wchar_t *typed, const wchar_t *png_path);
+
+/* clipboard.c (issue #148) */
+void clipboard_init(HINSTANCE hInst);
+void clipboard_toggle(void);
+void clipboard_hide(void);
+bool clipboard_is_open(void);
+void clipboard_on_theme_changed(void);
+void clipboard_shutdown(void);
+int  clipboard_snapshot(const wchar_t *png_path);
+void clipboard_add_sample(const wchar_t *text, bool pinned);
+
+/* hotkeys.c: shortcut ids, as WM_HOTKEY brings them. */
+#define LARES_HOTKEY_LAUNCHER  9001
+#define LARES_HOTKEY_CLIPBOARD 9005
 bool hotkeys_init(HWND host_hwnd);
 void hotkeys_shutdown(void);
 

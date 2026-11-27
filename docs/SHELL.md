@@ -12,7 +12,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | The drawing layer and settings | [#141](https://github.com/NahuelGenchi/lares/issues/141) | confirmed by tests: the layer draws into memory, the settings round-trip; nothing on screen yet |
 | `lares-shell.exe`: top bar and dock, under `lares-guard.exe` | [#145](https://github.com/NahuelGenchi/lares/issues/145) | confirmed with tests, on a stand-in taskbar and on the real taskbar of GitHub's Windows runner; not used on a real Windows 11 desktop yet |
 | The top bar's popups: calendar, keyboard, Bluetooth, network and Tailscale, media, notifications, power, screenshot menu | [#147](https://github.com/NahuelGenchi/lares/issues/147) | confirmed drawn, light and dark, in a test copy; not clicked on a real desktop |
-| Launcher and clipboard history | | planned |
+| Launcher and clipboard history, each with its own switch | [#148](https://github.com/NahuelGenchi/lares/issues/148) | confirmed: drawn in a test copy, light and dark; switches on and off in tests; not used on a real desktop |
 | Process list and screenshot tool | | planned |
 | `lares-files.exe` and `lares-view.exe` | | planned |
 | AirDrop panel on Lares' own sharing code; device indicators | | planned |
@@ -206,7 +206,7 @@ A switch writes `shell.ini`, then `win/src/shell_service.cpp` puts what runs in 
 
 The dock starts with File Explorer, the browser Windows opens links with, a terminal and Lares, each only when found ([Other programs](#other-programs)); once the user changes it, `shell.ini` keeps the pins. Win+1 to Win+0 bring the dock's apps to the front; the keyboard hook that sees them is only installed while the dock is on.
 
-**Until the rest of the shell arrives**, the dock's Start button opens Windows' own Start menu, the processor, graphics and memory readings open Task Manager, and the screenshot menu's entries open Windows' snipping. The sharing button is left out until the AirDrop panel (part 6). The bar's other buttons open Lares' popups (below).
+**Until the rest of the shell arrives**, the dock's Start button opens Windows' own Start menu (or the launcher, when it is on), the processor, graphics and memory readings open Task Manager, and the screenshot menu's entries open Windows' snipping. The sharing button is left out until the AirDrop panel (part 6). The bar's other buttons open Lares' popups (below).
 
 **Checking a build on a PC someone works on.** `lares-shell --isolated` (or `LARES_SHELL_ISOLATED=1`) runs a copy that hides nothing, reserves no space, puts its windows far off the screen, installs no keyboard hook and opens nothing. `lares-shell --snapshot DIR` does the same with both parts on, draws them once into `DIR\top-bar.png` and `DIR\dock.png`, and ends; `LARES_COLOR_SCHEME=light` or `dark` picks the palette.
 
@@ -254,6 +254,24 @@ Starting or stopping Tailscale's service needs administrator rights on most PCs.
 | Clicking in the popups, the keyboard switch, the volume slider, connecting Tailscale | | **not checked**: needs a desktop where the shell is in use |
 | Starting and stopping Tailscale's service, with and without the approval prompt | | **not checked**: it would change a service on the development PC |
 | The memory a popup takes, given back when it closes | | **not measured** yet |
+
+### The launcher and clipboard history
+
+Two more parts run in `lares-shell.exe`, each with its own switch under **Launcher and clipboard** in Settings, off by default (issue [#148](https://github.com/NahuelGenchi/lares/issues/148)). Either one on is enough for the shell to run, with or without the bar and dock; the Windows taskbar stays unless the dock is on.
+
+- **Launcher** (`win/shell/launcher.c`): Alt+Space opens it. With nothing typed it shows the dock's first nine pinned apps; typing searches the Start menu's shortcuts (the user's and all users'), the installed Store apps Windows lists, and a few Settings pages and Windows tools, and works out sums (`sqrt(144)*2`, `15% of` style percentages, `pi`, functions), copying the answer with Enter. It never reads the user's own folders. A second setting, **Open it with the Windows key**, makes a lone tap of the Windows key open it instead of Start; off by default and greyed out while the launcher is off. With the launcher on, the dock's Start button opens it too.
+- **Clipboard history** (`win/shell/clipboard.c`): Alt+V opens it; Win+V stays Windows' own. Windows tells the shell when the clipboard changes, so nothing polls. Up to 50 text clips and a few pictures (as PNG) stay in memory, within 6 MB in all; pinned text is kept on this PC in `%APPDATA%\lares\clipboard-pins.txt` (`clipboard-pins-dry.txt` in a dry run). With the switch off nothing is watched or kept; pins already saved stay in that file.
+
+Their shortcuts are registered only while their switch is on, and the keyboard hook for the Windows key only while that setting is on (or the dock, for Win+1 to Win+0). A test copy registers no shortcut, never listens to the PC's clipboard and reads no pins.
+
+Writing `shell.ini` now tries again for up to a second when another Lares program is reading it at that moment: the switch test found the shell reading the file just as Settings replaced it.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| Launcher and clipboard history drawn (grid, search, sum, list), light and dark | `lares-shell --snapshot`, development PC, looked at; the clipboard list holds made-up clips | confirmed |
+| Each on and off, alone and together, with the shell staying for the other and ending with the last; no start-up entry or guard left | `lares-shell-test`, stand-in taskbar, once on the development PC (48 checks with the bar and dock cases) | confirmed |
+| Alt+Space and Alt+V taken only while their part is on | `lares-shell-test --real`, the Checks workflow | confirmed when the workflow passes |
+| Typing, pasting into another window, pinning, the Windows key | | **not checked**: needs a desktop where the shell is in use |
 
 ### Known limits
 

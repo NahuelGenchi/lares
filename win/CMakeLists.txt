@@ -269,6 +269,8 @@ add_executable(lares-shell WIN32
     shell/config.c
     shell/actions.c
     shell/popups.c
+    shell/launcher.c
+    shell/clipboard.c
     shell/win_tracker.c
     shell/telemetry.c
     shell/media.c

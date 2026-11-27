@@ -99,6 +99,25 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
     });
     y += kPageGap;
 
+    heading(L"Launcher and clipboard");
+    y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
+        float cy = toggle(top, L"Launcher",
+                          L"Alt+Space opens a search for your apps and Settings pages, with a calculator. Turn it "
+                          L"off and Alt+Space is Windows' own again.",
+                          nullptr, &shell_prefs_.launcher, unsafe);
+        cy = setting_line(rt, pal, ix, cy, iw);
+        cy = toggle(cy, L"Open it with the Windows key",
+                    L"A tap of the Windows key opens the launcher instead of Start. Turn it off and the key "
+                    L"opens Start again.",
+                    nullptr, &shell_prefs_.launcher_windows_key, unsafe && shell_prefs_.launcher);
+        cy = setting_line(rt, pal, ix, cy, iw);
+        return toggle(cy, L"Clipboard history",
+                      L"Alt+V shows what you copied lately, kept in memory; text you pin is kept on this PC. "
+                      L"Win+V stays Windows' own. Turn it off and nothing more is kept.",
+                      nullptr, &shell_prefs_.clipboard, unsafe);
+    });
+    y += kPageGap;
+
     /* Size: a dropdown at the right of its row. A size saved by hand
      * between the choices shows as it is, with none of them checked. */
     heading(L"Accessibility");

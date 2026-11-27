@@ -3,9 +3,11 @@
 #include "shell.h"
 
 /*
- * Keyboard shortcuts (issue #145), each only while its part is on:
+ * Keyboard shortcuts (issues #145, #148), each only while its part is on:
  *   - Win + 1..0       -> brings dock app 1..10 to the front, or starts it (the dock)
- *   - a lone Win tap   -> the launcher, when Settings say so (part 4)
+ *   - Alt + Space      -> the launcher
+ *   - a lone Win tap   -> the launcher, when its own setting is on
+ *   - Alt + V          -> clipboard history (Win+V stays Windows' own)
  * Every other Windows-key combination (Win+D, Win+R, Win+L, Win+Tab,
  * Win+Shift+S, Win+E, ...) passes through untouched. The keyboard hook is
  * only installed while one of these is on.
@@ -78,6 +80,8 @@ static LRESULT CALLBACK low_level_kb_proc(int nCode, WPARAM wParam, LPARAM lPara
 
 bool hotkeys_init(HWND host_hwnd) {
     g_hk_host = host_hwnd;
+    if (g_cfg.launcher_enabled) RegisterHotKey(host_hwnd, LARES_HOTKEY_LAUNCHER, MOD_ALT | MOD_NOREPEAT, VK_SPACE);
+    if (g_cfg.clipboard_enabled) RegisterHotKey(host_hwnd, LARES_HOTKEY_CLIPBOARD, MOD_ALT | MOD_NOREPEAT, 'V');
     if (!g_cfg.dock_enabled && !g_cfg.launcher_win_key) return true;
     g_kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, low_level_kb_proc, GetModuleHandleW(NULL), 0);
     return g_kb_hook != NULL;
@@ -87,6 +91,10 @@ void hotkeys_shutdown(void) {
     if (g_kb_hook) {
         UnhookWindowsHookEx(g_kb_hook);
         g_kb_hook = NULL;
+    }
+    if (g_hk_host) {
+        UnregisterHotKey(g_hk_host, LARES_HOTKEY_LAUNCHER);
+        UnregisterHotKey(g_hk_host, LARES_HOTKEY_CLIPBOARD);
     }
     g_hk_host = NULL;
 }

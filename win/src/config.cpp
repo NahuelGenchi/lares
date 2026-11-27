@@ -271,7 +271,14 @@ static bool replace_file(const std::wstring& path, const std::string& content)
         out.flush();
         if (!out.good()) return false;
     }
-    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    // Another Lares program may be reading the file this very moment (the
+    // shell reads shell.ini when told to): try again for a little while.
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+        DWORD err = GetLastError();
+        if (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION) break;
+        Sleep(25);
+    }
     DeleteFileW(tmp.c_str());
     return false;
 #else

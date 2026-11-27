@@ -80,7 +80,9 @@ void config_load_all(void) {
     g_cfg.dock_middle_click_new = p.dock_middle_click_new;
     g_cfg.dock_show_media_widget = p.dock_media;
 
+    g_cfg.launcher_enabled = p.launcher;
     g_cfg.launcher_win_key = p.launcher && p.launcher_windows_key;
+    g_cfg.clipboard_enabled = p.clipboard;
     g_cfg.screenshot_enabled = p.screenshot;
 
     static LaresDockPin pins[LARES_MAX_DOCK_ITEMS];
