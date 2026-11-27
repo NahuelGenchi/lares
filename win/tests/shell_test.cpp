@@ -155,7 +155,10 @@ static bool set_parts(bool bar, bool dock)
 {
     g_prefs.bar = bar;
     g_prefs.dock = dock;
-    if (!save_shell_prefs(shell_ini_path(false), g_prefs)) return false;
+    if (!save_shell_prefs(shell_ini_path(false), g_prefs)) {
+        std::printf("  the settings file could not be saved (%lu)\n", GetLastError());
+        return false;
+    }
     std::string said;
     bool ok = shell_service_sync(g_prefs, false, &said);
     if (!ok) std::printf("  sync said: %s\n", said.c_str());
@@ -363,6 +366,28 @@ int wmain(int argc, wchar_t** argv)
     if (lares_journal_open(&journal, nullptr) && lares_journal_add_backend(&journal, &lares_journal_registry)) {
         lares_journal_undo(&journal, kShellFeature, 0, 0, &result);
         check(run_value().empty(), "after undo: no start-up entry");
+    }
+    // No shell or guard crashed along the way.
+    {
+        WIN32_FIND_DATAW fd;
+        std::wstring pattern = std::wstring(g_dir) + L"\\crash\\*.txt";
+        HANDLE f = FindFirstFileW(pattern.c_str(), &fd);
+        int reports = 0;
+        if (f != INVALID_HANDLE_VALUE) {
+            do {
+                ++reports;
+                std::printf("  crash report: %ls\n", fd.cFileName);
+                std::wstring path = std::wstring(g_dir) + L"\\crash\\" + fd.cFileName;
+                FILE* r = _wfopen(path.c_str(), L"rb");
+                if (r) {
+                    char line[256];
+                    while (fgets(line, sizeof(line), r)) std::printf("    %s", line);
+                    fclose(r);
+                }
+            } while (FindNextFileW(f, &fd));
+            FindClose(f);
+        }
+        check(reports == 0, "nothing crashed");
     }
     cleanup();
     if (!g_real) PostThreadMessageW(g_bar_thread, WM_QUIT, 0, 0);
