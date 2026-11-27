@@ -2,9 +2,11 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
  * What the guard knows, kept in one small file so that it outlives the guard:
- * whether a guard is meant to be running, whether the Windows taskbar is
- * hidden and what auto-hide was before, and when the shell last crashed.
- * The file is written and flushed before the taskbar is touched.
+ * whether a guard is meant to be running, whether the Windows taskbar's
+ * windows are hidden, and when the shell last crashed. The file is written
+ * and flushed before the taskbar is touched. The taskbar's auto-hide, a
+ * setting of Windows' own, is in the change journal instead
+ * (taskbar_journal.h).
  */
 #ifndef LARES_GUARD_STATE_H
 #define LARES_GUARD_STATE_H
@@ -21,10 +23,15 @@ extern "C" {
 #define LARES_GUARD_CRASH_WINDOW (5ull * 60ull * 10000000ull)
 #define LARES_GUARD_CRASH_LIMIT 2
 
+/* While the taskbar is being given back the file says so, and the shell's
+ * side stops hiding a taskbar it sees shown. Either value means Lares still
+ * owes Windows its taskbar. */
+#define LARES_TASKBAR_HIDDEN 1
+#define LARES_TASKBAR_GIVING_BACK 2
+
 typedef struct lares_guard_state {
     int running;         /* a guard is meant to be running */
-    int hidden;          /* Lares hid the Windows taskbar */
-    int autohide_before; /* auto-hide before Lares hid it: 1, 0, or -1 unknown */
+    int hidden;          /* the Windows taskbar's windows: 0, LARES_TASKBAR_HIDDEN or LARES_TASKBAR_GIVING_BACK */
     DWORD guard_pid;
     DWORD twin_pid;
     DWORD shell_pid;

@@ -7,6 +7,7 @@
 extern "C" {
 #include "art.h"
 }
+#include "changes.h"
 #include "safe.h"
 
 #include <cmath>
@@ -118,6 +119,25 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
         cy = setting_line(rt, pal, ix, cy, iw);
         return toggle(cy, L"Hide the icon without a controller", nullptr, nullptr, &pad_prefs_.topbar_hide, on);
     });
+    y += kPageGap;
+
+    /* What the change journal holds (win/journal/journal.h), counted when
+     * the page opens and after an undo, not at every frame. */
+    if (changes_open_ < 0) changes_open_ = changes_open(opts_.dry_run);
+    heading(L"Windows");
+    y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
+        std::wstring title = changes_open_ == 0   ? L"Lares has changed nothing in Windows"
+                             : changes_open_ == 1 ? L"Lares has changed 1 Windows setting"
+                                                  : L"Lares has changed " + std::to_wstring(changes_open_) +
+                                                        L" Windows settings";
+        const wchar_t* sub = !changes_said_.empty() ? changes_said_.c_str()
+                             : changes_open_ == 0
+                                 ? L"Every Windows setting Lares changes is written down first, so it can be put back."
+                                 : L"Each was written down before it was changed. Undo puts them back as they "
+                                   L"were, and leaves alone any you have changed yourself since.";
+        if (changes_open_ == 0) return top + setting(rt, pal, ix, top, iw, title.c_str(), sub, nullptr, 1.0f, 27.0f);
+        return actions(top, title.c_str(), sub, { { L"Undo all", SettingsAction::UndoChanges } });
+    });
 
     content_height_ = (y - start_y) + kPagePadTop + kPagePadBottom;
 }
@@ -128,6 +148,13 @@ void MainWindow::settings_action(SettingsAction action)
     case SettingsAction::LeaveSafeMode:
         lares_safe_mode_mark(safe_scope(), 0);
         break;
+    case SettingsAction::UndoChanges: {
+        std::string said;
+        changes_undo(opts_.dry_run, said);
+        changes_said_.assign(said.begin(), said.end()); // plain English, so each byte is a letter
+        changes_open_ = -1;
+        break;
+    }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

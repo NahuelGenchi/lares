@@ -69,6 +69,10 @@ CliOptions parse_cli(int argc, const char* const* argv,
         opts.action = CliAction::Status;
         return opts;
     }
+    if (std::strcmp(first, "undo") == 0) {
+        opts.action = CliAction::Undo;
+        return opts;
+    }
     if (std::strcmp(first, "--help") == 0 || std::strcmp(first, "-h") == 0) {
         opts.action = CliAction::Help;
         return opts;
@@ -80,8 +84,9 @@ CliOptions parse_cli(int argc, const char* const* argv,
 
 const char* cli_usage()
 {
-    return "Usage: lares [--safe] [home | remote | restore | status | --section NAME]\n"
+    return "Usage: lares [--safe] [home | remote | restore | status | undo | --section NAME]\n"
            "With no word, Lares opens its window.\n"
+           "undo puts back every Windows setting Lares has changed, newest first.\n"
            "--safe starts Lares in safe mode: its bar and dock stay off and Windows'\n"
            "own taskbar is left alone, until you sign out or turn safe mode off in Settings.\n";
 }

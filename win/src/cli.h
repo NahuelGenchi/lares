@@ -11,6 +11,7 @@ enum class CliAction {
     Remote,
     Restore,
     Status,
+    Undo,
     Help,
     Error,
 };

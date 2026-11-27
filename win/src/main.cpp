@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "changes.h"
 #include "cli.h"
 #include "remote.h"
 #include "safe.h"
@@ -60,30 +61,6 @@ static void write_cli_output(const char* text)
     if (attached) FreeConsole();
 }
 
-/* Runs lares-guard.exe, from beside this program, with one word, and waits
- * for it. Does nothing when it is not there. */
-static void run_guard(const wchar_t* verb)
-{
-    wchar_t path[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return;
-    std::wstring guard(path);
-    size_t slash = guard.find_last_of(L"\\/");
-    if (slash == std::wstring::npos) return;
-    guard.resize(slash + 1);
-    guard += L"lares-guard.exe";
-    if (GetFileAttributesW(guard.c_str()) == INVALID_FILE_ATTRIBUTES) return;
-
-    std::wstring line = L"\"" + guard + L"\" " + verb;
-    STARTUPINFOW si = {};
-    si.cb = sizeof si;
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) return;
-    WaitForSingleObject(pi.hProcess, 10000);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-}
-
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -120,8 +97,8 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
     if (opts.safe) {
         lares_safe_mode_mark(opts.dry_run ? L"dry" : L"", 1);
         if (!opts.dry_run) {
-            run_guard(L"stop");
-            run_guard(L"restore");
+            lares::guard_command(L"stop");
+            lares::guard_command(L"restore");
         }
     }
 
@@ -132,6 +109,13 @@ int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR, int cmd_show)
     if (opts.action == lares::CliAction::Error) {
         write_cli_output(lares::cli_usage());
         return 2;
+    }
+    if (opts.action == lares::CliAction::Undo) {
+        std::string said;
+        bool ok = lares::changes_undo(opts.dry_run, said);
+        said += "\n";
+        write_cli_output(said.c_str());
+        return ok ? 0 : 1;
     }
     if (opts.action != lares::CliAction::Window) {
         HRESULT hr_cli = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
