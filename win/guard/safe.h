@@ -10,7 +10,12 @@
  * next sign-in.
  *   https://learn.microsoft.com/windows/win32/dataxchg/about-atom-tables
  *
- * kernel32 only, no C runtime: the guard links this.
+ * A global atom belongs to the window station, which a program joins when it
+ * loads user32. The mark must therefore be read and set from a program that
+ * has: Lares' window, or one of the guard's short-lived copies. The guard
+ * itself, which never loads user32, would see a table of its own.
+ *
+ * No C runtime: the guard links this.
  */
 #ifndef LARES_GUARD_SAFE_H
 #define LARES_GUARD_SAFE_H

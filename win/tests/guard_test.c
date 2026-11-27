@@ -694,8 +694,12 @@ static void case_safe_mode(void)
     check(read_state().running == 0 && read_state().crashes == 0, "state says stopped, no crash counted");
     check(run_guard_command(L"stop") == 0, "with no guard running it does nothing");
 
-    int shift = run_guard_command(L"do-shift");
-    check(shift == 30 || shift == 31, "Shift can be read");
+    /* The copy that decides: 30 is a normal start, 31 safe mode. Shift is
+     * not looked at here, since no start in a test is "at sign-in". */
+    check(run_guard_command(L"do-safe") == 30, "nothing asked and no mark: a normal start");
+    check(run_guard_command(L"do-safe --safe") == 31 && lares_safe_mode_marked(g_class), "--safe: safe mode, and the mark");
+    check(run_guard_command(L"do-safe") == 31, "the mark alone: safe mode");
+    lares_safe_mode_mark(g_class, 0);
 }
 
 static void case_real(void)

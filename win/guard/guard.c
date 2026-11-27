@@ -83,8 +83,8 @@
 #define DONE_SESSION_ENDING 11
 #define ANSWER_KEEP 20
 #define ANSWER_TRY_AGAIN 21
-#define SHIFT_FREE 30
-#define SHIFT_HELD 31
+#define SAFE_NO 30
+#define SAFE_YES 31
 
 static struct {
     wchar_t dir[MAX_PATH];
@@ -619,17 +619,28 @@ static int run_stop(void)
 }
 
 /* Safe mode (safe.h): the switch, Shift held at sign-in, or the mark an
- * earlier --safe left on this session. Shift is read by a short-lived copy,
- * because reading the keyboard needs user32. */
-static int safe_mode_wanted(int safe_switch, int at_sign_in)
+ * earlier --safe left on this session. Both Shift and the mark need user32:
+ * the keyboard is read through it, and the mark is a global atom, which
+ * belongs to the window station a program joins when it loads user32. So a
+ * short-lived copy decides, and marks the session when the answer is yes. */
+static int do_safe(int safe_switch, int at_sign_in)
 {
     wchar_t scope[64];
     scope[0] = 0;
     GetEnvironmentVariableW(L"LARES_GUARD_TASKBAR_CLASS", scope, ARRAYSIZE(scope));
-    int shift_held = at_sign_in && run_copy(L"do-shift", CHILD_WAIT_MS) == SHIFT_HELD;
-    if (!lares_safe_mode_wanted(safe_switch, at_sign_in, shift_held, lares_safe_mode_marked(scope))) return 0;
+    int shift_held = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0; /* asked first: it is what loads user32 */
+    if (!lares_safe_mode_wanted(safe_switch, at_sign_in, shift_held, lares_safe_mode_marked(scope))) return SAFE_NO;
     lares_safe_mode_mark(scope, 1); /* for the rest of the session */
-    return 1;
+    return SAFE_YES;
+}
+
+static int safe_mode_wanted(int safe_switch, int at_sign_in)
+{
+    static const wchar_t *const verbs[] = { L"do-safe", L"do-safe --safe", L"do-safe --sign-in",
+                                            L"do-safe --safe --sign-in" };
+    DWORD answer = run_copy(verbs[(safe_switch ? 1 : 0) + (at_sign_in ? 2 : 0)], CHILD_WAIT_MS);
+    if (answer == COPY_NOT_STARTED) answer = (DWORD)do_safe(safe_switch, at_sign_in);
+    return answer == SAFE_YES;
 }
 
 /* Safe mode: no shell is started, a guard that is running is stopped, and
@@ -679,7 +690,10 @@ static int guard_main(void)
         return run_guard();
     }
     if (take_word(rest, L"stop", &tail)) return run_stop();
-    if (take_word(rest, L"do-shift", &tail)) return (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? SHIFT_HELD : SHIFT_FREE;
+    if (take_word(rest, L"do-safe", &tail)) {
+        int safe_switch = take_word(tail, L"--safe", &tail);
+        return do_safe(safe_switch, take_word(tail, L"--sign-in", &tail));
+    }
     return 2;
 }
 
