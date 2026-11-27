@@ -9,6 +9,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     add_compile_options(/W4 /WX /utf-8 /permissive-)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+    # Keep the builder's folders out of what is built (issue #122): __FILE__
+    # starts at the repository instead of the drive, and a program names its
+    # symbol file without the folder. tools/privacy-gate.mjs --binaries checks it.
+    get_filename_component(LARES_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+    file(TO_NATIVE_PATH "${LARES_REPO_ROOT}/" LARES_TRIM_SOURCE)
+    file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}/" LARES_TRIM_BUILD)
+    set(LARES_TRIM_OPTIONS "/d1trimfile:${LARES_TRIM_BUILD}" "/d1trimfile:${LARES_TRIM_SOURCE}")
+    add_compile_options(${LARES_TRIM_OPTIONS})
+    add_link_options(/PDBALTPATH:%_PDB%)
 endif()
 
 # The one header of the Linux sources the port includes. Their whole folder
@@ -130,7 +140,7 @@ add_test(NAME lares-win-unit COMMAND lares-win-unit)
 # and TCP (BSD-3-Clause). Their own warnings aren't Lares' to fix.
 file(GLOB LARES_ZLIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib/*.c)
 add_library(lares_zlib STATIC ${LARES_ZLIB_SOURCES})
-set_property(TARGET lares_zlib PROPERTY COMPILE_OPTIONS /W3 /utf-8 /wd4996 /wd4267 /wd4244)
+set_property(TARGET lares_zlib PROPERTY COMPILE_OPTIONS /W3 /utf-8 /wd4996 /wd4267 /wd4244 ${LARES_TRIM_OPTIONS})
 target_include_directories(lares_zlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib)
 
 set(LWIP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip/src)
@@ -145,7 +155,7 @@ add_library(lares_lwip STATIC
     ${LWIP_DIR}/api/api_lib.c ${LWIP_DIR}/api/api_msg.c ${LWIP_DIR}/api/err.c ${LWIP_DIR}/api/if_api.c
     ${LWIP_DIR}/api/netbuf.c ${LWIP_DIR}/api/sockets.c ${LWIP_DIR}/api/tcpip.c
     share/net/sys_arch.c)
-set_property(TARGET lares_lwip PROPERTY COMPILE_OPTIONS /W3 /utf-8 /wd4996 /wd4267 /wd4244 /wd4312)
+set_property(TARGET lares_lwip PROPERTY COMPILE_OPTIONS /W3 /utf-8 /wd4996 /wd4267 /wd4244 /wd4312 ${LARES_TRIM_OPTIONS})
 target_include_directories(lares_lwip PUBLIC ${LWIP_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/share/net)
 
 # The Realtek driver, ported from Linux rtl8xxxu: GPL-2.0-only.
