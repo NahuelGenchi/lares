@@ -10,6 +10,7 @@ extern "C" {
 #include "changes.h"
 #include "crash_view.h"
 #include "safe.h"
+#include "shell_service.h"
 
 #include <shellapi.h>
 
@@ -74,6 +75,29 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
         });
         y += kPageGap;
     }
+
+    /* The shell's parts (docs/SHELL.md): each off until turned on here,
+     * each saying what it replaces and how to go back. In safe mode they
+     * stay off and cannot be turned on. */
+    bool unsafe = !lares_safe_mode_marked(safe_scope());
+    heading(L"Bar and dock");
+    y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
+        float cy = toggle(top, L"Top bar",
+                          L"A bar at the top of the screen with the app in front, the clock and quick readings. "
+                          L"Turn it off to give the top of the screen back.",
+                          nullptr, &shell_prefs_.bar, unsafe);
+        cy = setting_line(rt, pal, ix, cy, iw);
+        cy = toggle(cy, L"Dock",
+                    L"Takes the place of Windows' taskbar, with Start and your pinned and open apps. Turn it off "
+                    L"and Windows' own taskbar comes back.",
+                    nullptr, &shell_prefs_.dock, unsafe);
+        if (!shell_said_.empty()) {
+            cy = setting_line(rt, pal, ix, cy, iw);
+            cy += setting(rt, pal, ix, cy, iw, shell_said_.c_str(), nullptr, nullptr, 1.0f, 27.0f);
+        }
+        return cy;
+    });
+    y += kPageGap;
 
     /* Size: a dropdown at the right of its row. A size saved by hand
      * between the choices shows as it is, with none of them checked. */
@@ -167,6 +191,26 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
     });
 
     content_height_ = (y - start_y) + kPagePadTop + kPagePadBottom;
+}
+
+/* A shell part's switch: read the file again (the bar and dock change it
+ * too), flip that one setting, save, and put what runs in line. */
+void MainWindow::shell_toggle(bool* field)
+{
+    size_t offset = static_cast<size_t>(reinterpret_cast<char*>(field) - reinterpret_cast<char*>(&shell_prefs_));
+    bool value = !(*field);
+    std::wstring path = shell_ini_path(opts_.dry_run);
+    ShellPrefs fresh;
+    load_shell_prefs(path, fresh);
+    *reinterpret_cast<bool*>(reinterpret_cast<char*>(&fresh) + offset) = value;
+    shell_said_.clear();
+    if (!save_shell_prefs(path, fresh)) {
+        shell_said_ = L"The setting could not be saved.";
+        return;
+    }
+    shell_prefs_ = fresh;
+    std::string said;
+    if (!shell_service_sync(shell_prefs_, opts_.dry_run, &said)) shell_said_.assign(said.begin(), said.end());
 }
 
 void MainWindow::settings_action(SettingsAction action)

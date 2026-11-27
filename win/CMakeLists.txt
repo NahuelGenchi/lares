@@ -61,6 +61,7 @@ add_library(lares_win_core STATIC
     src/remote.cpp
     src/share_win.cpp
     src/shell_prefs.cpp
+    src/shell_service.cpp
     src/theme.cpp
     ../src/art.c
 )
@@ -260,6 +261,43 @@ target_link_libraries(lares_shell_draw PUBLIC gdiplus dwrite gdi32 user32 advapi
 add_executable(lares-shell-draw-test tests/shell_draw_test.c)
 target_link_libraries(lares-shell-draw-test PRIVATE lares_shell_draw)
 add_test(NAME lares-shell-draw-test COMMAND lares-shell-draw-test)
+
+# lares-shell.exe (issue #145): the top bar and the dock, started by
+# lares-guard.exe, which owns hiding the Windows taskbar. Plain C.
+add_executable(lares-shell WIN32
+    shell/main.c
+    shell/config.c
+    shell/actions.c
+    shell/popups.c
+    shell/win_tracker.c
+    shell/telemetry.c
+    shell/media.c
+    shell/hotkeys.c
+    shell/topbar.c
+    shell/dock.c
+    guard/guard_client.c
+    guard/state.c
+    shell/shell.manifest)
+target_include_directories(lares-shell PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/shell
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/guard
+    ${CMAKE_CURRENT_SOURCE_DIR}/journal
+    ${CMAKE_CURRENT_SOURCE_DIR}/crash
+    ${LARES_SHARED_INC})
+target_compile_definitions(lares-shell PRIVATE COBJMACROS CINTERFACE)
+target_link_libraries(lares-shell PRIVATE
+    lares_shell_draw lares_win_core lares_journal lares_crash
+    shell32 shlwapi ole32 oleaut32 uuid dwmapi propsys pdh iphlpapi ws2_32 wlanapi bthprops
+    runtimeobject psapi windowscodecs comctl32 powrprof)
+
+# The shell's switches turned on and off from the outside, through the code
+# Lares' Settings use, against a stand-in taskbar unless --real (issue #145).
+add_executable(lares-shell-test tests/shell_test.cpp)
+target_link_libraries(lares-shell-test PRIVATE lares_win_core lares_journal psapi)
+add_dependencies(lares-shell-test lares-shell lares-guard)
+add_test(NAME lares-shell-test COMMAND lares-shell-test)
+set_tests_properties(lares-shell-test PROPERTIES TIMEOUT 300)
 
 # ---------------------------------------------------------------------------
 # AirDrop without WSL (issue #109): lares-share.exe runs the Wi-Fi adapter

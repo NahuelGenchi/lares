@@ -359,6 +359,10 @@ std::string serialize_pad_ini(const PadPrefs& p)
 std::wstring config_dir_path()
 {
 #ifdef _WIN32
+    // Tests keep their settings in a folder of their own.
+    wchar_t test_dir[MAX_PATH];
+    DWORD td = GetEnvironmentVariableW(L"LARES_CONFIG_DIR", test_dir, MAX_PATH);
+    if (td > 0 && td < MAX_PATH) return std::wstring(test_dir);
     PWSTR appdata = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appdata)) && appdata) {
         std::wstring dir(appdata);

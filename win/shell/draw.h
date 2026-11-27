@@ -86,6 +86,8 @@ void surface_destroy(LayerSurface *s);
 void surface_present(HWND hwnd, LayerSurface *s, int x, int y, BYTE alpha);
 bool opaque_frame_begin(LayerSurface *s, int w, int h);
 void opaque_frame_end(HDC target_hdc, LayerSurface *s);
+/* Writes the surface as a PNG file (for checks); nonzero when written. */
+int surface_save_png(LayerSurface *s, const wchar_t *path);
 
 void draw_round_rect_fill(GpGraphics *g, float x, float y, float w, float h, float r, ARGB color);
 void draw_round_rect_stroke(GpGraphics *g, float x, float y, float w, float h, float r, ARGB color, float width);

@@ -67,6 +67,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           win/build/Release/lares-guard-test.exe --measure 30
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # ctest already turned the bar and dock on and off once, against a
+      # stand-in taskbar. This does it ten times in a row against the
+      # runner's own taskbar, with a shell that reserves its strips, and
+      # measures the shell at rest.
+      - name: Bar and dock switches, ten times, on the real taskbar, and the shell's measured cost
+        env:
+          LARES_TEST_REAL_TASKBAR: "1"
+        run: |
+          win/build/Release/lares-shell-test.exe --real --cycles 10 --measure 30
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # ctest already crashed the stand-in shell and checked its report; this
       # keeps one report and runs the privacy gate over it.
       - name: A crash report passes the privacy gate

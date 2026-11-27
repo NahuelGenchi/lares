@@ -177,6 +177,7 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
 
     pad_path_ = pad_ini_path(opts_.dry_run);
     load_pad_prefs(pad_path_, pad_prefs_);
+    load_shell_prefs(shell_ini_path(opts_.dry_run), shell_prefs_);
     pad_map_load_resource(hinst_, pad_map_);
     pads_.apply_nicknames(pad_prefs_);
     pad_list_ = pads_.list();
@@ -474,6 +475,8 @@ void MainWindow::select_section(const std::string& id, bool animate)
             changes_said_.clear();
             crash_looked_ = false;
             crash_said_.clear();
+            load_shell_prefs(shell_ini_path(opts_.dry_run), shell_prefs_);
+            shell_said_.clear();
             card_hits_.clear();
             drops_.clear();
             drop_open_.clear();
@@ -1385,6 +1388,13 @@ void MainWindow::on_mouse_down(float lx, float ly)
 
     for (const auto& hit : toggle_hits_) {
         if (hit.enabled && hit.field && point_in_rect(lx, ly, hit.rect)) {
+            const char* shell_begin = reinterpret_cast<const char*>(&shell_prefs_);
+            const char* f = reinterpret_cast<const char*>(hit.field);
+            if (f >= shell_begin && f < shell_begin + sizeof(shell_prefs_)) {
+                shell_toggle(hit.field);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
             *hit.field = !(*hit.field);
             save_pad_prefs(pad_path_, pad_prefs_);
             pad_service_sync(pad_prefs_, opts_.dry_run);

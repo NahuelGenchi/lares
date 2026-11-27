@@ -561,6 +561,22 @@ void surface_present(HWND hwnd, LayerSurface *s, int x, int y, BYTE alpha) {
     ReleaseDC(NULL, screen);
 }
 
+int surface_save_png(LayerSurface *s, const wchar_t *path) {
+    /* GDI+'s PNG encoder: {557CF406-1A04-11D3-9A73-0000F81EF32E} */
+    static const CLSID png = { 0x557cf406, 0x1a04, 0x11d3, { 0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e } };
+    if (!s || !s->bits || !path) return 0;
+    if (s->g) GdipFlush(s->g, GP_FLUSH_INTENTION_SYNC);
+    GpBitmap *bmp = NULL;
+    if (GdipCreateBitmapFromScan0(s->width, s->height, s->width * 4,
+                                  s->is_opaque ? GP_PIXELFORMAT_32BPP_RGB : GP_PIXELFORMAT_32BPP_PARGB,
+                                  (BYTE *)s->bits, &bmp) != GP_OK || !bmp) {
+        return 0;
+    }
+    int ok = GdipSaveImageToFile((GpImage *)bmp, path, &png, NULL) == GP_OK;
+    GdipDisposeImage((GpImage *)bmp);
+    return ok;
+}
+
 static GpPath *create_round_rect_path(float x, float y, float w, float h, float r) {
     GpPath *path = NULL;
     if (GdipCreatePath(GP_FILL_ALTERNATE, &path) != GP_OK) return NULL;
