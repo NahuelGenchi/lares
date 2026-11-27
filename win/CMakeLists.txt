@@ -67,6 +67,7 @@ target_include_directories(lares_win_core PUBLIC
     ${LARES_SHARED_INC}
 )
 target_link_libraries(lares_win_core PUBLIC
+    lares_journal
     pdh
     advapi32
     shell32

@@ -546,6 +546,16 @@ int wmain(int argc, wchar_t **argv)
 
     DeleteFileW(g_file);
     RegDeleteTreeW(HKEY_CURRENT_USER, g_key);
+    {
+        /* HKCU\Software\Lares holds only test keys: removed when left empty. */
+        HKEY k;
+        DWORD subkeys = 1, values = 1;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Lares", 0, KEY_READ, &k) == ERROR_SUCCESS) {
+            RegQueryInfoKeyW(k, NULL, NULL, NULL, &subkeys, NULL, NULL, &values, NULL, NULL, NULL, NULL);
+            RegCloseKey(k);
+            if (subkeys == 0 && values == 0) RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\Lares");
+        }
+    }
     printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

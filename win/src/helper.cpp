@@ -3,6 +3,8 @@
 #include "helper.h"
 extern "C" {
 #include "art.h"
+#include "journal.h"
+#include "journal_win.h"
 }
 
 #include <cmath>
@@ -155,6 +157,40 @@ static std::wstring helper_exe_path()
     return L"lares-pad.exe";
 }
 
+struct OwedTarget {
+    const wchar_t* target;
+    bool owed;
+};
+
+static int find_owed(const lares_journal_entry* e, void* ctx)
+{
+    auto* o = static_cast<OwedTarget*>(ctx);
+    if (std::strcmp(e->feature, kPadHelperFeature) == 0 && std::wcscmp(e->target, o->target) == 0) o->owed = true;
+    return 1;
+}
+
+bool pad_autostart_apply(lares_journal* journal, const wchar_t* target, bool wanted, const std::wstring& command)
+{
+    lares_journal_value current, absent, value;
+    lares_journal_value_absent(&absent);
+    if (!lares_journal_registry.read(target, &current, nullptr)) return false;
+
+    OwedTarget owed = { target, false };
+    lares_journal_list(journal, find_owed, &owed);
+    if (current.present && !owed.owed) {
+        ULONGLONG id = 0;
+        if (!lares_journal_begin(journal, kPadHelperFeature, "registry", target, &absent, &current, &id)) return false;
+        lares_journal_complete(journal, id);
+    }
+
+    if (wanted) {
+        if (!lares_journal_value_string(&value, command.c_str())) return false;
+    } else {
+        value = absent;
+    }
+    return lares_journal_change(journal, kPadHelperFeature, "registry", target, &value, nullptr) != 0;
+}
+
 void pad_service_sync(const PadPrefs& prefs, bool dry_run)
 {
     if (dry_run) return;
@@ -162,21 +198,12 @@ void pad_service_sync(const PadPrefs& prefs, bool dry_run)
     bool wanted = padconf_needs_helper(prefs);
     std::wstring exe = helper_exe_path();
 
-    // 1. Update HKCU\Software\Microsoft\Windows\CurrentVersion\Run\LaresPad
-    HKEY hkey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                      0, KEY_SET_VALUE, &hkey) == ERROR_SUCCESS) {
-        if (wanted && GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            std::wstring cmd = L"\"" + exe + L"\"";
-            RegSetValueExW(hkey, L"LaresPad", 0, REG_SZ,
-                           reinterpret_cast<const BYTE*>(cmd.c_str()),
-                           static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t)));
-        } else {
-            RegDeleteValueW(hkey, L"LaresPad");
-        }
-        RegCloseKey(hkey);
-    }
+    // 1. The start-up entry, through the change journal so that Undo all,
+    //    `lares undo` and an uninstaller can take it away again.
+    lares_journal journal;
+    if (lares_journal_open(&journal, nullptr) && lares_journal_add_backend(&journal, &lares_journal_registry))
+        pad_autostart_apply(&journal, kPadAutostartTarget,
+                            wanted && GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES, L"\"" + exe + L"\"");
 
     // 2. Notify, spawn, or stop running lares-pad.exe instance
     HWND existing = FindWindowW(kHelperWindowClass, nullptr);

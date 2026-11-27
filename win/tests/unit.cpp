@@ -8,6 +8,10 @@ extern "C" {
 #include "crash_view.h"
 #include "devices.h"
 #include "helper.h"
+extern "C" {
+#include "journal.h"
+#include "journal_win.h"
+}
 #include "hid_win.h"
 #include "hw.h"
 #include "livelight.h"
@@ -30,6 +34,73 @@ static int failures = 0;
         ++failures; \
     } \
 } while (0)
+
+// The tests' keys live under HKCU\Software\Lares, which Lares itself does not
+// use: removed again when the tests leave it empty.
+static void remove_empty_lares_key()
+{
+    HKEY k;
+    DWORD subkeys = 1, values = 1;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Lares", 0, KEY_READ, &k) != ERROR_SUCCESS) return;
+    RegQueryInfoKeyW(k, nullptr, nullptr, nullptr, &subkeys, nullptr, nullptr, &values, nullptr, nullptr, nullptr,
+                     nullptr);
+    RegCloseKey(k);
+    if (subkeys == 0 && values == 0) RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\Lares");
+}
+
+// The helper's start-up entry through the change journal (issue #133), on a
+// test key and a journal of the test's own: never the real Run key.
+static void test_pad_autostart()
+{
+    wchar_t temp[MAX_PATH], journal_path[MAX_PATH], key[96], target[160];
+    GetTempPathW(MAX_PATH, temp);
+    swprintf(journal_path, MAX_PATH, L"%lslares-unit-journal-%lu.log", temp, GetCurrentProcessId());
+    swprintf(key, 96, L"Software\\Lares\\PadAutostartTest-%lu", GetCurrentProcessId());
+    swprintf(target, 160, L"HKCU\\%ls|LaresPad", key);
+    DeleteFileW(journal_path);
+    RegDeleteTreeW(HKEY_CURRENT_USER, key);
+
+    auto value = [&](std::wstring& out) {
+        wchar_t text[260];
+        DWORD size = sizeof text;
+        if (RegGetValueW(HKEY_CURRENT_USER, key, L"LaresPad", RRF_RT_REG_SZ, nullptr, text, &size) != ERROR_SUCCESS)
+            return false;
+        out = text;
+        return true;
+    };
+    lares_journal j;
+    lares_journal_undo_result r = {};
+    std::wstring now;
+    lares_journal_open(&j, journal_path);
+    lares_journal_add_backend(&j, &lares_journal_registry);
+
+    // Off with no entry: nothing written, nothing journalled.
+    CHECK(lares::pad_autostart_apply(&j, target, false, L"\"pad.exe\""));
+    CHECK(!value(now) && lares_journal_list(&j, nullptr, nullptr) == 0);
+
+    // On, then on again with the same command, then off.
+    CHECK(lares::pad_autostart_apply(&j, target, true, L"\"pad.exe\""));
+    CHECK(value(now) && now == L"\"pad.exe\"");
+    CHECK(lares::pad_autostart_apply(&j, target, true, L"\"pad.exe\""));
+    CHECK(lares_journal_list(&j, nullptr, nullptr) == 1);
+    CHECK(lares::pad_autostart_apply(&j, target, false, L"\"pad.exe\""));
+    CHECK(!value(now) && lares_journal_list(&j, nullptr, nullptr) == 2);
+    CHECK(lares::pad_autostart_apply(&j, target, true, L"\"other\\pad.exe\""));
+    CHECK(lares_journal_undo(&j, nullptr, 0, 0, &r) && r.failed == 0);
+    CHECK(!value(now)); // undone all the way back to no entry
+
+    // An entry made by a Lares from before the journal: written down as
+    // Lares' own, so that undo removes it instead of putting it back.
+    RegSetKeyValueW(HKEY_CURRENT_USER, key, L"LaresPad", REG_SZ, L"\"old\\pad.exe\"", 28);
+    CHECK(lares::pad_autostart_apply(&j, target, true, L"\"new\\pad.exe\""));
+    CHECK(value(now) && now == L"\"new\\pad.exe\"");
+    CHECK(lares_journal_undo(&j, nullptr, 0, 0, &r) && r.failed == 0);
+    CHECK(!value(now));
+
+    DeleteFileW(journal_path);
+    RegDeleteTreeW(HKEY_CURRENT_USER, key);
+    remove_empty_lares_key();
+}
 
 // The program's name from a crash report's file name, as Settings shows it.
 static void test_crash_names()
@@ -921,6 +992,7 @@ int main()
     test_key_change_plan();
     test_hid_find();
     test_cli();
+    test_pad_autostart();
     test_crash_names();
     test_theme();
     test_config();
