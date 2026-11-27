@@ -56,3 +56,11 @@ jobs:
         run: ctest --test-dir win/build -C Release --output-on-failure
       - name: Privacy gate (built programs)
         run: node tools/privacy-gate.mjs --binaries win/build/Release
+      # The measurement script runs, compares, and writes nothing private.
+      - name: Measurement script (snapshot, compare, privacy gate)
+        shell: powershell
+        run: |
+          ./tools/measure.ps1 -Out win/build/snapshot.json -IdleSeconds 5 -Label ci
+          ./tools/measure.ps1 -Before win/build/snapshot.json -After win/build/snapshot.json
+          node tools/privacy-gate.mjs --files win/build/snapshot.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

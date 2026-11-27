@@ -32,6 +32,7 @@ Never describe something as working or complete unless a recorded check establis
 | `tests/awdl.c`, `tests/formats.c`, `tests/discovery.c`, `tests/share.c` | AirDrop's tests: AWDL frames, the formats, mDNS and Bluetooth LE, and whole transfers over TLS on loopback |
 | `tools/pad-map.py` | Draws the controller picture's map from the artwork; needs Pillow and NumPy, building doesn't |
 | `tools/privacy-gate.mjs`, `tools/privacy-allow.txt` | The privacy gate the Checks workflow runs over tracked files, commits and built Windows programs, and its exceptions (`CONTRIBUTING.md`) |
+| `tools/measure.ps1`, `docs/GAINS.md` | The Windows before and after measurement (memory, processes, idle processor and graphics use, start-up entries, named programs), its method and the measured results |
 | `tools/hidpp-probe.py` | Lists a Logitech device's HID++ 2.0 features and lighting state behind its receiver, with read requests only |
 | `.github/` | Issue form, PR template, the Checks and Project tracking workflows |
 
