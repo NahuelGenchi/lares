@@ -77,7 +77,35 @@ jobs:
         run: |
           win/build/Release/lares-shell-test.exe --real --cycles 10 --measure 30
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # ctest already crashed the stand-in shell and checked its report; this
+      # lares-view.exe (issue #151): both viewers drawn with made-up files,
+      # then a picture and a Markdown file opened for real on the runner's
+      # desktop, its own memory measured, and the program gone with its last
+      # window.
+      - name: Viewers drawn, measured, and ended with their last window
+        shell: powershell
+        run: |
+          $d = (Resolve-Path win/build).Path + "\view-check"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          $p = Start-Process -FilePath win/build/Release/lares-view.exe -ArgumentList "--snapshot `"$d`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Write-Output "the snapshot failed"; exit 1 }
+          Set-Content -Path "$d\notes.md" -Value "# Notes`n`nA **made-up** file.`n`n- [ ] one`n- [x] two" -Encoding UTF8
+          Add-Type 'using System; using System.Runtime.InteropServices; public static class W { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string c, string t); [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l); }'
+          $view = Start-Process -FilePath win/build/Release/lares-view.exe -ArgumentList "--view `"$d\viewer.png`"" -PassThru
+          Start-Sleep -Seconds 2
+          Start-Process -FilePath win/build/Release/lares-view.exe -ArgumentList "--text `"$d\notes.md`"" -Wait
+          Start-Sleep -Seconds 3
+          $view.Refresh()
+          Write-Output ("lares-view.exe with a picture and a Markdown file open: own memory {0:N1} MB, working set {1:N1} MB" -f ($view.PrivateMemorySize64 / 1MB), ($view.WorkingSet64 / 1MB))
+          $mods = $view.Modules | ForEach-Object { $_.ModuleName.ToLower() } | Where-Object { $_ -match 'd3d|dxgi|d2d1|webview|coreclr|clrjit|chrome' }
+          if ($mods) { Write-Output "loaded: $mods"; exit 1 }
+          $closed = 0
+          foreach ($c in 'LaresViewerWnd', 'LaresTextViewWnd') {
+            $h = [W]::FindWindowW($c, $null)
+            if ($h -ne [IntPtr]::Zero) { [W]::PostMessageW($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null; $closed++ }
+          }
+          if ($closed -ne 2) { Write-Output "expected two windows, found $closed"; exit 1 }
+          if (-not $view.WaitForExit(8000)) { Write-Output "lares-view.exe did not end with its last window"; exit 1 }
+          Write-Output "lares-view.exe ended with its last window"      # ctest already crashed the stand-in shell and checked its report; this
       # keeps one report and runs the privacy gate over it.
       - name: A crash report passes the privacy gate
         run: |

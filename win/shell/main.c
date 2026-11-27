@@ -113,6 +113,7 @@ static void reload(void) {
         quit_clean();
         return;
     }
+    if (g_cfg.launcher_enabled && had_launcher) launcher_on_settings_changed();
     if (g_cfg.launcher_enabled && !had_launcher) launcher_init(g_hInst);
     else if (!g_cfg.launcher_enabled && had_launcher) launcher_shutdown();
     if (g_cfg.clipboard_enabled && !had_clipboard) clipboard_init(g_hInst);

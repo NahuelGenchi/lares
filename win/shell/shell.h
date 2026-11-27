@@ -117,6 +117,7 @@ typedef struct {
     bool launcher_win_key;
     bool clipboard_enabled;
     bool screenshot_enabled;
+    bool viewers_enabled;
 } AppConfig;
 
 typedef struct {
@@ -283,6 +284,7 @@ void launcher_toggle(void);
 void launcher_hide(void);
 HWND launcher_get_prev_fg(void);
 void launcher_on_theme_changed(void);
+void launcher_on_settings_changed(void);
 void launcher_shutdown(void);
 int  launcher_snapshot(const wchar_t *typed, const wchar_t *png_path);
 
@@ -312,8 +314,25 @@ bool screenshot_is_active(void);
 void screenshot_shutdown(void);
 int  screenshot_snapshot(const wchar_t *png_path);
 
-/* hotkeys.c: shortcut ids, as WM_HOTKEY brings them. */
-#define LARES_HOTKEY_LAUNCHER     9001
+/* viewer.c and textview.c: lares-view.exe (issue #151) */
+void viewer_init(HINSTANCE hInst);
+void viewer_open(const wchar_t *file_path);
+bool viewer_is_supported_ext(const wchar_t *ext);
+void viewer_on_theme_changed(void);
+bool viewer_is_open(void);
+void viewer_shutdown(void);
+HWND viewer_window(void);
+int  viewer_snapshot(const wchar_t *png_path);
+void textview_init(HINSTANCE hInst);
+void textview_open(const wchar_t *file_path);
+bool textview_is_supported_ext(const wchar_t *ext);
+void textview_on_theme_changed(void);
+bool textview_is_open(void);
+void textview_shutdown(void);
+HWND textview_window(void);
+int  textview_snapshot(const wchar_t *png_path);
+
+/* hotkeys.c: shortcut ids, as WM_HOTKEY brings them. */#define LARES_HOTKEY_LAUNCHER     9001
 #define LARES_HOTKEY_SNIP_REGION  9002
 #define LARES_HOTKEY_SNIP_WINDOW  9003
 #define LARES_HOTKEY_SNIP_FULL    9004
@@ -344,5 +363,6 @@ void action_open_lares(const wchar_t *section);
 void action_open_processes(void);
 /* 0 a region, 1 the window in front, 2 the whole screen. */
 void action_screenshot(int mode);
+bool action_open_viewer(int kind, const wchar_t *path);
 
 #endif /* LARES_SHELL_H */

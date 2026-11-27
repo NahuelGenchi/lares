@@ -84,6 +84,7 @@ void config_load_all(void) {
     g_cfg.launcher_win_key = p.launcher && p.launcher_windows_key;
     g_cfg.clipboard_enabled = p.clipboard;
     g_cfg.screenshot_enabled = p.screenshot;
+    g_cfg.viewers_enabled = p.viewers;
 
     static LaresDockPin pins[LARES_MAX_DOCK_ITEMS];
     int n = lares_shell_pins_load(pins, LARES_MAX_DOCK_ITEMS);
