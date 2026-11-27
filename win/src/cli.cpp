@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "cli.h"
 #include <cstring>
+#include <vector>
 
 namespace lares {
 
@@ -26,6 +27,19 @@ CliOptions parse_cli(int argc, const char* const* argv,
     if (env_section && (*env_section != '\0')) {
         opts.section = env_section;
     }
+
+    // --safe may stand anywhere and goes with anything else.
+    std::vector<const char*> rest;
+    rest.reserve(static_cast<size_t>(argc > 0 ? argc : 0));
+    for (int i = 0; i < argc; ++i) {
+        if (i > 0 && argv[i] && std::strcmp(argv[i], "--safe") == 0) {
+            opts.safe = true;
+            continue;
+        }
+        rest.push_back(argv[i]);
+    }
+    argc = static_cast<int>(rest.size());
+    argv = rest.data();
 
     if (argc <= 1) return opts;
 
@@ -66,8 +80,10 @@ CliOptions parse_cli(int argc, const char* const* argv,
 
 const char* cli_usage()
 {
-    return "Usage: lares [home | remote | restore | status | --section NAME]\n"
-           "With no word, Lares opens its window.\n";
+    return "Usage: lares [--safe] [home | remote | restore | status | --section NAME]\n"
+           "With no word, Lares opens its window.\n"
+           "--safe starts Lares in safe mode: its bar and dock stay off and Windows'\n"
+           "own taskbar is left alone, until you sign out or turn safe mode off in Settings.\n";
 }
 
 } // namespace lares

@@ -87,6 +87,15 @@ private:
         OpenSunshineWeb,
     };
 
+    // Buttons on the Settings page.
+    enum class SettingsAction {
+        LeaveSafeMode,
+    };
+    struct SettingsHit {
+        D2D1_RECT_F rect;
+        SettingsAction action;
+    };
+
     struct RemoteHit {
         D2D1_RECT_F rect;
         RemoteActionKind kind;
@@ -359,6 +368,9 @@ private:
     PadPrefs pad_prefs_;
     std::wstring pad_path_;
     std::vector<ToggleHit> toggle_hits_;
+    std::vector<SettingsHit> settings_hits_;
+    void settings_action(SettingsAction action);
+    const wchar_t* safe_scope() const { return opts_.dry_run ? L"dry" : L""; }
     std::vector<NavCardHit> card_hits_;
     std::vector<Dropdown> drops_;          // the page's dropdowns, as last drawn
     std::string drop_open_;                // the key of the one whose list shows; empty for none

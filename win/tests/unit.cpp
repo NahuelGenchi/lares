@@ -65,6 +65,21 @@ static void test_cli()
 
     const char* a8[] = { "lares", "bogus" };
     CHECK(lares::parse_cli(2, a8).action == lares::CliAction::Error);
+
+    // --safe stands anywhere and goes with anything else.
+    CHECK(!lares::parse_cli(1, a0).safe);
+    const char* s1[] = { "lares", "--safe" };
+    o = lares::parse_cli(2, s1);
+    CHECK(o.safe && o.action == lares::CliAction::Window);
+    const char* s2[] = { "lares", "--safe", "--section", "settings" };
+    o = lares::parse_cli(4, s2);
+    CHECK(o.safe && o.action == lares::CliAction::Window && o.section == "settings");
+    const char* s3[] = { "lares", "status", "--safe" };
+    o = lares::parse_cli(3, s3);
+    CHECK(o.safe && o.action == lares::CliAction::Status);
+    const char* s4[] = { "lares", "--safe", "bogus" };
+    o = lares::parse_cli(3, s4);
+    CHECK(o.safe && o.action == lares::CliAction::Error);
 }
 
 static void test_theme()

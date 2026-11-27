@@ -7,6 +7,7 @@
 extern "C" {
 #include "art.h"
 }
+#include "safe.h"
 
 #include <cmath>
 #include <cwchar>
@@ -38,6 +39,37 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
         if (!measuring_) toggle_hits_.push_back({ sw, field, enabled });
         return cy + h;
     };
+
+    /* A setting with its buttons under the text, at the right. */
+    struct Button {
+        const wchar_t* text;
+        SettingsAction action;
+    };
+    auto actions = [&](float cy, const wchar_t* title, const wchar_t* sub, const std::vector<Button>& buttons) {
+        float btn_h = lh_ + 18.0f;
+        float by = cy + setting(rt, pal, ix, cy, iw, title, sub, nullptr, 1.0f, 27.0f) + kHalf;
+        float right = ix + iw;
+        for (auto it = buttons.rbegin(); it != buttons.rend(); ++it) {
+            float bw = chip_width(it->text);
+            D2D1_RECT_F rc = D2D1::RectF(right - bw, by, right, by + btn_h);
+            chip(rt, pal, rc, it->text, true);
+            if (!measuring_) settings_hits_.push_back({ rc, it->action });
+            right -= bw + kGap;
+        }
+        return by + btn_h;
+    };
+
+    /* Safe mode shows only while it is on (win/guard/safe.h). */
+    if (lares_safe_mode_marked(safe_scope())) {
+        heading(L"Safe mode");
+        y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
+            return actions(top, L"Safe mode is on",
+                           L"Lares' bar and dock stay off and Windows' own taskbar is left alone, until you sign "
+                           L"out or turn safe mode off.",
+                           { { L"Turn safe mode off", SettingsAction::LeaveSafeMode } });
+        });
+        y += kPageGap;
+    }
 
     /* Size: a dropdown at the right of its row. A size saved by hand
      * between the choices shows as it is, with none of them checked. */
@@ -88,6 +120,16 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
     });
 
     content_height_ = (y - start_y) + kPagePadTop + kPagePadBottom;
+}
+
+void MainWindow::settings_action(SettingsAction action)
+{
+    switch (action) {
+    case SettingsAction::LeaveSafeMode:
+        lares_safe_mode_mark(safe_scope(), 0);
+        break;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 // ================================================================== Remote

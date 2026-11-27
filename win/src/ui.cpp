@@ -469,6 +469,7 @@ void MainWindow::select_section(const std::string& id, bool animate)
             editing_pad_path_.clear();
             editing_nickname_.clear();
             toggle_hits_.clear();
+            settings_hits_.clear();
             card_hits_.clear();
             drops_.clear();
             drop_open_.clear();
@@ -739,7 +740,8 @@ bool MainWindow::interactive_rect_at(float lx, float ly, D2D1_RECT_F* out, bool 
     }
     // In the order on_mouse_down tries them.
     for (const auto& h : toggle_hits_) { if (h.enabled && point_in_rect(lx, ly, h.rect)) return found(h.rect); }
-    for (const auto& d : drops_)       { if (d.enabled && point_in_rect(lx, ly, d.button)) return found(d.button); }
+    for (const auto& h : settings_hits_) { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
+    for (const auto& d : drops_)      { if (d.enabled && point_in_rect(lx, ly, d.button)) return found(d.button); }
     for (const auto& h : card_hits_)  { if (point_in_rect(lx, ly, h.rect)) return found(h.rect); }
     for (auto it = share_hits_.rbegin(); it != share_hits_.rend(); ++it) {
         if (!point_in_rect(lx, ly, it->rect)) continue;
@@ -1206,6 +1208,7 @@ void MainWindow::draw_pad_picture(ID2D1RenderTarget* rt, const Palette& pal,
 void MainWindow::draw_page(ID2D1RenderTarget* rt, const Palette& pal, float client_w, float client_h)
 {
     toggle_hits_.clear();
+    settings_hits_.clear();
     card_hits_.clear();
     drops_.clear();
     remote_hits_.clear();
@@ -1382,6 +1385,13 @@ void MainWindow::on_mouse_down(float lx, float ly)
             save_pad_prefs(pad_path_, pad_prefs_);
             pad_service_sync(pad_prefs_, opts_.dry_run);
             InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+    }
+
+    for (const auto& hit : settings_hits_) {
+        if (point_in_rect(lx, ly, hit.rect)) {
+            settings_action(hit.action);
             return;
         }
     }

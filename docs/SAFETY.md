@@ -38,7 +38,7 @@ A shell must also end itself at once when it crashes, as the stand-in does, or W
 
 ### Small on purpose
 
-The guard and the twin use `kernel32` alone: no window, no C runtime, and one wait on process handles, so no polling. While the taskbar is hidden that wait ends every four seconds to see whether the shell still says "still answering". Everything that needs Windows' window library (hiding, giving back, the message) runs in a short-lived copy of the same program, so the two that stay never load it.
+The guard and the twin use `kernel32` alone: no window, no C runtime, and one wait on process handles, so no polling. While the taskbar is hidden that wait ends every four seconds to see whether the shell still says "still answering". Everything that needs Windows' window library (hiding, giving back, the message) runs in a short-lived copy of the same program, so the two that stay never load it. Asking Explorer about auto-hide waits on Explorer; a copy that has not finished after five seconds is ended, so an Explorer that stops answering cannot stop the guard or its twin. That is the design and it is **not checked**: no test makes Explorer hang.
 
 | Reading | Value | Where | Status |
 | :--- | ---: | :--- | :--- |
@@ -51,6 +51,27 @@ The guard and the twin use `kernel32` alone: no window, no C runtime, and one wa
 | `lares-guard.exe`, size on disk | 19 KB | | confirmed |
 
 The target is under 1 MB of own memory. It is met on a clean Windows. On the development PC a third-party program loads itself, and Windows' window and drawing libraries with it, into every process that starts; the 2.4 MB there is that program's cost, in the guard as in every other process, and nothing the guard can avoid. `lares-guard-test --measure <seconds>` prints these readings, and the Checks workflow runs it on every pull request.
+
+## Safe mode
+
+Safe mode starts Lares with every shell part off and leaves the Windows desktop exactly as it is. Three things turn it on (issue [#128](https://github.com/NahuelGenchi/lares/issues/128)):
+
+- **`--safe`**, on `lares.exe` (with anything else on its command line, or alone) or as `lares-guard run --safe <shell>`.
+- **Shift held while signing in.** The guard looks at Shift only when it is started with `--sign-in`, which is what Lares' start-up entry will pass; at any other start, typing a capital letter would be enough. Hold Shift until the desktop is fully shown.
+- **A mark on the session** that either of the two leaves behind, so that nothing starts the bar again by itself later in the same session. The mark is a Windows global atom: no file, no process, and it is gone at the next sign-in. Reading the keyboard and the mark both need Windows' window library, so one of the guard's short-lived copies decides at each start; the guard itself still never loads it.
+
+In safe mode the guard starts no shell. A guard that is already running is asked to end the bar and give the taskbar back (`lares-guard stop` does the same on its own), and anything an earlier guard left hidden comes back. Lares' Settings shows a **Safe mode** card while it is on, with **Turn safe mode off**.
+
+| Case | How | Result | Status |
+| :--- | :--- | :--- | :--- |
+| `lares-guard run --safe` | automatic, stand-in taskbar | no guard, twin or shell stays; the taskbar is never touched; the session is marked | confirmed |
+| A plain start in a marked session | automatic | nothing starts | confirmed |
+| `--safe` while the bar is running | automatic | bar ended, taskbar back, nothing counted as a crash | confirmed |
+| `lares-guard stop` | automatic | the same, and nothing to do when no guard runs | confirmed |
+| The decision (switch, Shift, mark; Shift only at sign-in) | unit test | | confirmed |
+| `lares --safe`, in any position on the command line | unit test | | confirmed |
+| The Safe mode card and **Turn safe mode off** | window check in a dry run, light and dark | the card shows, and goes when the button is clicked | confirmed |
+| Shift held at a real sign-in | | | **not checked**: it needs a sign-out on a PC with Lares' start-up entry, which does not exist until the bar is in this repository. Only the decision is tested, with Shift as a plain yes or no |
 
 ## What was checked
 
