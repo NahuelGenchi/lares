@@ -7,7 +7,7 @@
 #include "state.h"
 
 #define STATE_FILE L"\\guard.state"
-#define STATE_TEMP L"\\guard.state.new"
+#define STATE_TEMP L"\\guard.state.new."
 #define STATE_HEADER "lares-guard-state 1"
 
 int lares_guard_state_dir(wchar_t *dir, int capacity)
@@ -139,14 +139,30 @@ static int state_path(const wchar_t *dir, const wchar_t *name, wchar_t *path, in
     return 1;
 }
 
+/* Another program (a scanner, a backup) may hold the file for a moment.
+ * Reading and replacing it wait for that, a quarter of a second at most. */
+#define BUSY_TRIES 50
+#define BUSY_WAIT_MS 5
+
+static int busy(void)
+{
+    DWORD e = GetLastError();
+    return e == ERROR_SHARING_VIOLATION || e == ERROR_ACCESS_DENIED || e == ERROR_LOCK_VIOLATION;
+}
+
 void lares_guard_state_load(const wchar_t *dir, lares_guard_state *state)
 {
     wchar_t path[MAX_PATH + 32];
     char text[1024];
+    HANDLE f = INVALID_HANDLE_VALUE;
     ZeroMemory(state, sizeof *state);
     if (!state_path(dir, STATE_FILE, path, ARRAYSIZE(path))) return;
-    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    for (int i = 0; i < BUSY_TRIES; ++i) {
+        f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f != INVALID_HANDLE_VALUE || !busy()) break;
+        Sleep(BUSY_WAIT_MS);
+    }
     if (f == INVALID_HANDLE_VALUE) return;
     DWORD got = 0;
     if (ReadFile(f, text, sizeof text, &got, NULL)) lares_guard_state_parse(text, (int)got, state);
@@ -155,11 +171,20 @@ void lares_guard_state_load(const wchar_t *dir, lares_guard_state *state)
 
 int lares_guard_state_save(const wchar_t *dir, const lares_guard_state *state)
 {
-    wchar_t path[MAX_PATH + 32], temp[MAX_PATH + 32];
+    wchar_t path[MAX_PATH + 48], temp[MAX_PATH + 48], digits[12];
     char text[1024];
     if (!state_path(dir, STATE_FILE, path, ARRAYSIZE(path)) ||
-        !state_path(dir, STATE_TEMP, temp, ARRAYSIZE(temp)))
+        !state_path(dir, STATE_TEMP, temp, ARRAYSIZE(temp) - 12))
         return 0;
+    /* Each process writes a new file of its own, so two never share one. */
+    DWORD pid = GetCurrentProcessId();
+    int at = lstrlenW(temp), n = 0;
+    do {
+        digits[n++] = (wchar_t)(L'0' + pid % 10);
+        pid /= 10;
+    } while (pid);
+    while (n) temp[at++] = digits[--n];
+    temp[at] = 0;
     CreateDirectoryW(dir, NULL);
 
     int length = lares_guard_state_format(state, text, sizeof text);
@@ -172,7 +197,30 @@ int lares_guard_state_save(const wchar_t *dir, const lares_guard_state *state)
         DeleteFileW(temp);
         return 0;
     }
-    return MoveFileExW(temp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    for (int i = 0; i < BUSY_TRIES; ++i) {
+        if (MoveFileExW(temp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return 1;
+        if (!busy()) break;
+        Sleep(BUSY_WAIT_MS);
+    }
+    DeleteFileW(temp);
+    return 0;
+}
+
+void lares_guard_state_tidy(const wchar_t *dir)
+{
+    wchar_t pattern[MAX_PATH + 48], path[MAX_PATH + 48 + 16];
+    WIN32_FIND_DATAW found;
+    if (!state_path(dir, STATE_TEMP L"*", pattern, ARRAYSIZE(pattern))) return;
+    HANDLE search = FindFirstFileW(pattern, &found);
+    if (search == INVALID_HANDLE_VALUE) return;
+    do {
+        if (lstrlenW(dir) + lstrlenW(found.cFileName) + 2 > ARRAYSIZE(path)) continue;
+        lstrcpyW(path, dir);
+        lstrcatW(path, L"\\");
+        lstrcatW(path, found.cFileName);
+        DeleteFileW(path);
+    } while (FindNextFileW(search, &found));
+    FindClose(search);
 }
 
 int lares_guard_state_add_crash(lares_guard_state *s, ULONGLONG now)

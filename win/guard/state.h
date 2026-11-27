@@ -43,6 +43,10 @@ void lares_guard_state_load(const wchar_t *dir, lares_guard_state *state);
  * power cut leaves either the old state or the new one. 0 on failure. */
 int lares_guard_state_save(const wchar_t *dir, const lares_guard_state *state);
 
+/* Removes the half-written files that processes killed in the middle of a
+ * save left behind. */
+void lares_guard_state_tidy(const wchar_t *dir);
+
 /* Text form, for the file and for tests. Returns the length written. */
 int lares_guard_state_format(const lares_guard_state *state, char *text, int capacity);
 void lares_guard_state_parse(const char *text, int length, lares_guard_state *state);

@@ -207,19 +207,22 @@ static void save_state(void)
  *      by the twin once the guard is gone, and by the guard itself only
  *      when a copy cannot be started -------------------------------------- */
 
-static void do_hide(void)
+/* Nonzero when the taskbar is hidden. */
+static int do_hide(void)
 {
     lares_guard_state s;
     lares_guard_state_load(g.dir, &s);
     if (!s.hidden) {
-        /* The file says "hidden" before anything is hidden. */
+        /* The file says "hidden" before anything is hidden; if it cannot be
+         * made to say so, nothing is hidden. */
         s.autohide_before = lares_taskbar_get_autohide();
         s.hidden = 1;
-        lares_guard_state_save(g.dir, &s);
+        if (!lares_guard_state_save(g.dir, &s)) return 0;
     }
     lares_taskbar_show(0);
     if (s.autohide_before == 0 && lares_taskbar_get_autohide() == 0) lares_taskbar_set_autohide(1);
     lares_taskbar_show(0);
+    return 1;
 }
 
 static int do_restore(void)
@@ -456,6 +459,7 @@ static int run_guard(void)
     if (!only || GetLastError() == ERROR_ALREADY_EXISTS) return 0;
 
     /* What an earlier guard left hidden, if anything, comes back first. */
+    lares_guard_state_tidy(g.dir);
     lares_guard_state_load(g.dir, &g.st);
     if (g.st.hidden) restore_taskbar();
     g.st.running = 1;
@@ -565,7 +569,7 @@ static int guard_main(void)
     if (GetEnvironmentVariableW(L"LARES_GUARD_TASKBAR_CLASS", test_class, ARRAYSIZE(test_class)) > 0)
         lares_taskbar_use_test_class(test_class);
 
-    if (take_word(rest, L"do-hide", &tail)) return do_hide(), DONE;
+    if (take_word(rest, L"do-hide", &tail)) return do_hide() ? DONE : 2;
     if (take_word(rest, L"do-restore", &tail)) return do_restore();
     if (take_word(rest, L"do-ask", &tail)) return do_ask();
     if (take_word(rest, L"restore", &tail)) return run_restore();

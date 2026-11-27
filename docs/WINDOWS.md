@@ -133,6 +133,8 @@ The Linux build (`Makefile` and Ubuntu 26.04 `make check`) stays completely inta
 | `win/src/helper_main.cpp`, `win/src/livelight.cpp` | `lares-pad.exe`: hidden window, `Shell_NotifyIconW` tray icon and menu, G715 live lighting, alerts, keep-awake |
 | `win/src/share_win.cpp`, `win/src/ui_share.cpp`, `win/src/ble_wake.cpp` | AirDrop's end in `lares.exe`: what's set up, the session with `lares-share.exe` and what it says (`share_win.cpp`), the Share page (`ui_share.cpp`) and the Bluetooth LE wake-up (`ble_wake.cpp`) |
 | `win/share/` | `lares-share.exe`: the RTL8188EU driver, the AWDL link, IPv6, TLS and AirDrop (see *AirDrop without WSL*), with `src/awdl/node.c` and `frame.c` built as they are; tested by `lares-share-unit` (`win/tests/share_*.cpp`) |
+| `win/guard/` | `lares-guard.exe`, the watchdog that gives the Windows taskbar back (`guard.c`), the taskbar itself (`taskbar.c`), the state that outlives the guard (`state.c`) and the shell's side (`guard_client.c`); see [SAFETY.md](SAFETY.md). Built without the C runtime, `kernel32` only while it waits |
+| `win/tests/test_shell.c`, `win/tests/guard_test.c`, `win/tests/guard_state_test.c` | `lares-test-shell.exe`, a stand-in bar for tests that is never installed, and `lares-guard-test.exe`, which kills guard, twin and shell in every order against a stand-in taskbar (`--real`: the PC's own; `--measure N`: the guard's memory and processor time) |
 | `win/third_party/` | lwIP 2.2.1 and zlib 1.3.1, unchanged, for `lares-share.exe` only (`win/third_party/README.md`) |
 | `.github/workflows/checks.yml` | Keeps existing Ubuntu 26.04 `make check` job unchanged and adds a parallel `windows-latest` MSVC build + unit-test job once `win/` lands |
 

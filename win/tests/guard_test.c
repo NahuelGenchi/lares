@@ -43,6 +43,8 @@ static DWORD g_bar_thread;
 static HANDLE g_bar_done;
 static const char *g_case = "";
 
+#include "state.h"
+
 int guard_state_tests(void); /* guard_state_test.c */
 
 static void note(const char *format, ...)
@@ -155,10 +157,16 @@ typedef struct {
 static snapshot read_state(void)
 {
     snapshot s = { 0 };
-    char line[128];
-    FILE *f = _wfopen(g_state_file, L"rb");
-    if (!f) return s;
-    while (fgets(line, sizeof line, f)) {
+    char text[1024], *line, *next = NULL;
+    DWORD got = 0;
+    /* Opened so that the guard can replace the file meanwhile. */
+    HANDLE f = CreateFileW(g_state_file, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return s;
+    if (!ReadFile(f, text, sizeof text - 1, &got, NULL)) got = 0;
+    CloseHandle(f);
+    text[got] = 0;
+    for (line = strtok_s(text, "\n", &next); line; line = strtok_s(NULL, "\n", &next)) {
         unsigned long long v = 0;
         char key[32] = "";
         if (sscanf(line, "%31s %llu", key, &v) < 1) continue;
@@ -169,7 +177,6 @@ static snapshot read_state(void)
         else if (!strcmp(key, "shell")) s.shell = (DWORD)v;
         else if (!strcmp(key, "crash")) ++s.crashes;
     }
-    fclose(f);
     return s;
 }
 
@@ -385,6 +392,14 @@ static void begin_running(const char *name, int bars, int autohide)
     begin(name, bars, autohide);
     start_guard(NULL);
     check_within(healthy, 5000, "shell ready and taskbar hidden");
+    if (!healthy()) {
+        snapshot s = read_state();
+        note("state: running %d hidden %d crashes %d; guard %s, twin %s, shell %s; taskbars %d of %d visible, "
+             "auto-hide %d; %d of this test's processes; message %s",
+             s.running, s.hidden, s.crashes, guard_alive(s.guard) ? "alive" : "gone",
+             guard_alive(s.twin) ? "alive" : "gone", shell_alive(s.shell) ? "alive" : "gone", bars_visible(),
+             bars_total(), bars_autohide(), our_processes(0), message_up() ? "shown" : "not shown");
+    }
 }
 
 /* ---- the cases ------------------------------------------------------ */
@@ -733,6 +748,7 @@ int wmain(int argc, wchar_t **argv)
 
     g_case = "clean up";
     clean_up();
+    lares_guard_state_tidy(g_dir);
     DeleteFileW(g_state_file);
     RemoveDirectoryW(g_dir);
     printf("%d checks, %d failed\n", g_checks, g_failures);
