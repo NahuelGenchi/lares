@@ -40,7 +40,7 @@
 #define CLICK_BUTTON (WM_USER + 102) /* TDM_CLICK_BUTTON */
 #define LIMIT_MS 2000
 
-static wchar_t g_dir[MAX_PATH], g_state_file[MAX_PATH], g_journal_file[MAX_PATH], g_class[64];
+static wchar_t g_dir[MAX_PATH], g_state_file[MAX_PATH], g_journal_file[MAX_PATH], g_crash_dir[MAX_PATH], g_class[64];
 static wchar_t g_setting_class[80];
 static HWND g_setting;
 static wchar_t g_guard[MAX_PATH], g_shell[MAX_PATH];
@@ -49,6 +49,7 @@ static DWORD g_bar_thread;
 static HANDLE g_bar_done;
 static const char *g_case = "";
 
+#include "crash.h"
 #include "journal.h"
 #include "safe.h"
 #include "state.h"
@@ -395,6 +396,8 @@ static int wait_for(int (*condition)(void), int limit_ms)
 }
 
 
+static void guard_reports(void);
+
 /* After a failed check: the change journal's raw lines. */
 static void journal_dump(void)
 {
@@ -427,6 +430,7 @@ static void check_within(int (*condition)(void), int limit_ms, const char *what)
             note("    at %d ms: %d visible, auto-hide %d, journal %d", g_seen.ms[i], g_seen.visible[i], g_seen.autohide[i],
                  g_seen.journal[i]);
         journal_dump();
+        guard_reports();
     }
 }
 
@@ -494,6 +498,41 @@ static void clean_up(void)
     if (g_real) run_guard_command(L"restore");
     else DeleteFileW(g_journal_file);
     DeleteFileW(g_state_file);
+}
+
+/* After a failed check: a crash report from the guard itself says why, and
+ * is printed (it holds nothing private). */
+static void guard_reports(void)
+{
+    wchar_t pattern[MAX_PATH + 32], path[MAX_PATH * 2];
+    char text[LARES_CRASH_REPORT_MAX];
+    WIN32_FIND_DATAW found;
+    swprintf(pattern, ARRAYSIZE(pattern), L"%ls\\lares-guard-*", g_crash_dir);
+    HANDLE search = FindFirstFileW(pattern, &found);
+    if (search == INVALID_HANDLE_VALUE) return;
+    do {
+        swprintf(path, ARRAYSIZE(path), L"%ls\\%ls", g_crash_dir, found.cFileName);
+        if (lares_crash_read(path, text, sizeof text) > 0) printf("%s", text);
+    } while (FindNextFileW(search, &found));
+    FindClose(search);
+}
+
+/* The stand-in shell's crash reports, which the test sends to its own folder. */
+static void remove_crash_reports(void)
+{
+    wchar_t pattern[MAX_PATH + 8], path[MAX_PATH * 2];
+    WIN32_FIND_DATAW found;
+    swprintf(pattern, ARRAYSIZE(pattern), L"%ls\\*", g_crash_dir);
+    HANDLE search = FindFirstFileW(pattern, &found);
+    if (search != INVALID_HANDLE_VALUE) {
+        do {
+            if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            swprintf(path, ARRAYSIZE(path), L"%ls\\%ls", g_crash_dir, found.cFileName);
+            DeleteFileW(path);
+        } while (FindNextFileW(search, &found));
+        FindClose(search);
+    }
+    RemoveDirectoryW(g_crash_dir);
 }
 
 static int journal_exists(void)
@@ -934,6 +973,10 @@ int wmain(int argc, wchar_t **argv)
     SetEnvironmentVariableW(L"LARES_GUARD_STATE_DIR", g_dir);
     swprintf(g_journal_file, ARRAYSIZE(g_journal_file), L"%ls\\journal.log", g_dir);
     SetEnvironmentVariableW(L"LARES_JOURNAL", g_journal_file);
+    /* The stand-in shell crashes on purpose here, many times: its reports go
+     * to the test's own folder, not the user's. */
+    swprintf(g_crash_dir, ARRAYSIZE(g_crash_dir), L"%ls\\crash", g_dir);
+    SetEnvironmentVariableW(L"LARES_CRASH_DIR", g_crash_dir);
 
     if (g_real) {
         HWND bar = FindWindowW(L"Shell_TrayWnd", NULL);
@@ -996,6 +1039,7 @@ int wmain(int argc, wchar_t **argv)
     clean_up();
     lares_guard_state_tidy(g_dir);
     DeleteFileW(g_state_file);
+    remove_crash_reports();
     RemoveDirectoryW(g_dir);
     printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -1,0 +1,9 @@
+/* SPDX-FileCopyrightText: 2026 Nahuel Genchi
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Made by CMake from win/crash/version.h.in when the build is configured:
+ * the version crash reports name. "dev" and the commit the build came from
+ * until Lares has releases.
+ */
+#pragma once
+#define LARES_VERSION "@LARES_VERSION@"

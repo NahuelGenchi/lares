@@ -26,6 +26,27 @@ endif()
 set(LARES_SHARED_INC ${CMAKE_CURRENT_BINARY_DIR}/shared)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/../src/art.h ${LARES_SHARED_INC}/art.h COPYONLY)
 
+# The version crash reports name (issue #130): "dev" and the commit, taken
+# when the build is configured.
+set(LARES_VERSION "dev")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=7 HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE LARES_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET
+        RESULT_VARIABLE LARES_GIT_RESULT)
+    if(LARES_GIT_RESULT EQUAL 0 AND LARES_GIT_COMMIT)
+        set(LARES_VERSION "dev ${LARES_GIT_COMMIT}")
+    endif()
+endif()
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/crash/version.h.in ${LARES_SHARED_INC}/lares_version.h @ONLY)
+
+# Local crash reports (issue #130): written on this PC only, private details
+# removed. Plain Win32 with no C runtime; the guard builds the file itself,
+# with its own options.
+add_library(lares_crash STATIC crash/crash.c)
+target_include_directories(lares_crash PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/crash ${LARES_SHARED_INC})
+
 # Shared pure-C core modules (zero GLib or Win32 dependencies)
 add_library(lares_win_core STATIC
     src/cli.cpp
@@ -71,6 +92,7 @@ target_include_directories(lares_ble PRIVATE
 add_executable(lares WIN32
     src/main.cpp
     src/changes.cpp
+    src/crash_view.cpp
     guard/safe.c
     src/font.cpp
     src/ui.cpp
@@ -91,6 +113,7 @@ target_include_directories(lares PRIVATE
 target_link_libraries(lares PRIVATE
     lares_win_core
     lares_journal
+    lares_crash
     d2d1
     dwrite
     dwmapi
@@ -118,11 +141,13 @@ target_include_directories(lares-pad PRIVATE
 )
 target_link_libraries(lares-pad PRIVATE
     lares_win_core
+    lares_crash
 )
 
 # Unit tests on plain data (CLI, theme interpolation, INI config, shared art)
 add_executable(lares-win-unit
     tests/unit.cpp
+    src/crash_view.cpp
 )
 target_include_directories(lares-win-unit PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -130,6 +155,7 @@ target_include_directories(lares-win-unit PRIVATE
 )
 target_link_libraries(lares-win-unit PRIVATE
     lares_win_core
+    lares_crash
 )
 
 enable_testing()
@@ -147,9 +173,13 @@ add_executable(lares-guard WIN32
     guard/taskbar.c
     guard/taskbar_journal.c
     journal/journal.c
+    crash/crash.c
     guard/guard.manifest
 )
-target_include_directories(lares-guard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/journal)
+target_include_directories(lares-guard PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/journal
+    ${CMAKE_CURRENT_SOURCE_DIR}/crash
+    ${LARES_SHARED_INC})
 target_compile_options(lares-guard PRIVATE /GS-)
 target_compile_definitions(lares-guard PRIVATE $<$<NOT:$<CONFIG:Debug>>:LARES_NO_CRT>)
 target_link_options(lares-guard PRIVATE
@@ -171,12 +201,13 @@ add_executable(lares-test-shell WIN32
 target_include_directories(lares-test-shell PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/guard
     ${CMAKE_CURRENT_SOURCE_DIR}/journal)
+target_link_libraries(lares-test-shell PRIVATE lares_crash)
 add_executable(lares-guard-test tests/guard_test.c tests/guard_state_test.c)
 target_include_directories(lares-guard-test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/guard
     ${CMAKE_CURRENT_SOURCE_DIR}/journal)
 target_sources(lares-guard-test PRIVATE guard/state.c guard/safe.c journal/journal.c)
-target_link_libraries(lares-guard-test PRIVATE shell32 user32)
+target_link_libraries(lares-guard-test PRIVATE shell32 user32 lares_crash)
 add_dependencies(lares-guard-test lares-guard lares-test-shell)
 add_test(NAME lares-guard-test COMMAND lares-guard-test)
 set_tests_properties(lares-guard-test PROPERTIES TIMEOUT 600)
@@ -197,6 +228,12 @@ target_link_libraries(lares_journal PUBLIC advapi32 user32)
 add_executable(lares-journal-test tests/journal_test.c)
 target_link_libraries(lares-journal-test PRIVATE lares_journal)
 add_test(NAME lares-journal-test COMMAND lares-journal-test)
+
+# A crash of the stand-in shell, and the report it leaves.
+add_executable(lares-crash-test tests/crash_test.c)
+target_link_libraries(lares-crash-test PRIVATE lares_crash)
+add_dependencies(lares-crash-test lares-test-shell)
+add_test(NAME lares-crash-test COMMAND lares-crash-test)
 
 # ---------------------------------------------------------------------------
 # AirDrop without WSL (issue #109): lares-share.exe runs the Wi-Fi adapter

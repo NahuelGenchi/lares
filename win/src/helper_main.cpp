@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Nahuel Genchi
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "config.h"
+#include "crash.h"
 #include "devices.h"
+#include "lares_version.h"
 #include "helper.h"
 #include "hw.h"
 #include "livelight.h"
@@ -469,6 +471,8 @@ private:
 
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, PWSTR cmd_line, int)
 {
+    // A crash writes a report on this PC only (win/crash/crash.h).
+    lares_crash_install("lares-pad", LARES_VERSION);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     wchar_t dry_buf[16] = {};

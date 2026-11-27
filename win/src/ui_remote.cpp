@@ -8,7 +8,10 @@ extern "C" {
 #include "art.h"
 }
 #include "changes.h"
+#include "crash_view.h"
 #include "safe.h"
+
+#include <shellapi.h>
 
 #include <cmath>
 #include <cwchar>
@@ -138,6 +141,30 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
         if (changes_open_ == 0) return top + setting(rt, pal, ix, top, iw, title.c_str(), sub, nullptr, 1.0f, 27.0f);
         return actions(top, title.c_str(), sub, { { L"Undo all", SettingsAction::UndoChanges } });
     });
+    y += kPageGap;
+
+    /* The newest crash report (win/crash/crash.h), looked for when the page
+     * opens. It is never sent: the user can read it and copy it. */
+    if (!crash_looked_) {
+        crash_looked_ = true;
+        crash_report_ = crash_latest();
+    }
+    heading(L"Crash reports");
+    y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
+        if (crash_report_.path.empty())
+            return top + setting(rt, pal, ix, top, iw, L"No crash report on this PC",
+                                 L"If a Lares program crashes, it writes a short report here, on this PC only. "
+                                 L"Nothing is ever sent.",
+                                 nullptr, 1.0f, 27.0f);
+        std::wstring title = L"Last crash: " + crash_report_.when;
+        std::wstring sub = crash_report_.program + L" stopped. ";
+        sub += !crash_said_.empty() ? crash_said_
+                                    : L"The report stays on this PC and holds no names of your files or windows, "
+                                      L"and no account names. Copy it into a bug report if you like.";
+        return actions(top, title.c_str(), sub.c_str(),
+                       { { L"Show me the report", SettingsAction::ShowCrashReport },
+                         { L"Copy report", SettingsAction::CopyCrashReport } });
+    });
 
     content_height_ = (y - start_y) + kPagePadTop + kPagePadBottom;
 }
@@ -155,6 +182,14 @@ void MainWindow::settings_action(SettingsAction action)
         changes_open_ = -1;
         break;
     }
+    case SettingsAction::ShowCrashReport:
+        if (!crash_report_.path.empty())
+            ShellExecuteW(hwnd_, L"open", crash_report_.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        break;
+    case SettingsAction::CopyCrashReport:
+        crash_said_ = crash_copy(hwnd_, crash_report_.path) ? L"Copied. Paste it into a bug report if you like."
+                                                            : L"The report could not be copied.";
+        break;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

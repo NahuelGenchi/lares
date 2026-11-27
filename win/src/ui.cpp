@@ -472,6 +472,8 @@ void MainWindow::select_section(const std::string& id, bool animate)
             settings_hits_.clear();
             changes_open_ = -1;
             changes_said_.clear();
+            crash_looked_ = false;
+            crash_said_.clear();
             card_hits_.clear();
             drops_.clear();
             drop_open_.clear();
