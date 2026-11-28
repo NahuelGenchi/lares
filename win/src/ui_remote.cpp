@@ -149,11 +149,16 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
                     L"files with them again.",
                     nullptr, &shell_prefs_.viewers, unsafe);
         cy = setting_line(rt, pal, ix, cy, iw);
-        return toggle(cy, L"Lares in Open with",
-                      L"Adds Lares to Open with for Markdown files and pictures, then opens Windows' Default "
-                      L"apps page, where you choose. Lares never makes itself a default. Turn it off and Lares "
-                      L"leaves Open with.",
-                      nullptr, &shell_prefs_.file_types, unsafe);
+        cy = toggle(cy, L"Lares in Open with",
+                    L"Adds Lares to Open with for Markdown files and pictures, then opens Windows' Default "
+                    L"apps page, where you choose. Lares never makes itself a default. Turn it off and Lares "
+                    L"leaves Open with.",
+                    nullptr, &shell_prefs_.file_types, unsafe);
+        if (!filetypes_said_.empty()) {
+            cy = setting_line(rt, pal, ix, cy, iw);
+            cy += setting(rt, pal, ix, cy, iw, filetypes_said_.c_str(), nullptr, nullptr, 1.0f, 27.0f);
+        }
+        return cy;
     });
     y += kPageGap;
 
@@ -278,7 +283,7 @@ void MainWindow::shell_toggle(bool* field)
             save_shell_prefs(path, fresh);
             shell_prefs_ = fresh;
         }
-        shell_said_.assign(said.begin(), said.end());
+        filetypes_said_.assign(said.begin(), said.end()); // plain English, so each byte is a letter
         return;
     }
     if (!shell_service_sync(shell_prefs_, opts_.dry_run, &said)) shell_said_.assign(said.begin(), said.end());

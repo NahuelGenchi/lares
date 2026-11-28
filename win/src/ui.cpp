@@ -480,6 +480,7 @@ void MainWindow::select_section(const std::string& id, bool animate)
             load_shell_prefs(shell_ini_path(opts_.dry_run), shell_prefs_);
             if (!opts_.dry_run) shell_prefs_.file_types = filetypes_offered_now();
             shell_said_.clear();
+            filetypes_said_.clear();
             card_hits_.clear();
             drops_.clear();
             drop_open_.clear();

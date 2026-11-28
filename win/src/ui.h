@@ -373,6 +373,7 @@ private:
     std::wstring pad_path_;
     ShellPrefs shell_prefs_;     // the shell's parts (win/src/shell_service.h), read when Settings opens
     std::wstring shell_said_;    // why the last switch of a shell part did not work, if it did not
+    std::wstring filetypes_said_; // what Lares in Open with did, when there is something to say (issue #159)
     void shell_toggle(bool* field);
     std::vector<ToggleHit> toggle_hits_;
     std::vector<SettingsHit> settings_hits_;
