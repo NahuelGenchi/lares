@@ -80,6 +80,8 @@ jobs:
       # runner's own taskbar, with a shell that reserves its strips, and
       # measures the shell at rest.
       - name: Bar and dock switches, ten times, on the real taskbar, and the shell's measured cost
+        # It takes about four minutes; a hang must not hold the runner.
+        timeout-minutes: 15
         env:
           LARES_TEST_REAL_TASKBAR: "1"
         run: |
