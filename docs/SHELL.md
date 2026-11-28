@@ -18,17 +18,18 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | `lares-files.exe`: Files with tabs, Quick Look and drag and drop, with a Files switch | [#153](https://github.com/NahuelGenchi/lares/issues/153) | confirmed drawn with a made-up folder, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
 | AirDrop in the top bar, on Lares' own sharing code, with its own switch | [#155](https://github.com/NahuelGenchi/lares/issues/155) | confirmed drawn from made-up state, light and dark; switch on and off in tests; not used with a real device through the bar |
 | Device indicators in the bar for a controller, headphones, keyboard and mouse, and Remote mode, with their own switch | [#157](https://github.com/NahuelGenchi/lares/issues/157) | confirmed drawn from made-up state, light and dark; switch on and off in tests; not seen reacting to real devices |
-| Per-user file types for Markdown and images (optional) | | planned |
+| Lares offered for Markdown and pictures, per user, through the change journal, ending at Windows' Default apps page (optional) | [#159](https://github.com/NahuelGenchi/lares/issues/159) | confirmed with tests under a test key and, on GitHub's runner, for real; the Default apps step not checked by a person |
 
 ## Budget
 
-| Reading | Target |
-| :--- | :--- |
-| `lares-shell.exe`, own (private) memory at idle | about 25 MB |
-| The same, in active use | under 50 MB |
-| Graphics card use at idle | 0% |
-| Processor time at idle | near zero |
-| Loaded in any shell process | no Direct3D device, WebView2, Chromium or .NET |
+| Reading | Target | Measured |
+| :--- | :--- | :--- |
+| `lares-shell.exe`, own (private) memory at idle | about 25 MB | **confirmed**: 15.6 to 16.5 MB on GitHub's Windows runner, 16.5 MB with bar, dock, the AirDrop button and the device indicators all on ([#161](https://github.com/NahuelGenchi/lares/pull/161)); 18.7 MB on the development PC with the same on |
+| The same, in active use | under 50 MB | **not measured**: no check drives the shell's popups, launcher and tools as a person would yet |
+| Graphics card use at idle | 0% | **reported**: not read directly; no shell process loads Direct3D, so the shell gives the graphics card no drawing work of its own |
+| Processor time at idle | near zero | **confirmed**: 0.10% of one core on the runner, 0.21% on the development PC |
+| Loaded in any shell process | no Direct3D device, WebView2, Chromium or .NET | **confirmed** for `lares-shell.exe`, `lares-view.exe` and `lares-files.exe` in the Checks workflow |
+| `lares-view.exe` and `lares-files.exe` | nothing while unused | **confirmed**: they start on demand and end with their last window; 5.4 MB and 5.6 MB own memory with files open, on the runner |
 
 ## The drawing engine
 
@@ -385,10 +386,31 @@ They are not built twice: `win/src/indicators.cpp` asks Lares' own code (`hid_fi
 | :--- | :--- | :--- |
 | All five drawn from made-up state, the controller low, light and dark | `lares-shell --snapshot`, development PC, looked at | confirmed |
 | The switch on and off beside the bar, the same shell carrying on | `lares-shell-test`, stand-in taskbar; ten times in the Checks workflow | confirmed when the workflow passes |
-| The shell's own memory and processor time at rest with bar, dock, the AirDrop button and the indicators on | `lares-shell-test --measure 30`: once on the development PC (a test copy that hides nothing), and in the Checks workflow | development PC: 18.7 MB own memory (working set 9.2 MB), 62.5 ms of processor time in 30 seconds (0.21% of one core); the workflow's reading is in its log |
+| The shell's own memory and processor time at rest with bar, dock, the AirDrop button and the indicators on | `lares-shell-test --measure 30`: once on the development PC (a test copy that hides nothing), and in the Checks workflow | development PC: 18.7 MB own memory (working set 9.2 MB), 62.5 ms of processor time in 30 seconds (0.21% of one core); GitHub's runner ([#161](https://github.com/NahuelGenchi/lares/pull/161)): 16.5 MB (working set 8.5 MB), 31.2 ms (0.10%) |
 | An icon appearing and going as a real controller, headphones, keyboard or mouse comes and goes, and with Remote mode | | **not checked**: needs the devices plugged and unplugged on a desktop where the shell is in use |
 
-### Known limits
+## Markdown and pictures in Lares' viewers
+
+Issue [#159](https://github.com/NahuelGenchi/lares/issues/159), the optional last part. **Lares in Open with** (Settings, **Files and viewers**, off by default) adds Lares to **Open with** for `.md` and `.markdown` and for `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp` and `.gif`, for this user only, then opens Windows' **Default apps** page on Lares (`ms-settings:defaultapps?registeredAppUser=Lares`), where the user chooses. Lares never makes itself a default: it never writes a `UserChoice` key, let alone the hash Windows guards it with.
+
+What it adds, all under `HKCU`, through the change journal (feature `file-types`, [docs/SAFETY.md](SAFETY.md)), so **Undo all** or turning the switch off takes away exactly that:
+
+| Where | What |
+| :--- | :--- |
+| `Software\Classes\Lares.Markdown`, `Lares.Image` | two ProgIDs, each with its name, `lares-view.exe` as icon, and `lares-view.exe --text "%1"` or `--view "%1"` to open |
+| `Software\Classes\.md\OpenWithProgids` and the others | a value naming the ProgID, which puts Lares in **Open with** without taking anything from what is there |
+| `Software\Lares\Capabilities`, `Software\RegisteredApplications` | Lares under its own name, with its file associations, which is what lets the Default apps page list it |
+
+Each key Lares makes is written down too, as a `registry-key` change, a kind the journal gained for this: undo deletes a key only once it is empty, so a key someone else has since put something in stays. A key that was already there (`.png` often is) gets no entry and stays. The Settings switch shows what the registry says, not what was saved, so it reads off after **Undo all**.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| No change touches `UserChoice` or leaves the root it was given | `lares-win-unit` | confirmed |
+| Offered and withdrawn under a test key with a journal of the test's own: the ProgIDs, Open with and Capabilities there, then every key the offer made gone and the journal file removed | `lares-win-unit`, development PC and the Checks workflow | confirmed |
+| Offered for real on GitHub's runner: Windows lists `lares-view.exe` among the handlers for `.md` and `.png`, then no longer after undo, and the ProgIDs are gone | `lares-win-unit` with `LARES_TEST_REAL_FILETYPES=1`, a step of its own in the Checks workflow | confirmed when the workflow passes; its line is in the log |
+| The Default apps page opening on Lares, and choosing Lares there | | **not checked**: it needs a person at a desktop; the development PC's file types are never touched by a check |
+
+## Known limits
 
 - The bar and dock are drawn at fixed pixel sizes on the primary screen, as the prototype drew them: at 150% or 200% display scale they are small, and a second screen gets neither. Scaling and more screens belong to the test matrix of stage 4.
 - Start opens Windows' own Start menu unless the launcher is on.

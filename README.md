@@ -61,6 +61,7 @@ Lares for Windows is getting its own top bar, dock, launcher, Files and viewers,
 | Files (`lares-files.exe`) with tabs, Quick Look and drag and drop, with a Files switch | confirmed drawn with a made-up folder and, in the Checks workflow, opened, measured and ended with its last window |
 | AirDrop in the top bar, with its own switch, on the same sharing code, adapter and contacts as Share | confirmed drawn from made-up state and switched in tests; not yet used with a real device through the bar |
 | Device indicators in the bar (controller, headphones, keyboard, mouse, Remote mode), each opening its page in Lares, with their own switch | confirmed drawn from made-up state and switched in tests; not yet seen reacting to real devices |
+| Lares offered for Markdown and pictures in Open with, ending at Windows' Default apps page where you choose; never set as a default by itself | confirmed in tests and, on GitHub's runner, for real |
 
 ## Build and install
 

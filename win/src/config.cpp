@@ -172,6 +172,7 @@ ShellPrefs parse_shell_ini(const std::string& text)
             else if (key == "screenshot") p.screenshot = parse_bool(val, p.screenshot);
             else if (key == "files") p.files = parse_bool(val, p.files);
             else if (key == "viewers") p.viewers = parse_bool(val, p.viewers);
+            else if (key == "file-types") p.file_types = parse_bool(val, p.file_types);
         } else if (group == "top-bar") {
             if (key == "auto-hide") p.bar_auto_hide = parse_bool(val, p.bar_auto_hide);
             else if (key == "week-starts") p.week_starts_monday = (val == "monday");
@@ -229,6 +230,7 @@ std::string serialize_shell_ini(const ShellPrefs& p)
         << "screenshot=" << b(p.screenshot) << "\n"
         << "files=" << b(p.files) << "\n"
         << "viewers=" << b(p.viewers) << "\n"
+        << "file-types=" << b(p.file_types) << "\n"
         << "\n[top-bar]\n"
         << "auto-hide=" << b(p.bar_auto_hide) << "\n"
         << "week-starts=" << (p.week_starts_monday ? "monday" : "sunday") << "\n"
