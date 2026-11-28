@@ -220,6 +220,7 @@ The dock starts with File Explorer, the browser Windows opens links with, a term
 | The same, ten times in a row, on the real taskbar with a shell that reserves its strips | `lares-shell-test --real --cycles 10`, the Checks workflow on GitHub's Windows runner | confirmed: 278 checks, 0 failed, in the workflow of the pull request that brought the bar and dock in (#146) |
 | Bar and dock drawn, light and dark | `lares-shell --snapshot`, development PC, looked at | confirmed |
 | The Bar and dock card in Settings, light and dark, both off | window check in a dry run, development PC | confirmed |
+| A dock on auto-hide that hid while a full-screen window was in front comes back: its 2-pixel edge strip is down while the window is in front and up once it goes ([#163](https://github.com/NahuelGenchi/lares/issues/163)) | `lares-shell-test --real`, a made-up full-screen window on GitHub's runner; the same test failed on the code before the fix | confirmed when the workflow passes |
 | Clicking each button, the menus, dragging, auto-hide and the three dock modes on a real desktop | | **not checked**: on the development PC another bar hides the taskbar and must not be disturbed. Needs a Windows 11 test account |
 | A real Explorer restart, sign-out, change of screens | | **not checked**, as for the guard ([docs/SAFETY.md](SAFETY.md)) |
 

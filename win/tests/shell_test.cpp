@@ -387,8 +387,125 @@ static void cleanup()
     }
 }
 
+static LRESULT CALLBACK plain_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    return DefWindowProcW(h, m, w, l);
+}
+
+static HWND sensor_window()
+{
+    return FindWindowW(L"LaresDockSensorWnd", nullptr);
+}
+
+// A window of the test's own on a thread of its own that always answers its
+// messages, whatever the test's main thread is waiting for: a window that
+// stops answering can hold up any program that sends to every window.
+struct TestWindow {
+    bool full_screen = false;
+    HWND hwnd = nullptr;
+    HANDLE ready = nullptr;
+    HANDLE thread = nullptr;
+    DWORD tid = 0;
+};
+
+static DWORD WINAPI test_window_thread(LPVOID p)
+{
+    auto* t = static_cast<TestWindow*>(p);
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = plain_proc;
+    wc.hInstance = inst;
+    wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    wc.lpszClassName = L"LaresShellTestWindow";
+    RegisterClassW(&wc); // a second time fails harmlessly
+    if (t->full_screen)
+        t->hwnd = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, L"Full screen", WS_POPUP | WS_VISIBLE, 0, 0,
+                                  GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), nullptr, nullptr,
+                                  inst, nullptr);
+    else
+        t->hwnd = CreateWindowExW(0, wc.lpszClassName, L"Another window", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 200,
+                                  200, 400, 300, nullptr, nullptr, inst, nullptr);
+    if (t->hwnd) {
+        // Windows lets a program bring its window to the front right after a
+        // key press; the runner has no one at its keyboard to press one.
+        INPUT alt[2] = {};
+        alt[0].type = alt[1].type = INPUT_KEYBOARD;
+        alt[0].ki.wVk = alt[1].ki.wVk = VK_MENU;
+        alt[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(2, alt, sizeof(INPUT));
+        SetForegroundWindow(t->hwnd);
+    }
+    SetEvent(t->ready);
+    MSG m;
+    while (GetMessageW(&m, nullptr, 0, 0) > 0) {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+    if (t->hwnd) DestroyWindow(t->hwnd);
+    return 0;
+}
+
+static bool open_test_window(TestWindow& t, bool full_screen)
+{
+    t.full_screen = full_screen;
+    t.ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    t.thread = CreateThread(nullptr, 0, test_window_thread, &t, 0, &t.tid);
+    if (!t.thread) return false;
+    WaitForSingleObject(t.ready, 5000);
+    HWND w = t.hwnd;
+    return w && wait_for([w] { return GetForegroundWindow() == w; }, 3000);
+}
+
+static void close_test_window(TestWindow& t)
+{
+    if (t.thread) {
+        PostThreadMessageW(t.tid, WM_QUIT, 0, 0);
+        WaitForSingleObject(t.thread, 5000);
+        CloseHandle(t.thread);
+    }
+    if (t.ready) CloseHandle(t.ready);
+    t = TestWindow{};
+}
+
+// Issue #163, on GitHub's runner only (--real): an auto-hidden dock that hid
+// while a full-screen window was in front kept its edge strip down for good,
+// so it never came back. A made-up full-screen window comes first, the dock
+// starts in auto-hide and hides behind it, the window goes and another takes
+// the front, and the strip must come up.
+static void dock_comes_back()
+{
+    std::printf("the dock after a full-screen window\n");
+    TestWindow cover;
+    if (!open_test_window(cover, true)) {
+        std::printf("  skipped: the made-up full-screen window could not come to the front\n");
+        close_test_window(cover);
+        return;
+    }
+    g_prefs.dock_hide = DockHide::AutoHide;
+    check(set_parts(false, true), "dock on, hiding by itself, behind a full-screen window");
+    check(wait_for([] { return shell_window() != nullptr; }, 10000), "behind a full-screen window: the shell runs");
+    Sleep(3000); // the dock comes up, sees the full screen and hides
+    HWND s = sensor_window();
+    check(s != nullptr && !IsWindowVisible(s), "behind a full-screen window: no edge strip");
+
+    close_test_window(cover);
+    TestWindow other;
+    if (!open_test_window(other, false)) std::printf("  note: the other window did not come to the front\n");
+    check(wait_for([] { HWND w = sensor_window(); return w && IsWindowVisible(w); }, 8000),
+          "the full-screen window gone: the edge strip is up, so the dock can come back");
+    close_test_window(other);
+
+    g_prefs.dock_hide = DockHide::WhenCovered;
+    check(set_parts(false, false), "dock off");
+    check(wait_for([] { return shell_window() == nullptr; }, 10000), "dock off: the shell is gone");
+    check(wait_for([] { return count_processes(L"lares-guard.exe") == 0; }, 10000), "dock off: no guard is left");
+    std::printf("  done\n");
+}
+
 int wmain(int argc, wchar_t** argv)
 {
+    // Unbuffered, so a run cut short shows in the log how far it got.
+    setvbuf(stdout, nullptr, _IONBF, 0);
     int cycles = 1, seconds = 0;
     for (int i = 1; i < argc; ++i) {
         if (!wcscmp(argv[i], L"--cycles") && i + 1 < argc) cycles = _wtoi(argv[++i]);
@@ -442,6 +559,7 @@ int wmain(int argc, wchar_t** argv)
         cycle(i);
         cycle_tools(i);
     }
+    if (g_real) dock_comes_back();
     if (seconds > 0) measure(seconds);
 
     // What the journal still holds after every switch went off: nothing owed.

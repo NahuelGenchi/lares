@@ -531,15 +531,32 @@ void dock_repaint(void) {
     if (!g_dock_hidden || g_dock_vis > 0.0f) dock_present();
 }
 
+/* The 2-pixel strip at the bottom edge is the only way back to a hidden
+ * dock, so it is up whenever the dock is fully hidden and nothing is full
+ * screen (issue #163). Checked on every window change, not only when the
+ * dock hides: a dock that hid while a full-screen window was in front (a
+ * video, a game, Task View, the lock screen) would otherwise never come
+ * back. Nothing is done when the strip is already as it should be. */
+static void dock_sync_sensor(void) {
+    if (!g_hSensorWnd) return;
+    bool want = g_cfg.dock_enabled && g_dock_hidden && g_dock_vis <= 0.0f &&
+                !win_tracker_is_fullscreen_active();
+    bool up = IsWindowVisible(g_hSensorWnd) != FALSE;
+    if (want == up) return;
+    if (want) {
+        ShowWindow(g_hSensorWnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(g_hSensorWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    } else {
+        ShowWindow(g_hSensorWnd, SW_HIDE);
+    }
+}
+
 static void dock_anim_done(void) {
     KillTimer(g_hDockWnd, TIMER_DOCK_ANIM);
     g_dock_vis = g_dock_vis_to;
     if (g_dock_hidden) {
         ShowWindow(g_hDockWnd, SW_HIDE);
-        if (g_hSensorWnd && !win_tracker_is_fullscreen_active()) {
-            ShowWindow(g_hSensorWnd, SW_SHOWNOACTIVATE);
-            SetWindowPos(g_hSensorWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
+        dock_sync_sensor();
     } else {
         dock_present();
     }
@@ -663,6 +680,7 @@ static void evaluate_autohide(void) {
             else SetTimer(g_hDockWnd, TIMER_DOCK_SHOW, (UINT)g_cfg.dock_delay_show_ms, NULL);
         }
     }
+    dock_sync_sensor();
 }
 
 static void activate_render_item(const DockRenderItem *ri, bool force_new) {
