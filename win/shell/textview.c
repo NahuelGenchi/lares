@@ -4858,6 +4858,11 @@ void textview_open(const wchar_t *file_path) {
         g_find_open = false;
         tv_refresh_brushes();
         tv_load_file(file_path);
+        /* A test copy never takes the focus from the user's windows. */
+        if (g_cfg.isolated) {
+            ShowWindow(g_hTvWnd, SW_SHOWNOACTIVATE);
+            return;
+        }
         ShowWindow(g_hTvWnd, IsIconic(g_hTvWnd) ? SW_RESTORE : SW_SHOW);
         SetForegroundWindow(g_hTvWnd);
         if (g_hEdit && IsWindowVisible(g_hEdit)) SetFocus(g_hEdit);
