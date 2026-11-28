@@ -373,6 +373,10 @@ const char* dev_link_text(DevLink link);
 #ifdef _WIN32
 inline constexpr UINT kMsgDevicesUpdated = WM_APP + 4;
 
+/* Whether Bluetooth headphones or speakers are connected now: the top
+ * bar's indicator (issue #157) asks this when devices come or go. */
+bool bluetooth_audio_connected();
+
 /* The window's devices: found when they come or go, read when their page
  * opens, listened to while it shows, batteries asked every few minutes
  * while one is on screen. Nothing else polls. Changes queue for a writer

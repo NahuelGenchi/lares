@@ -15,6 +15,7 @@
 #include "draw.h"
 #include "shell_prefs.h"
 #include "share_bridge.h"
+#include "indicators.h"
 
 #ifndef min
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -35,6 +36,7 @@
 #define WM_LARES_RESTORE_TOPMOST   (WM_APP + 21)
 #define WM_LARES_FILES_LOADED      (WM_APP + 19)
 #define WM_LARES_TOGGLE_CLIPBOARD  (WM_APP + 25)
+#define WM_LARES_INDICATORS_UPDATED (WM_APP + 26)
 
 /* Lares' window and Settings ask a running shell to read its settings again
  * with this registered message, posted to the host window. */
@@ -122,6 +124,7 @@ typedef struct {
     bool viewers_enabled;
     bool files_enabled;
     bool airdrop_enabled;   /* the bar's AirDrop button (issue #155) */
+    bool indicators_enabled; /* the bar's device indicators (issue #157) */
 } AppConfig;
 
 typedef struct {
@@ -379,6 +382,14 @@ void action_open_files(const wchar_t *folder);
 void action_open_terminal(void);
 void action_open_settings(void);
 void action_open_lares(const wchar_t *section);
+/* indicators.c: the bar's device indicators (issue #157). */
+void indicators_apply_settings(void);
+void indicators_shutdown(void);
+void indicators_on_change(void);
+bool indicators_on_timer(UINT_PTR id);
+void indicators_on_updated(void);
+void indicators_get(LaresIndicators *out);
+void indicators_set_test_state(const LaresIndicators *s);
 /* airdrop.c: the bar's AirDrop button and panel on Lares' own sharing code
  * (issue #155). Its updates arrive as LARES_SHARE_UPDATED_MSG. */
 #define WM_LARES_SHARE_UPDATED LARES_SHARE_UPDATED_MSG

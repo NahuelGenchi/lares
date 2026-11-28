@@ -92,6 +92,11 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
                     L"Lares' Share page. Turn it off and the button goes; Share stays in Lares.",
                     nullptr, &shell_prefs_.bar_airdrop, unsafe && shell_prefs_.bar);
         cy = setting_line(rt, pal, ix, cy, iw);
+        cy = toggle(cy, L"Device indicators",
+                    L"Small icons in the bar for a connected controller, headphones, a keyboard or mouse Lares "
+                    L"can light, and Remote mode; each opens its page in Lares. Turn it off and they go.",
+                    nullptr, &shell_prefs_.bar_indicators, unsafe && shell_prefs_.bar);
+        cy = setting_line(rt, pal, ix, cy, iw);
         cy = toggle(cy, L"Dock",
                     L"Takes the place of Windows' taskbar, with Start and your pinned and open apps. Turn it off "
                     L"and Windows' own taskbar comes back.",

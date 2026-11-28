@@ -61,6 +61,7 @@ add_library(lares_win_core STATIC
     src/remote.cpp
     src/share_win.cpp
     src/share_bridge.cpp
+    src/indicators.cpp
     src/shell_prefs.cpp
     src/shell_service.cpp
     src/theme.cpp
@@ -281,6 +282,7 @@ add_executable(lares-shell WIN32
     shell/topbar.c
     shell/dock.c
     shell/airdrop.c
+    shell/indicators.c
     $<TARGET_OBJECTS:lares_ble>
     guard/guard_client.c
     guard/state.c

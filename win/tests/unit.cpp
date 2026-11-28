@@ -1009,6 +1009,7 @@ static void test_shell_prefs()
     p.bar_auto_hide = true;
     p.week_starts_monday = true;
     p.bar_airdrop = true;
+    p.bar_indicators = true;
     p.dock_hide = lares::DockHide::AlwaysShown;
     p.dock_media = false;
     p.animations = false;
@@ -1018,7 +1019,7 @@ static void test_shell_prefs()
     p.pins.push_back({ "Nothing", "", "", "", "" }); // names nothing to start: dropped
     lares::ShellPrefs back = lares::parse_shell_ini(lares::serialize_shell_ini(p));
     CHECK(back.bar && back.dock && back.files && !back.launcher && !back.viewers);
-    CHECK(back.bar_auto_hide && back.week_starts_monday && back.bar_airdrop);
+    CHECK(back.bar_auto_hide && back.week_starts_monday && back.bar_airdrop && back.bar_indicators);
     CHECK(back.dock_hide == lares::DockHide::AlwaysShown);
     CHECK(!back.dock_media && !back.animations);
     CHECK(back.pins_saved && back.pins.size() == 2);

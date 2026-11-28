@@ -28,7 +28,12 @@ typedef enum {
     TB_HIT_RAM,
     TB_HIT_SCREENSHOT,
     TB_HIT_NOTIF,
-    TB_HIT_POWER
+    TB_HIT_POWER,
+    TB_HIT_IND_CONTROLLER,
+    TB_HIT_IND_HEADPHONES,
+    TB_HIT_IND_KEYBOARD,
+    TB_HIT_IND_MOUSE,
+    TB_HIT_IND_REMOTE
 } TopBarHitId;
 
 typedef struct {
@@ -42,7 +47,10 @@ static HWND g_hTbSensor = NULL;
 static bool g_tb_appbar_registered = false;
 static bool g_tb_fullscreen_hidden = false;
 static bool g_tb_menu_open = false;
-static TopBarHit g_hits[16];
+/* Every button the bar can show, with room: the focused app, the clock, ten
+ * on the right and five device indicators (issue #157). */
+#define TB_MAX_HITS 24
+static TopBarHit g_hits[TB_MAX_HITS];
 static int g_hit_count = 0;
 static TopBarHitId g_hover_id = TB_HIT_NONE;
 static bool g_tracking_mouse = false;
@@ -233,7 +241,7 @@ static void format_clock(wchar_t *buf, size_t len) {
 }
 
 static void add_hit(TopBarHitId id, int x, int y, int w, int h, bool clickable) {
-    if (g_hit_count >= 16) return;
+    if (g_hit_count >= TB_MAX_HITS) return;
     g_hits[g_hit_count].id = id;
     g_hits[g_hit_count].rc.left = x;
     g_hits[g_hit_count].rc.top = y;
@@ -465,6 +473,33 @@ void topbar_repaint(void) {
                   (float)rx, 0.0f, (float)w, (float)g_tb_h, GP_ALIGN_CENTER, GP_ALIGN_CENTER, false);
     }
 
+    /* 0. Device indicators, with their own switch (issue #157): each opens
+     * Lares on its page; a controller low on battery in the danger colour */
+    if (g_cfg.indicators_enabled) {
+        LaresIndicators ind;
+        indicators_get(&ind);
+        bool pad_low = ind.controller_battery == LARES_PAD_BATTERY_EMPTY ||
+                       ind.controller_battery == LARES_PAD_BATTERY_LOW;
+        const struct { bool on; wchar_t glyph; TopBarHitId id; ARGB col; } items[] = {
+            { ind.remote,     0xE703, TB_HIT_IND_REMOTE,     g_theme.fg_primary },
+            { ind.mouse,      0xE962, TB_HIT_IND_MOUSE,      g_theme.fg_primary },
+            { ind.keyboard,   0xE765, TB_HIT_IND_KEYBOARD,   g_theme.fg_primary },
+            { ind.headphones, 0xE7F6, TB_HIT_IND_HEADPHONES, g_theme.fg_primary },
+            { ind.controller, 0xE7FC, TB_HIT_IND_CONTROLLER, pad_low ? g_theme.danger : g_theme.fg_primary },
+        };
+        bool first = true;
+        for (int i = 0; i < (int)(sizeof(items) / sizeof(items[0])); ++i) {
+            if (!items[i].on) continue;
+            rx -= first ? gap + 4 : 2;
+            first = false;
+            int w = 26;
+            rx -= w;
+            draw_hover_bg(g, items[i].id, rx, item_y, w, item_h);
+            add_hit(items[i].id, rx, item_y, w, item_h, true);
+            draw_icon_glyph(g, items[i].glyph, icon_sz, items[i].col, (float)rx, 0.0f, (float)w, (float)g_tb_h);
+        }
+    }
+
     if (g_tb_shown || g_tb_vis > 0.0f) topbar_present();
 }
 
@@ -573,6 +608,11 @@ static LRESULT CALLBACK topbar_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case TB_HIT_BLUETOOTH: popups_toggle(POPUP_BLUETOOTH, anchor_x, anchor_y); break;
         case TB_HIT_NETWORK:   popups_toggle(POPUP_NETWORK, anchor_x, anchor_y); break;
         case TB_HIT_SHARE:     popups_toggle(POPUP_SHARE, anchor_x, anchor_y); break;
+        case TB_HIT_IND_CONTROLLER: action_open_lares(L"controller"); break;
+        case TB_HIT_IND_HEADPHONES: action_open_lares(L"headphones"); break;
+        case TB_HIT_IND_KEYBOARD:   action_open_lares(L"keyboard"); break;
+        case TB_HIT_IND_MOUSE:      action_open_lares(L"mouse"); break;
+        case TB_HIT_IND_REMOTE:     action_open_lares(L"remote"); break;
         case TB_HIT_MEDIA:     popups_toggle(POPUP_MEDIA, anchor_x, anchor_y); break;
         case TB_HIT_NOTIF:     popups_toggle(POPUP_NOTIFICATIONS, anchor_x, anchor_y); break;
         case TB_HIT_SCREENSHOT:popups_toggle(POPUP_SCREENSHOT, anchor_x, anchor_y); break;

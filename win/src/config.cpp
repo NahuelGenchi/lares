@@ -176,6 +176,7 @@ ShellPrefs parse_shell_ini(const std::string& text)
             if (key == "auto-hide") p.bar_auto_hide = parse_bool(val, p.bar_auto_hide);
             else if (key == "week-starts") p.week_starts_monday = (val == "monday");
             else if (key == "airdrop") p.bar_airdrop = parse_bool(val, p.bar_airdrop);
+            else if (key == "indicators") p.bar_indicators = parse_bool(val, p.bar_indicators);
         } else if (group == "dock") {
             if (key == "hide") {
                 if (val == "always-shown") p.dock_hide = DockHide::AlwaysShown;
@@ -232,6 +233,7 @@ std::string serialize_shell_ini(const ShellPrefs& p)
         << "auto-hide=" << b(p.bar_auto_hide) << "\n"
         << "week-starts=" << (p.week_starts_monday ? "monday" : "sunday") << "\n"
         << "airdrop=" << b(p.bar_airdrop) << "\n"
+        << "indicators=" << b(p.bar_indicators) << "\n"
         << "\n[dock]\n"
         << "hide=" << dock_hide_name(p.dock_hide) << "\n"
         << "window-counts=" << b(p.dock_window_counts) << "\n"
@@ -271,12 +273,29 @@ std::wstring shell_ini_path(bool dry_run)
 
 static bool read_whole_file(const std::wstring& path, std::string& out)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open()) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
+    // Another Lares program may be moving a new copy into place this very
+    // moment (replace_file): a file that is there but cannot be opened is
+    // tried again for up to a second, or the shell would read every switch
+    // as off and end. A file that is simply not there is not waited for.
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        std::ifstream in(path, std::ios::binary);
+        if (in.is_open()) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            out = ss.str();
+            return true;
+        }
+#ifdef _WIN32
+        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            DWORD err = GetLastError();
+            if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return false;
+        }
+        Sleep(25);
+#else
+        return false;
+#endif
+    }
+    return false;
 }
 
 // Written to a temporary file next to it and moved into place, so a crash

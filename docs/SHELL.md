@@ -17,7 +17,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | `lares-view.exe`: the image viewer and the text and Markdown editor, with a Viewers switch | [#151](https://github.com/NahuelGenchi/lares/issues/151) | confirmed drawn with made-up files, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
 | `lares-files.exe`: Files with tabs, Quick Look and drag and drop, with a Files switch | [#153](https://github.com/NahuelGenchi/lares/issues/153) | confirmed drawn with a made-up folder, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
 | AirDrop in the top bar, on Lares' own sharing code, with its own switch | [#155](https://github.com/NahuelGenchi/lares/issues/155) | confirmed drawn from made-up state, light and dark; switch on and off in tests; not used with a real device through the bar |
-| Device indicators in the bar for controllers, headphones, keyboard and mouse lighting, remote play | | planned |
+| Device indicators in the bar for a controller, headphones, keyboard and mouse, and Remote mode, with their own switch | [#157](https://github.com/NahuelGenchi/lares/issues/157) | confirmed drawn from made-up state, light and dark; switch on and off in tests; not seen reacting to real devices |
 | Per-user file types for Markdown and images (optional) | | planned |
 
 ## Budget
@@ -366,6 +366,27 @@ Nothing of sharing runs until the panel is first opened. When nothing is receive
 | The shell's own memory and processor time at rest with the button on | `lares-shell-test --measure 30`, the Checks workflow | confirmed when the workflow passes; the reading is in its log |
 | Receiving, sending and the wake-up with a real iPhone through the panel | | **not checked**: the development PC's adapter and devices are not used by a check; `ShareManager` itself was checked with an iPhone in [#109](https://github.com/NahuelGenchi/lares/issues/109) |
 | The second-session refusal, with Lares' Share page and the panel both open | | **not checked** on hardware |
+
+## Device indicators
+
+Issue [#157](https://github.com/NahuelGenchi/lares/issues/157). With **Device indicators** on (Settings, **Bar and dock**, off by default, and only while the bar is on), the left end of the bar's right-hand group shows a small icon for each of these while it is there, and a click opens Lares on its page:
+
+| Icon | Shown while | Opens |
+| :--- | :--- | :--- |
+| Controller | an Xbox controller answers through XInput; in the danger colour when a wireless one is low or empty | Controller |
+| Headphones | Bluetooth headphones or speakers are connected | Headphones |
+| Keyboard | a keyboard Lares can light is present (its own HID scan) | Keyboard |
+| Mouse | a mouse Lares can set up is present | Mouse |
+| Remote | Lares' Remote mode is on, as the Remote page saved it in `lares.ini` | Remote |
+
+They are not built twice: `win/src/indicators.cpp` asks Lares' own code (`hid_find`, the Bluetooth audio scan of `devices.cpp`, the Remote page's `lares.ini` reader) and XInput the way the Controller page loads it, and only reads. It runs on a worker thread once when the switch comes on, then a moment after Windows says devices came or went (so a burst of arrivals is one look) and when the screen changes, which Remote mode does. Nothing polls; between looks the shell holds five flags.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| All five drawn from made-up state, the controller low, light and dark | `lares-shell --snapshot`, development PC, looked at | confirmed |
+| The switch on and off beside the bar, the same shell carrying on | `lares-shell-test`, stand-in taskbar; ten times in the Checks workflow | confirmed when the workflow passes |
+| The shell's own memory and processor time at rest with bar, dock, the AirDrop button and the indicators on | `lares-shell-test --measure 30`: once on the development PC (a test copy that hides nothing), and in the Checks workflow | development PC: 18.7 MB own memory (working set 9.2 MB), 62.5 ms of processor time in 30 seconds (0.21% of one core); the workflow's reading is in its log |
+| An icon appearing and going as a real controller, headphones, keyboard or mouse comes and goes, and with Remote mode | | **not checked**: needs the devices plugged and unplugged on a desktop where the shell is in use |
 
 ### Known limits
 

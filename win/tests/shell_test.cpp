@@ -273,6 +273,17 @@ static void cycle(int i)
     check(shell_pid() == bar_pid, "AirDrop off: the bar stays");
     check(count_processes(L"lares-share.exe") == 0, "AirDrop off: nothing of sharing runs");
 
+    // The device indicators (issue #157): they only read, and the same
+    // shell carries on.
+    g_prefs.bar_indicators = true;
+    check(set_parts(true, false), "device indicators on beside the bar");
+    Sleep(1500);
+    check(shell_pid() == bar_pid, "device indicators on: the same shell");
+    g_prefs.bar_indicators = false;
+    check(set_parts(true, false), "device indicators off");
+    Sleep(500);
+    check(shell_pid() == bar_pid, "device indicators off: the bar stays");
+
     // The dock joins the running bar: no new shell.
     DWORD pid = shell_pid();
     check(set_parts(true, true), "dock on beside the bar");
@@ -297,8 +308,9 @@ static void cycle(int i)
 // The shell's own memory and processor time at rest, and what it loaded.
 static void measure(int seconds)
 {
-    std::printf("measuring the shell at rest for %d seconds, with the AirDrop button\n", seconds);
+    std::printf("measuring the shell at rest for %d seconds, with the AirDrop button and device indicators\n", seconds);
     g_prefs.bar_airdrop = true;
+    g_prefs.bar_indicators = true;
     check(set_parts(true, true), "bar and dock on");
     check(wait_for([] { return shell_window() != nullptr; }, 10000), "the shell runs");
     Sleep(5000); // its first readings and icons
