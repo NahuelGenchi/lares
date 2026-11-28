@@ -152,14 +152,22 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     if (argv) LocalFree(argv);
     if (!image[0] && !want_text && !snapshot[0]) return 0;
 
+    /* LARES_SHELL_ISOLATED=1: a test copy, its windows far off the screen,
+     * with a mutex and host of its own so it never meets a viewer the user
+     * has open. */
+    wchar_t iso[4] = L"";
+    bool isolated = snapshot[0] != 0 ||
+                    (GetEnvironmentVariableW(L"LARES_SHELL_ISOLATED", iso, 4) == 1 && iso[0] == L'1');
+    const wchar_t *host_class = isolated ? VIEW_HOST_CLASS L"Isolated" : VIEW_HOST_CLASS;
+
     /* A running lares-view.exe takes the file over. */
     HANDLE mutex = NULL;
     if (!snapshot[0]) {
-        mutex = CreateMutexW(NULL, TRUE, VIEW_MUTEX);
+        mutex = CreateMutexW(NULL, TRUE, isolated ? VIEW_MUTEX L"Isolated" : VIEW_MUTEX);
         if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
             HWND host = NULL;
             for (int t = 0; t < 40 && !host; ++t) {
-                host = FindWindowW(VIEW_HOST_CLASS, NULL);
+                host = FindWindowW(host_class, NULL);
                 if (!host) Sleep(50);
             }
             if (host) {
@@ -179,7 +187,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     }
 
     ZeroMemory(&g_cfg, sizeof(g_cfg));
-    g_cfg.isolated = snapshot[0] != 0;
+    g_cfg.isolated = isolated;
     g_cfg.animations = true;
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (!render_init()) {
@@ -201,11 +209,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = host_proc;
     wc.hInstance = hInst;
-    wc.lpszClassName = VIEW_HOST_CLASS;
+    wc.lpszClassName = host_class;
     RegisterClassExW(&wc);
-    /* A test copy's host has no class others look for. */
-    g_hHostWnd = CreateWindowExW(0, VIEW_HOST_CLASS, L"", 0, 0, 0, 0, 0,
-                                 g_cfg.isolated ? HWND_MESSAGE : NULL, NULL, hInst, NULL);
+    /* A snapshot's host takes no files from others. */
+    g_hHostWnd = CreateWindowExW(0, host_class, L"", 0, 0, 0, 0, 0,
+                                 snapshot[0] ? HWND_MESSAGE : NULL, NULL, hInst, NULL);
     ChangeWindowMessageFilterEx(g_hHostWnd, WM_COPYDATA, MSGFLT_ALLOW, NULL);
 
     viewer_init(hInst);

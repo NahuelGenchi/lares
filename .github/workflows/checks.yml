@@ -100,12 +100,14 @@ jobs:
           if ($mods) { Write-Output "loaded: $mods"; exit 1 }
           $closed = 0
           foreach ($c in 'LaresViewerWnd', 'LaresTextViewWnd') {
-            $h = [W]::FindWindowW($c, $null)
+            $h = [W]::FindWindowW($c, [NullString]::Value)
             if ($h -ne [IntPtr]::Zero) { [W]::PostMessageW($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null; $closed++ }
           }
           if ($closed -ne 2) { Write-Output "expected two windows, found $closed"; exit 1 }
           if (-not $view.WaitForExit(8000)) { Write-Output "lares-view.exe did not end with its last window"; exit 1 }
-          Write-Output "lares-view.exe ended with its last window"      # ctest already crashed the stand-in shell and checked its report; this
+          Write-Output "lares-view.exe ended with its last window"
+
+      # ctest already crashed the stand-in shell and checked its report; this
       # keeps one report and runs the privacy gate over it.
       - name: A crash report passes the privacy gate
         run: |

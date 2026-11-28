@@ -300,6 +300,8 @@ lares-view --text [FILE]     the file, or a new one, in the editor
 lares-view --snapshot DIR    draws a made-up picture and Markdown file into DIR and ends
 ```
 
+With `LARES_SHELL_ISOLATED=1` it runs as a test copy: its windows sit far off the screen and out of Alt+Tab, with a mutex and host of their own, so a check on a PC someone works on shows nothing and never meets a viewer they have open.
+
 - **Image viewer**: PNG, JPEG, WebP, BMP, GIF and ICO through Windows Imaging Component on the processor, with the longest side held to 2048 px so a very large picture stays small in memory; zoom around the pointer, pan, fit, actual size, rotate, copy, and the next or previous picture in the same folder. The picture's memory goes back the moment the window closes or another picture is shown.
 - **Text and Markdown editor**: Markdown shown formatted (headings, emphasis, inline code, fenced code with a Copy button, quotes and alerts, nested lists, task boxes that can be ticked, rules, tables, links) with an outline of the headings and a source mode; code, settings and logs in monospace; find, zoom, word wrap, light or dark; saving keeps the file's own encoding and line endings; files over 2 MB open read-only with their first 512 KB.
 
@@ -311,6 +313,7 @@ The **Viewers** switch (Settings, **Files and viewers**, off by default) lets La
 | :--- | :--- | :--- |
 | Both drawn with a made-up picture and Markdown file, light and dark | `lares-view --snapshot`, development PC, looked at | confirmed |
 | Opened for real with a picture and a Markdown file (the second start handing over to the first), own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once both windows close | the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; the reading is in its log |
+| The same steps as a test copy, off the screen | development PC, once: 7.9 MB own memory (working set 23.7 MB) with both open, both windows found and closed, the program gone. A font tool installed on that PC loads Direct2D into every program, so the module check there is left to the workflow | confirmed |
 | Typing, saving, find, zoom and browsing pictures by hand | | **not checked** |
 
 ### Known limits
