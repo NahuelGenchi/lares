@@ -30,6 +30,7 @@ static bool open_journal(bool dry_run, lares_journal& journal)
         return false;
     }
     lares_journal_add_backend(&journal, &lares_journal_registry);
+    lares_journal_add_backend(&journal, &lares_journal_registry_key);
     lares_journal_add_backend(&journal, &lares_journal_taskbar);
     return true;
 }

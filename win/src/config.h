@@ -74,6 +74,7 @@ struct ShellPrefs {
     bool screenshot = false;
     bool files = false;
     bool viewers = false;
+    bool file_types = false;       // Lares offered for Markdown and pictures (issue #159)
     // [top-bar]
     bool bar_auto_hide = false;
     bool week_starts_monday = false;

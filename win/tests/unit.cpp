@@ -7,6 +7,7 @@ extern "C" {
 #include "config.h"
 #include "crash_view.h"
 #include "devices.h"
+#include "filetypes_reg.h"
 #include "helper.h"
 extern "C" {
 #include "journal.h"
@@ -25,8 +26,12 @@ extern "C" {
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cwctype>
 #include <fstream>
 #include <sstream>
+
+#include <shlobj.h>
+#include <shobjidl.h>
 
 static int failures = 0;
 
@@ -37,8 +42,9 @@ static int failures = 0;
     } \
 } while (0)
 
-// The tests' keys live under HKCU\Software\Lares, which Lares itself does not
-// use: removed again when the tests leave it empty.
+// The tests' keys live under HKCU\Software\Lares, which Lares itself uses
+// only for its file types' Capabilities (issue #159): removed again when the
+// tests leave it empty.
 static void remove_empty_lares_key()
 {
     HKEY k;
@@ -989,6 +995,112 @@ static void test_share()
 
 // The shell's settings (issue #141): everything off when nothing is saved,
 // a round trip, pins, and what a broken file does.
+static bool key_exists(const wchar_t* path)
+{
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ, &k) != ERROR_SUCCESS) return false;
+    RegCloseKey(k);
+    return true;
+}
+
+static DWORD subkey_count(const wchar_t* path)
+{
+    HKEY k;
+    DWORD n = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
+    RegQueryInfoKeyW(k, nullptr, nullptr, nullptr, &n, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    RegCloseKey(k);
+    return n;
+}
+
+// Whether Windows lists the program at `exe` among the handlers for `ext`.
+static bool windows_lists_handler(const wchar_t* ext, const std::wstring& exe)
+{
+    IEnumAssocHandlers* list = nullptr;
+    bool found = false;
+    if (FAILED(SHAssocEnumHandlers(ext, ASSOC_FILTER_NONE, &list)) || !list) return false;
+    IAssocHandler* h = nullptr;
+    ULONG got = 0;
+    while (!found && list->Next(1, &h, &got) == S_OK && got == 1) {
+        LPWSTR name = nullptr;
+        if (SUCCEEDED(h->GetName(&name)) && name) {
+            /* The program's path, as Windows reads it from the open command. */
+            std::wstring path(name);
+            CoTaskMemFree(name);
+            for (wchar_t& ch : path) ch = static_cast<wchar_t>(towlower(ch));
+            std::wstring want(exe);
+            for (wchar_t& ch : want) ch = static_cast<wchar_t>(towlower(ch));
+            found = path == want || path.find(L"lares-view.exe") != std::wstring::npos;
+        }
+        h->Release();
+    }
+    list->Release();
+    return found;
+}
+
+// Lares offered for Markdown and pictures (issue #159): on a test key and a
+// journal of the test's own, never the PC's file types; with
+// LARES_TEST_REAL_FILETYPES=1 (GitHub's runner only), for real, checked
+// through Windows' own list of handlers.
+static void test_file_types()
+{
+    using namespace lares;
+    const std::wstring root = L"HKCU\\Software\\Lares\\UnitFileTypes";
+    std::vector<FileTypeChange> changes = filetypes_changes(root, L"X:\\made-up\\lares-view.exe");
+    CHECK(!changes.empty());
+    bool user_choice = false, outside = false;
+    for (const FileTypeChange& c : changes) {
+        if (c.target.find(L"UserChoice") != std::wstring::npos) user_choice = true;
+        if (c.target.compare(0, root.size(), root) != 0) outside = true;
+    }
+    CHECK(!user_choice);
+    CHECK(!outside);
+    CHECK(changes.front().key); // a key is made before anything goes in it
+
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring journal = std::wstring(tmp) + L"lares-unit-filetypes.log";
+    DeleteFileW(journal.c_str());
+    std::string said;
+    CHECK(!filetypes_offered(root));
+    CHECK(filetypes_offer(journal.c_str(), root, L"X:\\made-up\\lares-view.exe", said));
+    CHECK(filetypes_offered(root));
+    CHECK(key_exists(L"Software\\Lares\\UnitFileTypes\\Software\\Classes\\.md\\OpenWithProgids"));
+    CHECK(key_exists(L"Software\\Lares\\UnitFileTypes\\Software\\Lares\\Capabilities\\FileAssociations"));
+    CHECK(filetypes_withdraw(journal.c_str(), said));
+    CHECK(!filetypes_offered(root));
+    // Every key the offer made is gone: nothing left under Classes, and the
+    // keys that were not there before are not there now.
+    CHECK(subkey_count(L"Software\\Lares\\UnitFileTypes\\Software\\Classes") == 0);
+    CHECK(!key_exists(L"Software\\Lares\\UnitFileTypes\\Software\\Lares"));
+    CHECK(!key_exists(L"Software\\Lares\\UnitFileTypes\\Software\\RegisteredApplications"));
+    CHECK(GetFileAttributesW(journal.c_str()) == INVALID_FILE_ATTRIBUTES); // nothing owed: the journal is gone
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Lares\\UnitFileTypes");
+    remove_empty_lares_key();
+
+    wchar_t real[4] = L"";
+    if (GetEnvironmentVariableW(L"LARES_TEST_REAL_FILETYPES", real, 4) != 1 || real[0] != L'1') return;
+    wchar_t self[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring view(self, n);
+    view = view.substr(0, view.find_last_of(L'\\')) + L"\\lares-view.exe";
+    CHECK(GetFileAttributesW(view.c_str()) != INVALID_FILE_ATTRIBUTES);
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    std::wstring jreal = std::wstring(tmp) + L"lares-unit-filetypes-real.log";
+    DeleteFileW(jreal.c_str());
+    CHECK(!windows_lists_handler(L".md", view));
+    CHECK(filetypes_offer(jreal.c_str(), L"HKCU", view, said));
+    CHECK(windows_lists_handler(L".md", view));
+    CHECK(windows_lists_handler(L".png", view));
+    CHECK(filetypes_withdraw(jreal.c_str(), said));
+    CHECK(!windows_lists_handler(L".md", view));
+    CHECK(!windows_lists_handler(L".png", view));
+    CHECK(!key_exists(L"Software\\Classes\\Lares.Markdown"));
+    CHECK(!key_exists(L"Software\\Classes\\Lares.Image"));
+    CoUninitialize();
+    std::printf("file types offered and withdrawn for real: Windows listed lares-view.exe for .md and .png, then not\n");
+}
+
 static void test_shell_prefs()
 {
     lares::ShellPrefs def = lares::parse_shell_ini("");
@@ -1139,6 +1251,7 @@ int main()
     test_config_escaping_and_pad_shutdown();
     test_shell_prefs();
     test_programs();
+    test_file_types();
     if (failures == 0) {
         std::printf("lares-win-unit: all passed\n");
         return 0;

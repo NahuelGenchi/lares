@@ -5,6 +5,7 @@
 extern "C" {
 #include "art.h"
 }
+#include "filetypes_reg.h"
 
 #include <algorithm>
 #include <cmath>
@@ -178,6 +179,7 @@ MainWindow::MainWindow(HINSTANCE hinst, const CliOptions& opts)
     pad_path_ = pad_ini_path(opts_.dry_run);
     load_pad_prefs(pad_path_, pad_prefs_);
     load_shell_prefs(shell_ini_path(opts_.dry_run), shell_prefs_);
+    if (!opts_.dry_run) shell_prefs_.file_types = filetypes_offered_now(); // what Windows has, not what was saved
     pad_map_load_resource(hinst_, pad_map_);
     pads_.apply_nicknames(pad_prefs_);
     pad_list_ = pads_.list();
@@ -476,6 +478,7 @@ void MainWindow::select_section(const std::string& id, bool animate)
             crash_looked_ = false;
             crash_said_.clear();
             load_shell_prefs(shell_ini_path(opts_.dry_run), shell_prefs_);
+            if (!opts_.dry_run) shell_prefs_.file_types = filetypes_offered_now();
             shell_said_.clear();
             card_hits_.clear();
             drops_.clear();

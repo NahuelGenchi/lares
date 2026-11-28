@@ -10,6 +10,7 @@ extern "C" {
 #include "changes.h"
 #include "crash_view.h"
 #include "safe.h"
+#include "filetypes_reg.h"
 #include "shell_service.h"
 
 #include <shellapi.h>
@@ -142,11 +143,17 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
                           L"and they open File Explorer again.",
                           nullptr, &shell_prefs_.files, unsafe);
         cy = setting_line(rt, pal, ix, cy, iw);
-        return toggle(cy, L"Viewers",
-                      L"Lares' own image viewer and text and Markdown editor, opened from Lares' launcher and "
-                      L"tools. Windows' own apps stay the default for your files. Turn it off and Lares opens "
-                      L"files with them again.",
-                      nullptr, &shell_prefs_.viewers, unsafe);
+        cy = toggle(cy, L"Viewers",
+                    L"Lares' own image viewer and text and Markdown editor, opened from Lares' launcher and "
+                    L"tools. Windows' own apps stay the default for your files. Turn it off and Lares opens "
+                    L"files with them again.",
+                    nullptr, &shell_prefs_.viewers, unsafe);
+        cy = setting_line(rt, pal, ix, cy, iw);
+        return toggle(cy, L"Lares in Open with",
+                      L"Adds Lares to Open with for Markdown files and pictures, then opens Windows' Default "
+                      L"apps page, where you choose. Lares never makes itself a default. Turn it off and Lares "
+                      L"leaves Open with.",
+                      nullptr, &shell_prefs_.file_types, unsafe);
     });
     y += kPageGap;
 
@@ -261,6 +268,19 @@ void MainWindow::shell_toggle(bool* field)
     }
     shell_prefs_ = fresh;
     std::string said;
+    if (field == &shell_prefs_.file_types) {
+        /* Lares offered for Markdown and pictures (issue #159): through the
+         * journal, then Windows' Default apps page, where the user chooses. */
+        bool ok = filetypes_set(value, opts_.dry_run, said);
+        if (ok && value && !opts_.dry_run) filetypes_open_default_apps();
+        if (!ok) {
+            fresh.file_types = !value;
+            save_shell_prefs(path, fresh);
+            shell_prefs_ = fresh;
+        }
+        shell_said_.assign(said.begin(), said.end());
+        return;
+    }
     if (!shell_service_sync(shell_prefs_, opts_.dry_run, &said)) shell_said_.assign(said.begin(), said.end());
 }
 

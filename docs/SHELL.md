@@ -18,7 +18,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | `lares-files.exe`: Files with tabs, Quick Look and drag and drop, with a Files switch | [#153](https://github.com/NahuelGenchi/lares/issues/153) | confirmed drawn with a made-up folder, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
 | AirDrop in the top bar, on Lares' own sharing code, with its own switch | [#155](https://github.com/NahuelGenchi/lares/issues/155) | confirmed drawn from made-up state, light and dark; switch on and off in tests; not used with a real device through the bar |
 | Device indicators in the bar for a controller, headphones, keyboard and mouse, and Remote mode, with their own switch | [#157](https://github.com/NahuelGenchi/lares/issues/157) | confirmed drawn from made-up state, light and dark; switch on and off in tests; not seen reacting to real devices |
-| Per-user file types for Markdown and images (optional) | | planned |
+| Lares offered for Markdown and pictures, per user, through the change journal, ending at Windows' Default apps page (optional) | [#159](https://github.com/NahuelGenchi/lares/issues/159) | confirmed with tests under a test key and, on GitHub's runner, for real; the Default apps step not checked by a person |
 
 ## Budget
 
@@ -387,6 +387,27 @@ They are not built twice: `win/src/indicators.cpp` asks Lares' own code (`hid_fi
 | The switch on and off beside the bar, the same shell carrying on | `lares-shell-test`, stand-in taskbar; ten times in the Checks workflow | confirmed when the workflow passes |
 | The shell's own memory and processor time at rest with bar, dock, the AirDrop button and the indicators on | `lares-shell-test --measure 30`: once on the development PC (a test copy that hides nothing), and in the Checks workflow | development PC: 18.7 MB own memory (working set 9.2 MB), 62.5 ms of processor time in 30 seconds (0.21% of one core); the workflow's reading is in its log |
 | An icon appearing and going as a real controller, headphones, keyboard or mouse comes and goes, and with Remote mode | | **not checked**: needs the devices plugged and unplugged on a desktop where the shell is in use |
+
+## Markdown and pictures in Lares' viewers
+
+Issue [#159](https://github.com/NahuelGenchi/lares/issues/159), the optional last part. **Lares in Open with** (Settings, **Files and viewers**, off by default) adds Lares to **Open with** for `.md` and `.markdown` and for `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp` and `.gif`, for this user only, then opens Windows' **Default apps** page on Lares (`ms-settings:defaultapps?registeredAppUser=Lares`), where the user chooses. Lares never makes itself a default: it never writes a `UserChoice` key, let alone the hash Windows guards it with.
+
+What it adds, all under `HKCU`, through the change journal (feature `file-types`, [docs/SAFETY.md](SAFETY.md)), so **Undo all** or turning the switch off takes away exactly that:
+
+| Where | What |
+| :--- | :--- |
+| `Software\Classes\Lares.Markdown`, `Lares.Image` | two ProgIDs, each with its name, `lares-view.exe` as icon, and `lares-view.exe --text "%1"` or `--view "%1"` to open |
+| `Software\Classes\.md\OpenWithProgids` and the others | a value naming the ProgID, which puts Lares in **Open with** without taking anything from what is there |
+| `Software\Lares\Capabilities`, `Software\RegisteredApplications` | Lares under its own name, with its file associations, which is what lets the Default apps page list it |
+
+Each key Lares makes is written down too, as a `registry-key` change, a kind the journal gained for this: undo deletes a key only once it is empty, so a key someone else has since put something in stays. A key that was already there (`.png` often is) gets no entry and stays. The Settings switch shows what the registry says, not what was saved, so it reads off after **Undo all**.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| No change touches `UserChoice` or leaves the root it was given | `lares-win-unit` | confirmed |
+| Offered and withdrawn under a test key with a journal of the test's own: the ProgIDs, Open with and Capabilities there, then every key the offer made gone and the journal file removed | `lares-win-unit`, development PC and the Checks workflow | confirmed |
+| Offered for real on GitHub's runner: Windows lists `lares-view.exe` among the handlers for `.md` and `.png`, then no longer after undo, and the ProgIDs are gone | `lares-win-unit` with `LARES_TEST_REAL_FILETYPES=1`, the Checks workflow only | confirmed when the workflow passes |
+| The Default apps page opening on Lares, and choosing Lares there | | **not checked**: it needs a person at a desktop; the development PC's file types are never touched by a check |
 
 ### Known limits
 

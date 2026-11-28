@@ -70,6 +70,66 @@ static int registry_write(const wchar_t *target, const lares_journal_value *valu
 
 const lares_journal_backend lares_journal_registry = { "registry", registry_read, registry_write, NULL };
 
+/* Kind "registry-key": a target is a whole key, without '|'. Present while
+ * the key is there; making it present creates it, and making it absent
+ * deletes it only while it is empty, so undo takes away a key Lares made
+ * and nothing someone else put in it since. */
+static int split_key(const wchar_t *target, HKEY *root, const wchar_t **path)
+{
+    int n = lstrlenW(target);
+    if (n >= LARES_JOURNAL_TARGET_MAX || n < 6 || target[4] != L'\\') return 0;
+    for (int i = 0; i < n; ++i)
+        if (target[i] == L'|') return 0;
+    if (target[0] != L'H' || target[1] != L'K') return 0;
+    if (target[2] == L'C' && target[3] == L'U') *root = HKEY_CURRENT_USER;
+    else if (target[2] == L'L' && target[3] == L'M') *root = HKEY_LOCAL_MACHINE;
+    else return 0;
+    *path = target + 5;
+    return 1;
+}
+
+static int registry_key_read(const wchar_t *target, lares_journal_value *value, void *ctx)
+{
+    HKEY root, key;
+    const wchar_t *path;
+    (void)ctx;
+    lares_journal_value_absent(value);
+    if (!split_key(target, &root, &path)) return 0;
+    LSTATUS s = RegOpenKeyExW(root, path, 0, KEY_QUERY_VALUE, &key);
+    if (s == ERROR_FILE_NOT_FOUND || s == ERROR_PATH_NOT_FOUND) return 1;
+    if (s != ERROR_SUCCESS) return 0;
+    RegCloseKey(key);
+    lares_journal_value_dword(value, 1);
+    return 1;
+}
+
+static int registry_key_write(const wchar_t *target, const lares_journal_value *value, void *ctx)
+{
+    HKEY root, key;
+    const wchar_t *path;
+    DWORD subkeys = 0, values = 0;
+    LSTATUS s;
+    (void)ctx;
+    if (!split_key(target, &root, &path)) return 0;
+    if (value->present) {
+        s = RegCreateKeyExW(root, path, 0, NULL, 0, KEY_QUERY_VALUE, NULL, &key, NULL);
+        if (s != ERROR_SUCCESS) return 0;
+        RegCloseKey(key);
+        return 1;
+    }
+    s = RegOpenKeyExW(root, path, 0, KEY_QUERY_VALUE, &key);
+    if (s == ERROR_FILE_NOT_FOUND || s == ERROR_PATH_NOT_FOUND) return 1;
+    if (s != ERROR_SUCCESS) return 0;
+    s = RegQueryInfoKeyW(key, NULL, NULL, NULL, &subkeys, NULL, NULL, &values, NULL, NULL, NULL, NULL);
+    RegCloseKey(key);
+    if (s != ERROR_SUCCESS) return 0;
+    if (subkeys || values) return 1; /* someone else's now: left as it is */
+    s = RegDeleteKeyExW(root, path, 0, 0);
+    return s == ERROR_SUCCESS || s == ERROR_FILE_NOT_FOUND;
+}
+
+const lares_journal_backend lares_journal_registry_key = { "registry-key", registry_key_read, registry_key_write, NULL };
+
 int lares_journal_value_string(lares_journal_value *value, const wchar_t *text)
 {
     DWORD bytes = (DWORD)(lstrlenW(text) + 1) * sizeof(wchar_t);

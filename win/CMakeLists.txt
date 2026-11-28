@@ -62,6 +62,7 @@ add_library(lares_win_core STATIC
     src/share_win.cpp
     src/share_bridge.cpp
     src/indicators.cpp
+    src/filetypes_reg.cpp
     src/shell_prefs.cpp
     src/shell_service.cpp
     src/theme.cpp
@@ -163,6 +164,8 @@ target_include_directories(lares-win-unit PRIVATE
 target_link_libraries(lares-win-unit PRIVATE
     lares_win_core
     lares_crash
+    ole32
+    shell32
 )
 
 enable_testing()
