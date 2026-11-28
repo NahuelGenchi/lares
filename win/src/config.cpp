@@ -275,12 +275,29 @@ std::wstring shell_ini_path(bool dry_run)
 
 static bool read_whole_file(const std::wstring& path, std::string& out)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open()) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
+    // Another Lares program may be moving a new copy into place this very
+    // moment (replace_file): a file that is there but cannot be opened is
+    // tried again for up to a second, or the shell would read every switch
+    // as off and end. A file that is simply not there is not waited for.
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        std::ifstream in(path, std::ios::binary);
+        if (in.is_open()) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            out = ss.str();
+            return true;
+        }
+#ifdef _WIN32
+        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            DWORD err = GetLastError();
+            if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return false;
+        }
+        Sleep(25);
+#else
+        return false;
+#endif
+    }
+    return false;
 }
 
 // Written to a temporary file next to it and moved into place, so a crash
