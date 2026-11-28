@@ -24,7 +24,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 
 | Reading | Target | Measured |
 | :--- | :--- | :--- |
-| `lares-shell.exe`, own (private) memory at idle | about 25 MB | **confirmed**: 15.6 to 16.2 MB on GitHub's Windows runner with bar and dock on ([#156](https://github.com/NahuelGenchi/lares/pull/156), [#158](https://github.com/NahuelGenchi/lares/pull/158)); 18.7 MB on the development PC with bar, dock, the AirDrop button and the device indicators on ([#157](https://github.com/NahuelGenchi/lares/issues/157)) |
+| `lares-shell.exe`, own (private) memory at idle | about 25 MB | **confirmed**: 15.6 to 16.5 MB on GitHub's Windows runner, 16.5 MB with bar, dock, the AirDrop button and the device indicators all on ([#161](https://github.com/NahuelGenchi/lares/pull/161)); 18.7 MB on the development PC with the same on |
 | The same, in active use | under 50 MB | **not measured**: no check drives the shell's popups, launcher and tools as a person would yet |
 | Graphics card use at idle | 0% | **reported**: not read directly; no shell process loads Direct3D, so the shell gives the graphics card no drawing work of its own |
 | Processor time at idle | near zero | **confirmed**: 0.10% of one core on the runner, 0.21% on the development PC |
@@ -386,7 +386,7 @@ They are not built twice: `win/src/indicators.cpp` asks Lares' own code (`hid_fi
 | :--- | :--- | :--- |
 | All five drawn from made-up state, the controller low, light and dark | `lares-shell --snapshot`, development PC, looked at | confirmed |
 | The switch on and off beside the bar, the same shell carrying on | `lares-shell-test`, stand-in taskbar; ten times in the Checks workflow | confirmed when the workflow passes |
-| The shell's own memory and processor time at rest with bar, dock, the AirDrop button and the indicators on | `lares-shell-test --measure 30`: once on the development PC (a test copy that hides nothing), and in the Checks workflow | development PC: 18.7 MB own memory (working set 9.2 MB), 62.5 ms of processor time in 30 seconds (0.21% of one core); the workflow's reading is in its log |
+| The shell's own memory and processor time at rest with bar, dock, the AirDrop button and the indicators on | `lares-shell-test --measure 30`: once on the development PC (a test copy that hides nothing), and in the Checks workflow | development PC: 18.7 MB own memory (working set 9.2 MB), 62.5 ms of processor time in 30 seconds (0.21% of one core); GitHub's runner ([#161](https://github.com/NahuelGenchi/lares/pull/161)): 16.5 MB (working set 8.5 MB), 31.2 ms (0.10%) |
 | An icon appearing and going as a real controller, headphones, keyboard or mouse comes and goes, and with Remote mode | | **not checked**: needs the devices plugged and unplugged on a desktop where the shell is in use |
 
 ## Markdown and pictures in Lares' viewers
