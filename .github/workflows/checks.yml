@@ -53,12 +53,15 @@ jobs:
           cmake -S win -B win/build -A x64
           cmake --build win/build --config Release
       - name: Run Windows unit tests
-        env:
-          # The runner is a throwaway machine: the file types test also offers
-          # Lares for real there and checks Windows' own list of handlers
-          # (issue #159). On a PC someone works on it stays on a test key.
-          LARES_TEST_REAL_FILETYPES: "1"
         run: ctest --test-dir win/build -C Release --output-on-failure
+      # The runner is a throwaway machine: the file types test offers Lares
+      # for real there and checks Windows' own list of handlers before,
+      # during and after (issue #159), in a step of its own so its line shows.
+      # On a PC someone works on it stays on a test key.
+      - name: Lares in Open with, for real on the runner, and gone after
+        env:
+          LARES_TEST_REAL_FILETYPES: "1"
+        run: win/build/Release/lares-win-unit.exe
       # ctest already ran lares-guard-test against a stand-in taskbar. This
       # runs it against the runner's own taskbar, when it has one, and prints
       # what the guard costs.

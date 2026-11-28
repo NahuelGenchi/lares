@@ -407,7 +407,7 @@ Each key Lares makes is written down too, as a `registry-key` change, a kind the
 | :--- | :--- | :--- |
 | No change touches `UserChoice` or leaves the root it was given | `lares-win-unit` | confirmed |
 | Offered and withdrawn under a test key with a journal of the test's own: the ProgIDs, Open with and Capabilities there, then every key the offer made gone and the journal file removed | `lares-win-unit`, development PC and the Checks workflow | confirmed |
-| Offered for real on GitHub's runner: Windows lists `lares-view.exe` among the handlers for `.md` and `.png`, then no longer after undo, and the ProgIDs are gone | `lares-win-unit` with `LARES_TEST_REAL_FILETYPES=1`, the Checks workflow only | confirmed when the workflow passes |
+| Offered for real on GitHub's runner: Windows lists `lares-view.exe` among the handlers for `.md` and `.png`, then no longer after undo, and the ProgIDs are gone | `lares-win-unit` with `LARES_TEST_REAL_FILETYPES=1`, a step of its own in the Checks workflow | confirmed when the workflow passes; its line is in the log |
 | The Default apps page opening on Lares, and choosing Lares there | | **not checked**: it needs a person at a desktop; the development PC's file types are never touched by a check |
 
 ## Known limits
