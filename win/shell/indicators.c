@@ -20,6 +20,7 @@ static LaresIndicators  g_now;
 static HDEVNOTIFY       g_notify = NULL;
 static HANDLE           g_thread = NULL;
 static bool             g_again = false;
+static bool             g_stuck = false; /* a look outlived stop(): its lock must stay */
 static bool             g_has_test = false;
 static LaresIndicators  g_test;
 
@@ -44,7 +45,7 @@ static void rescan(void) {
 }
 
 static void start(void) {
-    if (g_on) return;
+    if (g_on || g_stuck) return;
     if (!g_cs_ready) {
         InitializeCriticalSection(&g_cs);
         g_cs_ready = true;
@@ -71,11 +72,14 @@ static void stop(void) {
     }
     if (g_hHostWnd) KillTimer(g_hHostWnd, TIMER_INDICATORS);
     if (g_thread) {
-        WaitForSingleObject(g_thread, 5000);
+        if (WaitForSingleObject(g_thread, 5000) == WAIT_TIMEOUT) g_stuck = true;
         CloseHandle(g_thread);
         g_thread = NULL;
     }
+    if (g_stuck) return;
+    EnterCriticalSection(&g_cs);
     ZeroMemory(&g_now, sizeof(g_now));
+    LeaveCriticalSection(&g_cs);
 }
 
 void indicators_apply_settings(void) {
@@ -86,7 +90,7 @@ void indicators_apply_settings(void) {
 
 void indicators_shutdown(void) {
     stop();
-    if (g_cs_ready) {
+    if (g_cs_ready && !g_stuck) {
         DeleteCriticalSection(&g_cs);
         g_cs_ready = false;
     }

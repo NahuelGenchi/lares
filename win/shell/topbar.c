@@ -47,7 +47,10 @@ static HWND g_hTbSensor = NULL;
 static bool g_tb_appbar_registered = false;
 static bool g_tb_fullscreen_hidden = false;
 static bool g_tb_menu_open = false;
-static TopBarHit g_hits[16];
+/* Every button the bar can show, with room: the focused app, the clock, ten
+ * on the right and five device indicators (issue #157). */
+#define TB_MAX_HITS 24
+static TopBarHit g_hits[TB_MAX_HITS];
 static int g_hit_count = 0;
 static TopBarHitId g_hover_id = TB_HIT_NONE;
 static bool g_tracking_mouse = false;
@@ -238,7 +241,7 @@ static void format_clock(wchar_t *buf, size_t len) {
 }
 
 static void add_hit(TopBarHitId id, int x, int y, int w, int h, bool clickable) {
-    if (g_hit_count >= 16) return;
+    if (g_hit_count >= TB_MAX_HITS) return;
     g_hits[g_hit_count].id = id;
     g_hits[g_hit_count].rc.left = x;
     g_hits[g_hit_count].rc.top = y;
