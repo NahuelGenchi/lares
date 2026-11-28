@@ -59,11 +59,12 @@ static bool is_alt_tab_window(HWND hwnd) {
     wchar_t cls[64] = {0};
     GetClassNameW(hwnd, cls, 64);
 
-    /* The shell's own windows are not apps. Files and the viewers run in
-     * programs of their own and are listed like any other app. */
+    /* The shell's own windows are not apps, except the process list. Files
+     * and the viewers run in programs of their own and are listed like any
+     * other app. */
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == g_own_pid) return false;
+    if (pid == g_own_pid) return wcscmp(cls, L"LaresProcessesWnd") == 0;
 
     if (wcscmp(cls, L"Progman") == 0 ||
         wcscmp(cls, L"WorkerW") == 0 ||
@@ -184,6 +185,14 @@ static BOOL CALLBACK enum_interactable_cb(HWND hwnd, LPARAM lp) {
         w->rect = ext;
     } else {
         GetWindowRect(hwnd, &w->rect);
+    }
+
+    if (pid == g_own_pid) {
+        wcsncpy_s(w->umid, 256, L"@builtin/processes", _TRUNCATE);
+        wcsncpy_s(w->exe_path, MAX_PATH, L"@builtin/processes", _TRUNCATE);
+        wcsncpy_s(w->app_name, 128, L"Processes", _TRUNCATE);
+        ctx->count++;
+        return TRUE;
     }
 
     wchar_t cls[64] = {0};
@@ -604,6 +613,10 @@ void icon_cache_clear(void) {
 }
 
 void shell_launch_app(const wchar_t *command, const wchar_t *args, const wchar_t *workdir, const wchar_t *umid) {
+    if (command && wcscmp(command, L"@builtin/processes") == 0) {
+        action_open_processes();
+        return;
+    }
 
     if (command && command[0]) {
         SHELLEXECUTEINFOW sei;

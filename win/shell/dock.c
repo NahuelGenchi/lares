@@ -723,7 +723,7 @@ static void show_item_context_menu(HWND hwnd, int idx, int screen_x, int screen_
 
     if (idx >= 0 && idx < g_item_count && g_items[idx].kind == RENDER_START) {
         AppendMenuW(hMenu, MF_STRING, 10, L"File Explorer");
-        AppendMenuW(hMenu, MF_STRING, 21, L"Task Manager");
+        AppendMenuW(hMenu, MF_STRING, 21, L"Processes");
         AppendMenuW(hMenu, MF_STRING, 23, L"Terminal");
         AppendMenuW(hMenu, MF_STRING, 24, L"Windows Settings");
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);

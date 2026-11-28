@@ -95,7 +95,8 @@ static void quit_clean(void) {
 }
 
 static bool any_part_on(void) {
-    return g_cfg.topbar_enabled || g_cfg.dock_enabled || g_cfg.launcher_enabled || g_cfg.clipboard_enabled;
+    return g_cfg.topbar_enabled || g_cfg.dock_enabled || g_cfg.launcher_enabled || g_cfg.clipboard_enabled ||
+           g_cfg.screenshot_enabled;
 }
 
 /* Lares' Settings changed something. Parts that come on are made, parts
@@ -104,6 +105,7 @@ static bool any_part_on(void) {
 static void reload(void) {
     bool had_bar = g_cfg.topbar_enabled, had_dock = g_cfg.dock_enabled;
     bool had_launcher = g_cfg.launcher_enabled, had_clipboard = g_cfg.clipboard_enabled;
+    bool had_screenshot = g_cfg.screenshot_enabled;
     bool isolated = g_cfg.isolated;
     config_load_all();
     g_cfg.isolated = isolated;
@@ -115,6 +117,8 @@ static void reload(void) {
     else if (!g_cfg.launcher_enabled && had_launcher) launcher_shutdown();
     if (g_cfg.clipboard_enabled && !had_clipboard) clipboard_init(g_hInst);
     else if (!g_cfg.clipboard_enabled && had_clipboard) clipboard_shutdown();
+    if (g_cfg.screenshot_enabled && !had_screenshot) screenshot_init(g_hInst);
+    else if (!g_cfg.screenshot_enabled && had_screenshot) screenshot_shutdown();
     if (g_cfg.topbar_enabled && !had_bar) topbar_create(g_hInst);
     else if (!g_cfg.topbar_enabled && had_bar) topbar_destroy();
     else topbar_apply_settings();
@@ -222,6 +226,9 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_HOTKEY:
         if (wParam == LARES_HOTKEY_LAUNCHER) PostMessageW(hwnd, WM_LARES_TOGGLE_LAUNCHER, 0, 0);
         else if (wParam == LARES_HOTKEY_CLIPBOARD) PostMessageW(hwnd, WM_LARES_TOGGLE_CLIPBOARD, 0, 0);
+        else if (g_cfg.screenshot_enabled && wParam == LARES_HOTKEY_SNIP_REGION) screenshot_trigger(SCREENSHOT_REGION);
+        else if (g_cfg.screenshot_enabled && wParam == LARES_HOTKEY_SNIP_WINDOW) screenshot_trigger(SCREENSHOT_WINDOW);
+        else if (g_cfg.screenshot_enabled && wParam == LARES_HOTKEY_SNIP_FULL) screenshot_trigger(SCREENSHOT_FULL);
         return 0;
 
     case WM_SETTINGCHANGE:
@@ -233,6 +240,8 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         popups_refresh_if_open();
         if (g_cfg.launcher_enabled) launcher_on_theme_changed();
         if (g_cfg.clipboard_enabled) clipboard_on_theme_changed();
+        if (g_cfg.screenshot_enabled) screenshot_on_theme_changed();
+        procmon_on_theme_changed();
         return 0;
 
     case WM_DISPLAYCHANGE:
@@ -327,6 +336,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         g_cfg.dock_enabled = true;
         g_cfg.launcher_enabled = true;
         g_cfg.clipboard_enabled = true;
+        g_cfg.screenshot_enabled = true;
         g_cfg.animations = false;
         g_cfg.topbar_autohide = false;
         g_cfg.dock_hide_mode = HIDE_NEVER;
@@ -388,6 +398,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     popups_init(hInst);
     if (g_cfg.launcher_enabled) launcher_init(hInst);
     if (g_cfg.clipboard_enabled) clipboard_init(hInst);
+    if (g_cfg.screenshot_enabled) screenshot_init(hInst);
+    procmon_init(hInst);
     if (g_cfg.topbar_enabled) topbar_create(hInst);
     if (g_cfg.dock_enabled) dock_create(hInst);
     if (!g_cfg.isolated) hotkeys_init(g_hHostWnd);
@@ -425,9 +437,16 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         clipboard_add_sample(L"A pinned note\nwith a second line", true);
         _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\clipboard.png", snapshot_dir);
         ok &= clipboard_snapshot(path);
+        procmon_open(PROCMON_SORT_MEM);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\processes.png", snapshot_dir);
+        ok &= procmon_snapshot(path);
+        _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\screenshot-preview.png", snapshot_dir);
+        ok &= screenshot_snapshot(path);
         DestroyWindow(g_hHostWnd);
         MSG m;
         while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) DispatchMessageW(&m);
+        screenshot_shutdown();
+        procmon_shutdown();
         clipboard_shutdown();
         launcher_shutdown();
         popups_shutdown();
@@ -453,6 +472,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     }
 
     hotkeys_shutdown();
+    if (g_cfg.screenshot_enabled) screenshot_shutdown();
+    procmon_shutdown();
     if (g_cfg.clipboard_enabled) clipboard_shutdown();
     if (g_cfg.launcher_enabled) launcher_shutdown();
     popups_shutdown();

@@ -151,12 +151,13 @@ static int count_processes(const wchar_t* name)
 
 static ShellPrefs g_prefs;
 
-static bool set_parts(bool bar, bool dock, bool launcher = false, bool clipboard = false)
+static bool set_parts(bool bar, bool dock, bool launcher = false, bool clipboard = false, bool screenshot = false)
 {
     g_prefs.bar = bar;
     g_prefs.dock = dock;
     g_prefs.launcher = launcher;
     g_prefs.clipboard = clipboard;
+    g_prefs.screenshot = screenshot;
     if (!save_shell_prefs(shell_ini_path(false), g_prefs)) {
         std::printf("  the settings file could not be saved (%lu)\n", GetLastError());
         return false;
@@ -182,7 +183,7 @@ static bool shortcut_taken(UINT mods, UINT vk)
 // copy registers no shortcut, so those are only looked at with --real.
 static void cycle_tools(int i)
 {
-    std::printf("cycle %d: launcher and clipboard history\n", i);
+    std::printf("cycle %d: launcher, clipboard history and screenshot tool\n", i);
     check(set_parts(false, false, true, false), "launcher on");
     check(wait_for([] { return shell_window() != nullptr; }, 10000), "launcher on: the shell runs");
     Sleep(1000);
@@ -199,11 +200,18 @@ static void cycle_tools(int i)
     if (g_real) check(wait_for([] { return !shortcut_taken(MOD_ALT, VK_SPACE); }, 5000), "launcher off: Alt+Space is free");
     check(shell_window() != nullptr, "launcher off: the shell stays for clipboard history");
 
-    check(set_parts(false, false, false, false), "clipboard history off");
-    check(wait_for([] { return shell_window() == nullptr; }, 10000), "clipboard history off: the shell is gone");
-    if (g_real) check(!shortcut_taken(MOD_ALT, 'V'), "clipboard history off: Alt+V is free");
-    check(run_value().empty(), "clipboard history off: the start-up entry is gone");
-    check(wait_for([] { return count_processes(L"lares-guard.exe") == 0; }, 10000), "clipboard history off: no guard is left");
+    check(set_parts(false, false, false, true, true), "screenshot tool on beside clipboard history");
+    if (g_real) check(wait_for([] { return shortcut_taken(MOD_ALT | MOD_SHIFT, 'S'); }, 5000), "screenshot tool on: Alt+Shift+S is taken");
+
+    check(set_parts(false, false, false, false, true), "clipboard history off");
+    if (g_real) check(wait_for([] { return !shortcut_taken(MOD_ALT, 'V'); }, 5000), "clipboard history off: Alt+V is free");
+    check(shell_window() != nullptr, "clipboard history off: the shell stays for the screenshot tool");
+
+    check(set_parts(false, false, false, false, false), "screenshot tool off");
+    check(wait_for([] { return shell_window() == nullptr; }, 10000), "screenshot tool off: the shell is gone");
+    if (g_real) check(!shortcut_taken(MOD_ALT | MOD_SHIFT, 'S'), "screenshot tool off: Alt+Shift+S is free");
+    check(run_value().empty(), "screenshot tool off: the start-up entry is gone");
+    check(wait_for([] { return count_processes(L"lares-guard.exe") == 0; }, 10000), "screenshot tool off: no guard is left");
 }
 
 // ---- the cases ---------------------------------------------------------------

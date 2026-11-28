@@ -13,7 +13,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | `lares-shell.exe`: top bar and dock, under `lares-guard.exe` | [#145](https://github.com/NahuelGenchi/lares/issues/145) | confirmed with tests, on a stand-in taskbar and on the real taskbar of GitHub's Windows runner; not used on a real Windows 11 desktop yet |
 | The top bar's popups: calendar, keyboard, Bluetooth, network and Tailscale, media, notifications, power, screenshot menu | [#147](https://github.com/NahuelGenchi/lares/issues/147) | confirmed drawn, light and dark, in a test copy; not clicked on a real desktop |
 | Launcher and clipboard history, each with its own switch | [#148](https://github.com/NahuelGenchi/lares/issues/148) | confirmed: drawn in a test copy, light and dark; switches on and off in tests; not used on a real desktop |
-| Process list and screenshot tool | | planned |
+| Process list, and the screenshot tool with its own switch | [#149](https://github.com/NahuelGenchi/lares/issues/149) | confirmed: drawn in a test copy, light and dark; switch on and off in tests; no capture taken in a check |
 | `lares-files.exe` and `lares-view.exe` | | planned |
 | AirDrop panel on Lares' own sharing code; device indicators | | planned |
 | Per-user file types for Markdown and images (optional) | | planned |
@@ -206,7 +206,7 @@ A switch writes `shell.ini`, then `win/src/shell_service.cpp` puts what runs in 
 
 The dock starts with File Explorer, the browser Windows opens links with, a terminal and Lares, each only when found ([Other programs](#other-programs)); once the user changes it, `shell.ini` keeps the pins. Win+1 to Win+0 bring the dock's apps to the front; the keyboard hook that sees them is only installed while the dock is on.
 
-**Until the rest of the shell arrives**, the dock's Start button opens Windows' own Start menu (or the launcher, when it is on), the processor, graphics and memory readings open Task Manager, and the screenshot menu's entries open Windows' snipping. The sharing button is left out until the AirDrop panel (part 6). The bar's other buttons open Lares' popups (below).
+**Until the rest of the shell arrives**, the dock's Start button opens Windows' own Start menu (or the launcher, when it is on), and the screenshot menu's entries open Windows' snipping unless the screenshot tool is on. The sharing button is left out until the AirDrop panel (part 6). The bar's other buttons open Lares' popups (below).
 
 **Checking a build on a PC someone works on.** `lares-shell --isolated` (or `LARES_SHELL_ISOLATED=1`) runs a copy that hides nothing, reserves no space, puts its windows far off the screen, installs no keyboard hook and opens nothing. `lares-shell --snapshot DIR` does the same with both parts on, draws them once into `DIR\top-bar.png` and `DIR\dock.png`, and ends; `LARES_COLOR_SCHEME=light` or `dark` picks the palette.
 
@@ -246,7 +246,7 @@ The bar's buttons open one see-through popup at a time (`win/shell/popups.c`, is
 | Media | what plays, with its controls, the volume, and the sound outputs |
 | Notifications | Windows' notification centre, and **Do Not Disturb**, which opens Windows' notification settings: Windows offers no public way for a program to switch it, so the popup does not pretend to |
 | Power | lock, sleep, sign out, restart, shut down, File Explorer, and closing the bar and dock until the next sign-in |
-| Screenshot | region, window or screen, through Windows' snipping until Lares' screenshot tool arrives; its shortcuts show only once that tool is on |
+| Screenshot | region, window or screen, through Lares' screenshot tool when it is on (with its shortcuts shown), else Windows' snipping |
 
 Starting or stopping Tailscale's service needs administrator rights on most PCs. The popup first tries without them; when Windows refuses, the shell starts a short-lived copy of itself, `lares-shell --ts-service start|stop [--ts-startup manual|auto]`, with Windows' own approval prompt. That copy touches the Tailscale service and nothing else, and a cancelled prompt is reported in the popup.
 
@@ -274,6 +274,20 @@ Writing `shell.ini` now tries again for up to a second when another Lares progra
 | Each on and off, alone and together, with the shell staying for the other and ending with the last; no start-up entry or guard left | `lares-shell-test`, stand-in taskbar, once on the development PC (48 checks with the bar and dock cases) | confirmed |
 | Alt+Space and Alt+V taken only while their part is on | `lares-shell-test --real`, the Checks workflow | confirmed when the workflow passes |
 | Typing, pasting into another window, pinning, the Windows key | | **not checked**: needs a desktop where the shell is in use |
+
+### The process list and the screenshot tool
+
+Issue [#149](https://github.com/NahuelGenchi/lares/issues/149).
+
+- **Processes** (`win/shell/procmon.c`) opens from the bar's processor, graphics and memory readings, the launcher and the dock's Start menu: processor, graphics (with the card's name as Windows reports it) and memory at a glance, how much the shell itself uses, and a list to search and sort by name, number, processor, memory or threads. **End Task** asks first and refuses Windows' own processes (System, csrss, wininit, winlogon, services, lsass, dwm and the like). It is part of the bar, with no switch of its own; its readings run only while it is open, and the dock lists it like an app.
+- **Screenshot tool** (`win/shell/screenshot.c`), with its own switch under **Launcher and tools**, off by default: Alt+Shift+S for a region, Alt+Shift+W for the window in front, Alt+Shift+F for the screen; Win+Shift+S and Print Screen stay Windows' own. A capture goes to the clipboard; a preview in the corner can save it as PNG in the user's Pictures\Screenshots folder, which Windows names (no fixed folder), and open it with the program Windows uses for PNG files. Everything it holds goes as soon as the capture is cancelled, saved or dismissed.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| The process list and the screenshot preview drawn, light and dark | `lares-shell --snapshot`, development PC, looked at; the preview shows a made-up picture, never the screen, and the clipboard is not touched | confirmed |
+| The screenshot tool on and off beside clipboard history, the shell staying for it and ending with it | `lares-shell-test`, once on the development PC (51 checks in all) | confirmed |
+| Alt+Shift+S taken only while the tool is on | `lares-shell-test --real`, the Checks workflow | confirmed when the workflow passes |
+| A real capture of each kind, saving, End Task | | **not checked**: a capture of the development PC's screen and ending a process there are left to a test account |
 
 ### Known limits
 

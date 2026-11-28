@@ -99,11 +99,11 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
     });
     y += kPageGap;
 
-    heading(L"Launcher and clipboard");
+    heading(L"Launcher and tools");
     y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
         float cy = toggle(top, L"Launcher",
                           L"Alt+Space opens a search for your apps and Settings pages, with a calculator. Turn it "
-                          L"off and Alt+Space is Windows' own again.",
+                          L"off and those keys go back to Windows.",
                           nullptr, &shell_prefs_.launcher, unsafe);
         cy = setting_line(rt, pal, ix, cy, iw);
         cy = toggle(cy, L"Open it with the Windows key",
@@ -111,10 +111,16 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
                     L"opens Start again.",
                     nullptr, &shell_prefs_.launcher_windows_key, unsafe && shell_prefs_.launcher);
         cy = setting_line(rt, pal, ix, cy, iw);
-        return toggle(cy, L"Clipboard history",
-                      L"Alt+V shows what you copied lately, kept in memory; text you pin is kept on this PC. "
-                      L"Win+V stays Windows' own. Turn it off and nothing more is kept.",
-                      nullptr, &shell_prefs_.clipboard, unsafe);
+        cy = toggle(cy, L"Clipboard history",
+                    L"Alt+V shows what you copied lately, kept in memory; text you pin is kept on this PC. "
+                    L"Win+V stays Windows' own. Turn it off and nothing more is kept.",
+                    nullptr, &shell_prefs_.clipboard, unsafe);
+        cy = setting_line(rt, pal, ix, cy, iw);
+        return toggle(cy, L"Screenshot tool",
+                      L"Alt+Shift+S, W or F takes a region, the window or the screen, to the clipboard and, if "
+                      L"you like, Pictures. Win+Shift+S stays Windows' own. Turn it off and those keys do nothing "
+                      L"again.",
+                      nullptr, &shell_prefs_.screenshot, unsafe);
     });
     y += kPageGap;
 

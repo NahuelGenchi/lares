@@ -62,6 +62,20 @@ typedef enum {
 } DockHideMode;
 
 typedef enum {
+    PROCMON_SORT_NAME = 0,
+    PROCMON_SORT_PID  = 1,
+    PROCMON_SORT_CPU  = 2,
+    PROCMON_SORT_MEM  = 3,
+    PROCMON_SORT_THR  = 4
+} ProcMonSortCol;
+
+typedef enum {
+    SCREENSHOT_REGION = 0,
+    SCREENSHOT_WINDOW = 1,
+    SCREENSHOT_FULL   = 2
+} ScreenshotMode;
+
+typedef enum {
     POPUP_NONE = 0,
     POPUP_CALENDAR,
     POPUP_KEYBOARD,
@@ -282,9 +296,28 @@ void clipboard_shutdown(void);
 int  clipboard_snapshot(const wchar_t *png_path);
 void clipboard_add_sample(const wchar_t *text, bool pinned);
 
+/* procmon.c: the process list (issue #149) */
+void procmon_init(HINSTANCE hInst);
+void procmon_open(ProcMonSortCol initial_sort);
+void procmon_on_theme_changed(void);
+bool procmon_is_open(void);
+void procmon_shutdown(void);
+int  procmon_snapshot(const wchar_t *png_path);
+
+/* screenshot.c: the screenshot tool (issue #149), while its switch is on */
+void screenshot_init(HINSTANCE hInst);
+void screenshot_trigger(ScreenshotMode mode);
+void screenshot_on_theme_changed(void);
+bool screenshot_is_active(void);
+void screenshot_shutdown(void);
+int  screenshot_snapshot(const wchar_t *png_path);
+
 /* hotkeys.c: shortcut ids, as WM_HOTKEY brings them. */
-#define LARES_HOTKEY_LAUNCHER  9001
-#define LARES_HOTKEY_CLIPBOARD 9005
+#define LARES_HOTKEY_LAUNCHER     9001
+#define LARES_HOTKEY_SNIP_REGION  9002
+#define LARES_HOTKEY_SNIP_WINDOW  9003
+#define LARES_HOTKEY_SNIP_FULL    9004
+#define LARES_HOTKEY_CLIPBOARD    9005
 bool hotkeys_init(HWND host_hwnd);
 void hotkeys_shutdown(void);
 
