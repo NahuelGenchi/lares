@@ -14,6 +14,7 @@
 
 #include "draw.h"
 #include "shell_prefs.h"
+#include "share_bridge.h"
 
 #ifndef min
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -120,6 +121,7 @@ typedef struct {
     bool screenshot_enabled;
     bool viewers_enabled;
     bool files_enabled;
+    bool airdrop_enabled;   /* the bar's AirDrop button (issue #155) */
 } AppConfig;
 
 typedef struct {
@@ -365,6 +367,7 @@ bool popups_is_kind_open(PopupKind kind);
 void popups_refresh_if_open(void);
 void popups_on_tailscale_updated(void);
 void popups_on_bt_scan_done(void);
+void popups_on_airdrop_updated(void);
 void popups_shutdown(void);
 HWND popups_get_last_fg_window(void);
 int  popups_snapshot(const wchar_t *png_path);
@@ -376,6 +379,25 @@ void action_open_files(const wchar_t *folder);
 void action_open_terminal(void);
 void action_open_settings(void);
 void action_open_lares(const wchar_t *section);
+/* airdrop.c: the bar's AirDrop button and panel on Lares' own sharing code
+ * (issue #155). Its updates arrive as LARES_SHARE_UPDATED_MSG. */
+#define WM_LARES_SHARE_UPDATED LARES_SHARE_UPDATED_MSG
+void airdrop_get(LaresShareState *out);
+bool airdrop_active(void);
+bool airdrop_pending(void);
+void airdrop_panel_opened(void);
+void airdrop_panel_closed(void);
+void airdrop_on_updated(void);
+void airdrop_apply_settings(void);
+void airdrop_shutdown(void);
+void airdrop_set_mode(int mode);
+void airdrop_answer(bool accept);
+void airdrop_dismiss(void);
+void airdrop_cancel_send(void);
+void airdrop_open_lares(void);
+void airdrop_show_saved(void);
+void airdrop_send_to(const char *key, HWND owner);
+void airdrop_set_test_state(const LaresShareState *s);
 void action_open_processes(void);
 /* 0 a region, 1 the window in front, 2 the whole screen. */
 void action_screenshot(int mode);

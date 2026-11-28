@@ -87,6 +87,11 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
                           L"Turn it off to give the top of the screen back.",
                           nullptr, &shell_prefs_.bar, unsafe);
         cy = setting_line(rt, pal, ix, cy, iw);
+        cy = toggle(cy, L"AirDrop in the top bar",
+                    L"A button in the bar for AirDrop with iPhones, iPads and Macs, on the adapter and contacts of "
+                    L"Lares' Share page. Turn it off and the button goes; Share stays in Lares.",
+                    nullptr, &shell_prefs_.bar_airdrop, unsafe && shell_prefs_.bar);
+        cy = setting_line(rt, pal, ix, cy, iw);
         cy = toggle(cy, L"Dock",
                     L"Takes the place of Windows' taskbar, with Start and your pinned and open apps. Turn it off "
                     L"and Windows' own taskbar comes back.",

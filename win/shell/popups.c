@@ -141,8 +141,20 @@ enum {
     ACT_PWR_QUIT,
     ACT_SS_REGION,
     ACT_SS_WINDOW,
-    ACT_SS_FULL
+    ACT_SS_FULL,
+    ACT_SH_MODE,
+    ACT_SH_ACCEPT,
+    ACT_SH_DECLINE,
+    ACT_SH_DISMISS,
+    ACT_SH_SHOW,
+    ACT_SH_DEVICE,
+    ACT_SH_CANCEL,
+    ACT_SH_OPEN_APP
 };
+
+/* The AirDrop panel's state, read as it is drawn (issue #155). */
+static LaresShareState g_sh;
+static bool g_share_hold = false; /* a file picker is open: the panel keeps looking */
 
 static void add_click(int action, int param, int x, int y, int w, int h, const wchar_t *sp) {
     if (g_rect_count >= MAX_POPUP_RECTS) return;
@@ -292,6 +304,19 @@ static void popup_present(void) {
 
 static void compute_popup_size(int *out_w, int *out_h) {
     switch (g_pop_kind) {
+    case POPUP_SHARE: {
+        airdrop_get(&g_sh);
+        bool ready = g_sh.setup == LARES_SHARE_READY;
+        int h = 82;                                    /* title, status, name */
+        if (ready) h += 42;                            /* Off, Contacts Only, Everyone */
+        if (g_sh.wake_state == LARES_SHARE_WAKE_RADIO_OFF) h += 26;
+        if (g_sh.has_incoming) h += 98;
+        if (ready) h += 28 + max(1, g_sh.device_count) * 40;
+        h += 52;                                       /* footer */
+        *out_w = 336;
+        *out_h = h;
+        break;
+    }
     case POPUP_CALENDAR:
         *out_w = 312; *out_h = 342; break;
     case POPUP_KEYBOARD:
@@ -946,6 +971,189 @@ static void popup_paint(void) {
         }
     }
 
+    /* ===================== 9. AIRDROP (issue #155) ===================== */
+    else if (g_pop_kind == POPUP_SHARE) {
+        const float fx = (float)(ox + 16);
+        bool ready = g_sh.setup == LARES_SHARE_READY;
+        bool busy = g_sh.link == LARES_SHARE_LINK_STARTING || g_sh.link == LARES_SHARE_LINK_STOPPING;
+        draw_share_icon(g, fx + 10.0f, (float)(oy + 25), 9.0f, g_sh.receiving ? g_theme.accent : g_theme.fg_primary, 1.4f);
+        draw_text(g, L"AirDrop", L"Segoe UI", 14.0f, GP_FONT_BOLD, g_theme.fg_primary,
+                  fx + 28.0f, (float)(oy + 12), 200.0f, 26.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, false);
+
+        /* One status line */
+        wchar_t st[220];
+        ARGB st_col = g_theme.fg_secondary;
+        if (g_sh.setup == LARES_SHARE_NO_PROGRAM) {
+            wcsncpy_s(st, 220, L"This copy of Lares came without lares-share.exe.", _TRUNCATE);
+        } else if (g_sh.setup == LARES_SHARE_NO_ADAPTER) {
+            wcsncpy_s(st, 220, L"Plug in the Wi-Fi adapter Lares uses for AirDrop.", _TRUNCATE);
+        } else if (g_sh.setup == LARES_SHARE_NEEDS_SETUP) {
+            wcsncpy_s(st, 220, L"The adapter needs a one-time setup in Lares.", _TRUNCATE);
+        } else if (g_sh.error[0]) {
+            wcsncpy_s(st, 220, g_sh.error, _TRUNCATE);
+            st_col = g_theme.danger;
+        } else if (busy) {
+            wcsncpy_s(st, 220, g_sh.link == LARES_SHARE_LINK_STARTING ? L"Starting..." : L"Stopping...", _TRUNCATE);
+        } else if (g_sh.mode == LARES_SHARE_MODE_EVERYONE) {
+            if (g_sh.left_s > 0)
+                _snwprintf_s(st, 220, _TRUNCATE, L"Everyone nearby can send to this PC for %d:%02d",
+                             g_sh.left_s / 60, g_sh.left_s % 60);
+            else
+                wcsncpy_s(st, 220, L"Everyone nearby can send to this PC", _TRUNCATE);
+        } else if (g_sh.mode == LARES_SHARE_MODE_CONTACTS) {
+            wcsncpy_s(st, 220, g_sh.contact_count > 0 ? L"Your contacts can send to this PC"
+                                                      : L"No contacts saved yet: add them in Lares' Share",
+                      _TRUNCATE);
+        } else {
+            wcsncpy_s(st, 220, L"Receiving is off", _TRUNCATE);
+        }
+        draw_text(g, st, L"Segoe UI", 11.5f, GP_FONT_REGULAR, st_col,
+                  fx, (float)(oy + 40), (float)(pw - 32), 20.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, true);
+        if (ready && g_sh.name[0]) {
+            wchar_t as[140];
+            _snwprintf_s(as, 140, _TRUNCATE, L"Visible as %ls", g_sh.name);
+            draw_text(g, as, L"Segoe UI", 11.0f, GP_FONT_REGULAR, g_theme.fg_muted,
+                      fx, (float)(oy + 58), (float)(pw - 32), 18.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, true);
+        }
+
+        int y = oy + 82;
+
+        /* Who may send: Off, Contacts Only, or Everyone for 10 Minutes */
+        if (ready) {
+            static const wchar_t *seg[3] = { L"Off", L"Contacts Only", L"Everyone" };
+            int sx = ox + 16, sw = pw - 32, segw = sw / 3;
+            draw_round_rect_fill(g, (float)sx, (float)y, (float)sw, 30.0f, 8.0f, g_theme.popup_surface);
+            for (int i = 0; i < 3; i++) {
+                int bx = sx + i * segw;
+                int idx = g_rect_count;
+                add_click(ACT_SH_MODE, i, bx, y, segw, 30, NULL);
+                bool on = g_sh.mode == i;
+                if (on) draw_round_rect_fill(g, (float)(bx + 2), (float)(y + 2), (float)(segw - 4), 26.0f, 6.0f, g_theme.accent);
+                else draw_row_hover(g, idx, 6.0f);
+                draw_text(g, seg[i], L"Segoe UI", 11.5f, on ? GP_FONT_BOLD : GP_FONT_REGULAR,
+                          on ? g_theme.fg_on_accent : g_theme.fg_primary,
+                          (float)bx, (float)y, (float)segw, 30.0f, GP_ALIGN_CENTER, GP_ALIGN_CENTER, true);
+            }
+            y += 42;
+        }
+
+        /* The wake-up goes through Windows' Bluetooth */
+        if (g_sh.wake_state == LARES_SHARE_WAKE_RADIO_OFF) {
+            draw_text(g, L"Bluetooth is off: devices may not wake up to be found.", L"Segoe UI", 11.0f,
+                      GP_FONT_REGULAR, g_theme.danger, fx, (float)y, (float)(pw - 32), 20.0f,
+                      GP_ALIGN_NEAR, GP_ALIGN_CENTER, true);
+            y += 26;
+        }
+
+        /* A device is offering something, is sending it, or has finished */
+        if (g_sh.has_incoming) {
+            draw_round_rect_fill(g, (float)(ox + 12), (float)y, (float)(pw - 24), 88.0f, 10.0f, g_theme.popup_surface);
+            wchar_t line[260];
+            const wchar_t *who = g_sh.in_sender[0] ? g_sh.in_sender : L"A nearby device";
+            if (g_sh.in_state == LARES_SHARE_IN_ASKING) _snwprintf_s(line, 260, _TRUNCATE, L"%ls wants to send you", who);
+            else if (g_sh.in_state == LARES_SHARE_IN_RECEIVING) _snwprintf_s(line, 260, _TRUNCATE, L"Receiving from %ls", who);
+            else if (g_sh.in_state == LARES_SHARE_IN_DONE) _snwprintf_s(line, 260, _TRUNCATE, L"Received from %ls", who);
+            else _snwprintf_s(line, 260, _TRUNCATE, L"%ls", g_sh.in_message[0] ? g_sh.in_message : L"The transfer did not finish");
+            draw_text(g, line, L"Segoe UI", 11.5f, GP_FONT_REGULAR,
+                      g_sh.in_state == LARES_SHARE_IN_FAILED ? g_theme.danger : g_theme.fg_secondary,
+                      (float)(ox + 24), (float)(y + 8), (float)(pw - 48), 18.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, true);
+            draw_text(g, g_sh.in_what[0] ? g_sh.in_what : L"A file", L"Segoe UI", 13.0f, GP_FONT_BOLD, g_theme.fg_primary,
+                      (float)(ox + 24), (float)(y + 26), (float)(pw - 48), 20.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, true);
+
+            int by = y + 54, bw = (pw - 48 - 8) / 2;
+            int bx1 = ox + 24, bx2 = ox + 24 + bw + 8;
+            if (g_sh.in_state == LARES_SHARE_IN_RECEIVING) {
+                float frac = g_sh.in_total > 0 ? (float)((double)g_sh.in_done / (double)g_sh.in_total) : 0.0f;
+                if (frac > 1.0f) frac = 1.0f;
+                float tw = (float)(pw - 48);
+                draw_round_rect_fill(g, (float)bx1, (float)(by + 10), tw, 6.0f, 3.0f, g_theme.popup_border);
+                if (frac > 0.0f) draw_round_rect_fill(g, (float)bx1, (float)(by + 10), tw * frac, 6.0f, 3.0f, g_theme.accent);
+            } else {
+                bool asking = g_sh.in_state == LARES_SHARE_IN_ASKING;
+                bool done = g_sh.in_state == LARES_SHARE_IN_DONE;
+                int i1 = g_rect_count;
+                add_click(asking ? ACT_SH_DECLINE : ACT_SH_DISMISS, 0, bx1, by, bw, 26, NULL);
+                draw_round_rect_fill(g, (float)bx1, (float)by, (float)bw, 26.0f, 6.0f, g_theme.accent_overlay_selected);
+                draw_row_hover(g, i1, 6.0f);
+                draw_text(g, asking ? L"Decline" : L"Close", L"Segoe UI", 11.5f, GP_FONT_BOLD, g_theme.fg_primary,
+                          (float)bx1, (float)by, (float)bw, 26.0f, GP_ALIGN_CENTER, GP_ALIGN_CENTER, false);
+                if (asking || (done && g_sh.in_saved[0])) {
+                    int i2 = g_rect_count;
+                    add_click(asking ? ACT_SH_ACCEPT : ACT_SH_SHOW, 0, bx2, by, bw, 26, NULL);
+                    draw_round_rect_fill(g, (float)bx2, (float)by, (float)bw, 26.0f, 6.0f, g_theme.accent);
+                    draw_row_hover(g, i2, 6.0f);
+                    draw_text(g, asking ? L"Accept" : L"Show in folder", L"Segoe UI", 11.5f, GP_FONT_BOLD, g_theme.fg_on_accent,
+                              (float)bx2, (float)by, (float)bw, 26.0f, GP_ALIGN_CENTER, GP_ALIGN_CENTER, false);
+                }
+            }
+            y += 98;
+        }
+
+        /* Nearby devices: click one to choose files for it */
+        if (ready) {
+            draw_text(g, L"NEARBY DEVICES", L"Segoe UI", 10.0f, GP_FONT_BOLD, g_theme.fg_muted,
+                      fx, (float)y, (float)(pw - 32), 22.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, false);
+            y += 28;
+            if (g_sh.device_count == 0) {
+                draw_text(g, (busy || !g_sh.running) ? L"Getting ready..."
+                             : (g_sh.quiet ? L"No Apple devices nearby" : L"Looking for devices..."),
+                          L"Segoe UI", 12.0f, GP_FONT_REGULAR, g_theme.fg_muted,
+                          fx, (float)y, (float)(pw - 32), 36.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, false);
+                y += 40;
+            }
+            for (int i = 0; i < g_sh.device_count; i++) {
+                const LaresShareDevice *d = &g_sh.devices[i];
+                int idx = g_rect_count;
+                bool active = d->state == LARES_SHARE_DEV_ASKING || d->state == LARES_SHARE_DEV_SENDING;
+                add_click(active ? ACT_SH_CANCEL : ACT_SH_DEVICE, i, ox + 10, y, pw - 20, 38, NULL);
+                draw_row_hover(g, idx, 8.0f);
+                draw_circle_fill(g, (float)(ox + 34), (float)(y + 19), 14.0f, g_theme.popup_surface);
+                wchar_t glyph = d->kind == LARES_SHARE_KIND_PHONE  ? 0xE8EA
+                              : d->kind == LARES_SHARE_KIND_TABLET ? 0xE70A
+                              : d->kind == LARES_SHARE_KIND_DESKTOP ? 0xE7F4 : 0xE7F8;
+                draw_icon_glyph(g, glyph, 14.0f, g_theme.fg_primary, (float)(ox + 20), (float)(y + 5), 28.0f, 28.0f);
+                wchar_t sub[160];
+                ARGB sub_col = g_theme.fg_muted;
+                if (d->state == LARES_SHARE_DEV_ASKING) {
+                    wcsncpy_s(sub, 160, L"Waiting for them to accept. Click to cancel", _TRUNCATE);
+                } else if (d->state == LARES_SHARE_DEV_SENDING) {
+                    int pct = d->total > 0 ? (int)((d->sent * 100) / d->total) : 0;
+                    _snwprintf_s(sub, 160, _TRUNCATE, L"Sending %d%%. Click to cancel", pct);
+                    sub_col = g_theme.accent;
+                } else if (d->state == LARES_SHARE_DEV_SENT) {
+                    wcsncpy_s(sub, 160, L"Sent", _TRUNCATE);
+                    sub_col = g_theme.success;
+                } else if (d->state == LARES_SHARE_DEV_DECLINED) {
+                    wcsncpy_s(sub, 160, L"Declined", _TRUNCATE);
+                } else if (d->state == LARES_SHARE_DEV_FAILED) {
+                    wcsncpy_s(sub, 160, d->message[0] ? d->message : L"Could not send", _TRUNCATE);
+                    sub_col = g_theme.danger;
+                } else if (d->model[0]) {
+                    _snwprintf_s(sub, 160, _TRUNCATE, L"%ls. Click to send files", d->model);
+                } else {
+                    wcsncpy_s(sub, 160, L"Click to send files", _TRUNCATE);
+                }
+                draw_text(g, d->name[0] ? d->name : L"Apple device", L"Segoe UI", 12.5f, GP_FONT_BOLD, g_theme.fg_primary,
+                          (float)(ox + 58), (float)(y + 3), (float)(pw - 78), 18.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, true);
+                draw_text(g, sub, L"Segoe UI", 11.0f, GP_FONT_REGULAR, sub_col,
+                          (float)(ox + 58), (float)(y + 19), (float)(pw - 78), 16.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, true);
+                y += 40;
+            }
+        }
+
+        /* Footer: Lares' Share page (set-up, contacts, more ways to send) */
+        int foot_y = oy + ph - 40;
+        draw_line(g, (float)(ox + 12), (float)(foot_y - 6), (float)(ox + pw - 12), (float)(foot_y - 6), g_theme.separator, 1.0f);
+        if (g_sh.setup != LARES_SHARE_NO_PROGRAM) {
+            int idx = g_rect_count;
+            add_click(ACT_SH_OPEN_APP, 0, ox + 12, foot_y, pw - 24, 28, NULL);
+            draw_row_hover(g, idx, 6.0f);
+            draw_text(g, ready ? L"Open AirDrop in Lares" : L"Set it up in Lares", L"Segoe UI", 12.0f,
+                      GP_FONT_REGULAR, g_theme.fg_primary,
+                      (float)(ox + 22), (float)foot_y, (float)(pw - 44), 28.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, false);
+        }
+    }
+
     popup_present();
 }
 
@@ -1141,6 +1349,43 @@ static void handle_popup_action(const PopupClickRect *r) {
         popups_close();
         action_screenshot(2);
         break;
+    case ACT_SH_MODE:
+        airdrop_set_mode(r->param);
+        popup_paint();
+        break;
+    case ACT_SH_ACCEPT:
+        airdrop_answer(true);
+        break;
+    case ACT_SH_DECLINE:
+        airdrop_answer(false);
+        break;
+    case ACT_SH_DISMISS:
+        airdrop_dismiss();
+        break;
+    case ACT_SH_SHOW:
+        popups_close();
+        airdrop_show_saved();
+        airdrop_dismiss();
+        break;
+    case ACT_SH_CANCEL:
+        airdrop_cancel_send();
+        break;
+    case ACT_SH_DEVICE: {
+        if (r->param < 0 || r->param >= g_sh.device_count) break;
+        char key[96];
+        strncpy_s(key, sizeof(key), g_sh.devices[r->param].key, _TRUNCATE);
+        /* The file picker takes the focus; the panel keeps looking meanwhile. */
+        g_share_hold = true;
+        popups_close();
+        airdrop_send_to(key, NULL);
+        g_share_hold = false;
+        if (g_pop_kind != POPUP_SHARE) airdrop_panel_closed();
+        break;
+    }
+    case ACT_SH_OPEN_APP:
+        popups_close();
+        airdrop_open_lares();
+        break;
     default:
         break;
     }
@@ -1278,6 +1523,7 @@ void popups_toggle(PopupKind kind, int anchor_x, int anchor_y) {
         g_last_fg_wnd = fg;
     }
 
+    if (g_pop_kind == POPUP_SHARE && kind != POPUP_SHARE && !g_share_hold) airdrop_panel_closed();
     g_pop_kind = kind;
     g_anchor_x = anchor_x;
     g_anchor_y = anchor_y;
@@ -1298,6 +1544,8 @@ void popups_toggle(PopupKind kind, int anchor_x, int anchor_y) {
     } else if (kind == POPUP_MEDIA) {
         load_audio_endpoints();
         media_poll();
+    } else if (kind == POPUP_SHARE) {
+        airdrop_panel_opened();
     }
 
     /* A test copy draws the popup and shows nothing, so it never takes the
@@ -1323,6 +1571,7 @@ void popups_toggle(PopupKind kind, int anchor_x, int anchor_y) {
 
 void popups_close(void) {
     PopupKind was = g_pop_kind;
+    if (was == POPUP_SHARE && !g_share_hold) airdrop_panel_closed();
     g_pop_kind = POPUP_NONE;
     g_hover_rect = -1;
     g_dragging_vol = false;
@@ -1356,6 +1605,12 @@ void popups_refresh_if_open(void) {
 void popups_on_tailscale_updated(void) {
     g_ts_peer_count = telemetry_get_ts_peers(g_ts_peers, 32);
     if (popups_is_open() && g_pop_kind == POPUP_NETWORK) {
+        popup_paint();
+    }
+}
+
+void popups_on_airdrop_updated(void) {
+    if (popups_is_open() && g_pop_kind == POPUP_SHARE) {
         popup_paint();
     }
 }

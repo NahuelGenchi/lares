@@ -36,6 +36,7 @@ typedef struct {
     /* How they behave. */
     bool bar_auto_hide;
     bool week_starts_monday;
+    bool bar_airdrop;
     int dock_hide; /* LaresDockHide */
     bool dock_window_counts;
     bool dock_middle_click_new;

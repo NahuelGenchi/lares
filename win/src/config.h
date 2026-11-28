@@ -77,6 +77,7 @@ struct ShellPrefs {
     // [top-bar]
     bool bar_auto_hide = false;
     bool week_starts_monday = false;
+    bool bar_airdrop = false;      // the bar's AirDrop button (issue #155)
     // [dock]
     DockHide dock_hide = DockHide::WhenCovered;
     bool dock_window_counts = true;
