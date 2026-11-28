@@ -72,6 +72,7 @@ extern "C" void lares_shell_prefs_load(LaresShellPrefs* out)
     out->bar_auto_hide = p.bar_auto_hide;
     out->week_starts_monday = p.week_starts_monday;
     out->bar_airdrop = p.bar_airdrop;
+    out->bar_indicators = p.bar_indicators;
     out->dock_hide = p.dock_hide == lares::DockHide::AlwaysShown ? LARES_DOCK_ALWAYS_SHOWN
                      : p.dock_hide == lares::DockHide::AutoHide  ? LARES_DOCK_AUTO_HIDE
                                                                  : LARES_DOCK_WHEN_COVERED;
@@ -96,6 +97,7 @@ extern "C" bool lares_shell_prefs_save(const LaresShellPrefs* in)
     p.bar_auto_hide = in->bar_auto_hide;
     p.week_starts_monday = in->week_starts_monday;
     p.bar_airdrop = in->bar_airdrop;
+    p.bar_indicators = in->bar_indicators;
     p.dock_hide = in->dock_hide == LARES_DOCK_ALWAYS_SHOWN ? lares::DockHide::AlwaysShown
                   : in->dock_hide == LARES_DOCK_AUTO_HIDE  ? lares::DockHide::AutoHide
                                                            : lares::DockHide::WhenCovered;

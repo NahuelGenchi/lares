@@ -26,6 +26,7 @@
 #include "guard_client.h"
 #include "lares_version.h"
 
+#include <dbt.h>
 #include <objbase.h>
 #include <shellapi.h>
 #include <shlwapi.h>
@@ -124,6 +125,7 @@ static void reload(void) {
     else if (!g_cfg.topbar_enabled && had_bar) topbar_destroy();
     else topbar_apply_settings();
     airdrop_apply_settings();
+    indicators_apply_settings();
 
     if (g_cfg.dock_enabled && !had_dock) dock_create(g_hInst);
     else dock_apply_settings();
@@ -155,7 +157,9 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
     switch (msg) {
     case WM_TIMER:
-        if (wParam == TIMER_TELEMETRY) {
+        if (indicators_on_timer(wParam)) {
+            /* the device indicators look again */
+        } else if (wParam == TIMER_TELEMETRY) {
             g_tel_tick++;
             telemetry_update(true);
             if ((g_tel_tick % 15) == 0) telemetry_refresh_tailscale_async();
@@ -201,6 +205,15 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_LARES_SHARE_UPDATED:
         airdrop_on_updated();
         return 0;
+
+    case WM_LARES_INDICATORS_UPDATED:
+        indicators_on_updated();
+        return 0;
+
+    case WM_DEVICECHANGE:
+        if (wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE || wParam == DBT_DEVNODES_CHANGED)
+            indicators_on_change();
+        return TRUE;
 
     case WM_LARES_BT_SCAN_DONE:
         popups_on_bt_scan_done();
@@ -253,6 +266,7 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_DISPLAYCHANGE:
         topbar_on_display_change();
         dock_on_display_change();
+        indicators_on_change(); /* Remote mode changes the screen */
         return 0;
 
     case WM_QUERYENDSESSION:
@@ -346,6 +360,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         g_cfg.files_enabled = true;
         g_cfg.viewers_enabled = true;
         g_cfg.airdrop_enabled = true;
+        g_cfg.indicators_enabled = true;
         g_cfg.animations = false;
         g_cfg.topbar_autohide = false;
         g_cfg.dock_hide_mode = HIDE_NEVER;
@@ -414,7 +429,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     if (!g_cfg.isolated) hotkeys_init(g_hHostWnd);
 
     if (snapshot_dir[0]) {
-        /* Drawn once with readings taken now, saved, and gone. */
+        /* Drawn once with readings taken now, saved, and gone; the device
+         * indicators from made-up state, a controller's battery low. */
+        LaresIndicators ind;
+        ZeroMemory(&ind, sizeof(ind));
+        ind.controller = ind.headphones = ind.keyboard = ind.mouse = ind.remote = true;
+        ind.controller_battery = LARES_PAD_BATTERY_LOW;
+        indicators_set_test_state(&ind);
         telemetry_update(true);
         topbar_repaint();
         dock_repaint();
@@ -514,6 +535,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         return ok ? 0 : 1;
     }
 
+    indicators_apply_settings();
     say_ready_if_docked();
     set_timers();
     trim_working_set();
@@ -525,6 +547,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     }
 
     hotkeys_shutdown();
+    indicators_shutdown();
     airdrop_shutdown();
     if (g_cfg.screenshot_enabled) screenshot_shutdown();
     procmon_shutdown();

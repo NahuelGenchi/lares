@@ -876,6 +876,13 @@ DeviceEntry* find_entry(std::vector<DeviceEntry>& list, const std::string& id)
 
 } // namespace
 
+bool bluetooth_audio_connected()
+{
+    for (const DeviceEntry& d : bluetooth_audio())
+        if (d.connected) return true;
+    return false;
+}
+
 DevicesManager::DevicesManager(bool dry_run)
     : dry_run_(dry_run)
 {
