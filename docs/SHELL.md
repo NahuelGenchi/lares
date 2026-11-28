@@ -341,7 +341,7 @@ The **Files** switch (Settings, **Files and viewers**, off by default) makes the
 | Case | How | Status |
 | :--- | :--- | :--- |
 | Drawn with a made-up folder, light and dark | `lares-files --snapshot`, development PC, looked at | confirmed |
-| Opened for real on a made-up folder of 41 items, a second start handing over another folder as a tab, own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once its window closes | the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; the reading is in its log |
+| Opened for real on a made-up folder of 41 items, a second start handing over another folder as a tab, own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once its window closes | the Checks workflow on GitHub's Windows runner ([#158](https://github.com/NahuelGenchi/lares/pull/158)) | confirmed: 5.6 MB own memory (working set 24.4 MB) with two folders in tabs |
 | The same steps as a test copy, off the screen | development PC, once: 7.3 MB own memory (working set 23.7 MB) with two folders open in tabs, 0 ms of processor time in 30 idle seconds, the focus left where it was, the program gone after its window closed. The font tool on that PC loads Direct2D here too, so the module check is left to the workflow | confirmed |
 | The switch's entries: the power popup says **Files** while it is on | `lares-shell --snapshot`, looked at | confirmed |
 | Browsing, Quick Look, renaming, copying, dragging and deleting by hand | | **not checked**: they change real files, and belong on a test account |
