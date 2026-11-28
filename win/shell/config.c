@@ -65,6 +65,12 @@ void config_load_all(void) {
     g_cfg.topbar_margin = 0;
     g_cfg.start_of_week = p.week_starts_monday ? 1 : 0;
     g_cfg.topbar_autohide = p.bar_auto_hide;
+    g_cfg.clock_24h = p.clock_24h;
+    g_cfg.clock_seconds = p.clock_seconds;
+    g_cfg.clock_weekday = p.clock_weekday;
+    g_cfg.clock_date = p.clock_date;
+    g_cfg.clock_date_style = p.clock_date_style;
+    wcscpy_s(g_cfg.clock_format, 64, p.clock_format);
     g_cfg.airdrop_enabled = p.bar_airdrop;
     g_cfg.indicators_enabled = p.bar_indicators;
 
@@ -147,6 +153,20 @@ void config_save_behaviour(void) {
     p.dock_hide = g_cfg.dock_hide_mode == HIDE_NEVER  ? LARES_DOCK_ALWAYS_SHOWN
                 : g_cfg.dock_hide_mode == HIDE_ALWAYS ? LARES_DOCK_AUTO_HIDE
                                                       : LARES_DOCK_WHEN_COVERED;
+    lares_shell_prefs_save(&p);
+}
+
+/* The clock's right-click menu changed how it reads (issue #165). */
+void config_save_clock(void) {
+    if (g_cfg.isolated) return;
+    LaresShellPrefs p;
+    lares_shell_prefs_load(&p);
+    p.clock_24h = g_cfg.clock_24h;
+    p.clock_seconds = g_cfg.clock_seconds;
+    p.clock_weekday = g_cfg.clock_weekday;
+    p.clock_date = g_cfg.clock_date;
+    p.clock_date_style = g_cfg.clock_date_style;
+    wcscpy_s(p.clock_format, 64, g_cfg.clock_format);
     lares_shell_prefs_save(&p);
 }
 

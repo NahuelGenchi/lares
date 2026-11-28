@@ -1122,6 +1122,18 @@ static void test_shell_prefs()
     p.week_starts_monday = true;
     p.bar_airdrop = true;
     p.bar_indicators = true;
+    // The clock (issue #165): 24-hour, day and date by default; a picture
+    // of the user's own with quotes and a colon survives the file.
+    {
+        lares::ShellPrefs fresh;
+        CHECK(fresh.clock_24h && !fresh.clock_seconds && fresh.clock_weekday && fresh.clock_date);
+        CHECK(fresh.clock_date_style == 0 && fresh.clock_format.empty());
+    }
+    p.clock_24h = false;
+    p.clock_seconds = true;
+    p.clock_weekday = false;
+    p.clock_date_style = 4;
+    p.clock_format = "'week' dddd, h:mm:ss tt";
     p.dock_hide = lares::DockHide::AlwaysShown;
     p.dock_media = false;
     p.animations = false;
@@ -1132,6 +1144,9 @@ static void test_shell_prefs()
     lares::ShellPrefs back = lares::parse_shell_ini(lares::serialize_shell_ini(p));
     CHECK(back.bar && back.dock && back.files && !back.launcher && !back.viewers);
     CHECK(back.bar_auto_hide && back.week_starts_monday && back.bar_airdrop && back.bar_indicators);
+    CHECK(!back.clock_24h && back.clock_seconds && !back.clock_weekday && back.clock_date);
+    CHECK(back.clock_date_style == 4 && back.clock_format == "'week' dddd, h:mm:ss tt");
+    CHECK(lares::parse_shell_ini("[clock]\ndate-style=9\n").clock_date_style == 0); // out of range: the first style
     CHECK(back.dock_hide == lares::DockHide::AlwaysShown);
     CHECK(!back.dock_media && !back.animations);
     CHECK(back.pins_saved && back.pins.size() == 2);

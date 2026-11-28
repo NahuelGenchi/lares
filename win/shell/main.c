@@ -168,7 +168,8 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         } else if (wParam == TIMER_CLOCK) {
             SYSTEMTIME st;
             GetLocalTime(&st);
-            if (st.wMinute != g_last_minute) {
+            /* Every second while the clock shows seconds, else each minute. */
+            if (st.wMinute != g_last_minute || clock_shows_seconds()) {
                 g_last_minute = st.wMinute;
                 topbar_repaint();
                 popups_refresh_if_open();

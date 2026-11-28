@@ -267,6 +267,12 @@ add_executable(lares-shell-draw-test tests/shell_draw_test.c)
 target_link_libraries(lares-shell-draw-test PRIVATE lares_shell_draw)
 add_test(NAME lares-shell-draw-test COMMAND lares-shell-draw-test)
 
+# The top bar clock's formatter on its own (issue #165): every letter, quoted
+# text, 12 and 24 hours at midnight and noon, and a short buffer.
+add_executable(lares-shell-clock-test tests/shell_clock_test.c shell/clockfmt.c)
+target_include_directories(lares-shell-clock-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shell)
+add_test(NAME lares-shell-clock-test COMMAND lares-shell-clock-test)
+
 # lares-shell.exe (issue #145): the top bar and the dock, started by
 # lares-guard.exe, which owns hiding the Windows taskbar. Plain C.
 add_executable(lares-shell WIN32
@@ -284,6 +290,8 @@ add_executable(lares-shell WIN32
     shell/hotkeys.c
     shell/topbar.c
     shell/dock.c
+    shell/clock.c
+    shell/clockfmt.c
     shell/airdrop.c
     shell/indicators.c
     $<TARGET_OBJECTS:lares_ble>

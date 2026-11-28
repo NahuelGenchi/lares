@@ -43,6 +43,13 @@ typedef struct {
     bool dock_middle_click_new;
     bool dock_media;
     bool animations;
+    /* The top bar's clock (issue #165). */
+    bool clock_24h;
+    bool clock_seconds;
+    bool clock_weekday;
+    bool clock_date;
+    int clock_date_style;  /* 0 dd MMM, 1 MMM d, 2 dd/MM/yyyy, 3 MM/dd/yyyy, 4 yyyy-MM-dd */
+    wchar_t clock_format[64]; /* a picture of the user's own; empty: the choices above */
 } LaresShellPrefs;
 
 #define LARES_PIN_NAME 128

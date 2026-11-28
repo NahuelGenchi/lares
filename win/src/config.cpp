@@ -188,6 +188,15 @@ ShellPrefs parse_shell_ini(const std::string& text)
             else if (key == "media") p.dock_media = parse_bool(val, p.dock_media);
         } else if (group == "general") {
             if (key == "animations") p.animations = parse_bool(val, p.animations);
+        } else if (group == "clock") {
+            if (key == "hour24") p.clock_24h = parse_bool(val, p.clock_24h);
+            else if (key == "seconds") p.clock_seconds = parse_bool(val, p.clock_seconds);
+            else if (key == "weekday") p.clock_weekday = parse_bool(val, p.clock_weekday);
+            else if (key == "date") p.clock_date = parse_bool(val, p.clock_date);
+            else if (key == "date-style") {
+                int s = std::atoi(val.c_str());
+                p.clock_date_style = (s >= 0 && s <= 4) ? s : 0;
+            } else if (key == "format") p.clock_format = val;
         } else if (mark) {
             if (key == "name") mark->name = val;
             else if (key == "path") mark->path = val;
@@ -242,7 +251,14 @@ std::string serialize_shell_ini(const ShellPrefs& p)
         << "middle-click-new-window=" << b(p.dock_middle_click_new) << "\n"
         << "media=" << b(p.dock_media) << "\n"
         << "\n[general]\n"
-        << "animations=" << b(p.animations) << "\n";
+        << "animations=" << b(p.animations) << "\n"
+        << "\n[clock]\n"
+        << "hour24=" << b(p.clock_24h) << "\n"
+        << "seconds=" << b(p.clock_seconds) << "\n"
+        << "weekday=" << b(p.clock_weekday) << "\n"
+        << "date=" << b(p.clock_date) << "\n"
+        << "date-style=" << p.clock_date_style << "\n"
+        << "format=" << one_line(p.clock_format) << "\n";
     if (p.pins_saved) {
         if (p.pins.empty()) out << "\n[dock-pins]\n";
         size_t n = 0;
