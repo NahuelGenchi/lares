@@ -22,13 +22,14 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 
 ## Budget
 
-| Reading | Target |
-| :--- | :--- |
-| `lares-shell.exe`, own (private) memory at idle | about 25 MB |
-| The same, in active use | under 50 MB |
-| Graphics card use at idle | 0% |
-| Processor time at idle | near zero |
-| Loaded in any shell process | no Direct3D device, WebView2, Chromium or .NET |
+| Reading | Target | Measured |
+| :--- | :--- | :--- |
+| `lares-shell.exe`, own (private) memory at idle | about 25 MB | **confirmed**: 15.6 to 16.2 MB on GitHub's Windows runner with bar and dock on ([#156](https://github.com/NahuelGenchi/lares/pull/156), [#158](https://github.com/NahuelGenchi/lares/pull/158)); 18.7 MB on the development PC with bar, dock, the AirDrop button and the device indicators on ([#157](https://github.com/NahuelGenchi/lares/issues/157)) |
+| The same, in active use | under 50 MB | **not measured**: no check drives the shell's popups, launcher and tools as a person would yet |
+| Graphics card use at idle | 0% | **reported**: not read directly; no shell process loads Direct3D, so the shell gives the graphics card no drawing work of its own |
+| Processor time at idle | near zero | **confirmed**: 0.10% of one core on the runner, 0.21% on the development PC |
+| Loaded in any shell process | no Direct3D device, WebView2, Chromium or .NET | **confirmed** for `lares-shell.exe`, `lares-view.exe` and `lares-files.exe` in the Checks workflow |
+| `lares-view.exe` and `lares-files.exe` | nothing while unused | **confirmed**: they start on demand and end with their last window; 5.4 MB and 5.6 MB own memory with files open, on the runner |
 
 ## The drawing engine
 
@@ -409,7 +410,7 @@ Each key Lares makes is written down too, as a `registry-key` change, a kind the
 | Offered for real on GitHub's runner: Windows lists `lares-view.exe` among the handlers for `.md` and `.png`, then no longer after undo, and the ProgIDs are gone | `lares-win-unit` with `LARES_TEST_REAL_FILETYPES=1`, the Checks workflow only | confirmed when the workflow passes |
 | The Default apps page opening on Lares, and choosing Lares there | | **not checked**: it needs a person at a desktop; the development PC's file types are never touched by a check |
 
-### Known limits
+## Known limits
 
 - The bar and dock are drawn at fixed pixel sizes on the primary screen, as the prototype drew them: at 150% or 200% display scale they are small, and a second screen gets neither. Scaling and more screens belong to the test matrix of stage 4.
 - Start opens Windows' own Start menu unless the launcher is on.
