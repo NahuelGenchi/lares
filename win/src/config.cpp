@@ -133,12 +133,19 @@ ShellPrefs parse_shell_ini(const std::string& text)
     std::string line;
     std::string group;
     DockPin* pin = nullptr;
+    FilesBookmark* mark = nullptr;
     while (std::getline(in, line)) {
         std::string t = trim(line);
         if (t.empty() || t[0] == '#' || t[0] == ';') continue;
         if (t.front() == '[' && t.back() == ']') {
             group = trim(t.substr(1, t.size() - 2));
             pin = nullptr;
+            mark = nullptr;
+            if (group.rfind("files-bookmark", 0) == 0 && p.bookmarks.size() < kMaxFilesBookmarks) {
+                p.bookmarks.emplace_back();
+                mark = &p.bookmarks.back();
+                continue;
+            }
             if (group.rfind("dock-pin", 0) == 0) {
                 p.pins_saved = true;
                 if (p.pins.size() < kMaxDockPins) {
@@ -178,6 +185,9 @@ ShellPrefs parse_shell_ini(const std::string& text)
             else if (key == "media") p.dock_media = parse_bool(val, p.dock_media);
         } else if (group == "general") {
             if (key == "animations") p.animations = parse_bool(val, p.animations);
+        } else if (mark) {
+            if (key == "name") mark->name = val;
+            else if (key == "path") mark->path = val;
         } else if (pin) {
             if (key == "name") pin->name = val;
             else if (key == "app-id") pin->app_id = val;
@@ -190,6 +200,9 @@ ShellPrefs parse_shell_ini(const std::string& text)
     p.pins.erase(std::remove_if(p.pins.begin(), p.pins.end(),
                                 [](const DockPin& d) { return d.app_id.empty() && d.path.empty(); }),
                  p.pins.end());
+    p.bookmarks.erase(std::remove_if(p.bookmarks.begin(), p.bookmarks.end(),
+                                     [](const FilesBookmark& b) { return b.path.empty(); }),
+                      p.bookmarks.end());
     return p;
 }
 
@@ -237,6 +250,14 @@ std::string serialize_shell_ini(const ShellPrefs& p)
             if (!pin.args.empty()) out << "args=" << one_line(pin.args) << "\n";
             if (!pin.icon.empty()) out << "icon=" << one_line(pin.icon) << "\n";
         }
+    }
+    size_t marks = 0;
+    for (const FilesBookmark& mark : p.bookmarks) {
+        if (mark.path.empty()) continue;
+        if (++marks > kMaxFilesBookmarks) break;
+        out << "\n[files-bookmark " << marks << "]\n";
+        out << "name=" << one_line(mark.name) << "\n";
+        out << "path=" << one_line(mark.path) << "\n";
     }
     return out.str();
 }

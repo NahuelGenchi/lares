@@ -126,7 +126,13 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
 
     heading(L"Files and viewers");
     y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
-        return toggle(top, L"Viewers",
+        float cy = toggle(top, L"Files",
+                          L"Lares' own file manager, with tabs and Quick Look, opened from the dock's Start "
+                          L"menu, the power menu and the launcher. File Explorer stays Windows' own. Turn it off "
+                          L"and they open File Explorer again.",
+                          nullptr, &shell_prefs_.files, unsafe);
+        cy = setting_line(rt, pal, ix, cy, iw);
+        return toggle(cy, L"Viewers",
                       L"Lares' own image viewer and text and Markdown editor, opened from Lares' launcher and "
                       L"tools. Windows' own apps stay the default for your files. Turn it off and Lares opens "
                       L"files with them again.",

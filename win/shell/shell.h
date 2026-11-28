@@ -32,6 +32,7 @@
 #define WM_LARES_BT_SCAN_DONE      (WM_APP + 18)
 #define WM_LARES_QUIT_CLEAN        (WM_APP + 20)
 #define WM_LARES_RESTORE_TOPMOST   (WM_APP + 21)
+#define WM_LARES_FILES_LOADED      (WM_APP + 19)
 #define WM_LARES_TOGGLE_CLIPBOARD  (WM_APP + 25)
 
 /* Lares' window and Settings ask a running shell to read its settings again
@@ -118,6 +119,7 @@ typedef struct {
     bool clipboard_enabled;
     bool screenshot_enabled;
     bool viewers_enabled;
+    bool files_enabled;
 } AppConfig;
 
 typedef struct {
@@ -332,7 +334,21 @@ void textview_shutdown(void);
 HWND textview_window(void);
 int  textview_snapshot(const wchar_t *png_path);
 
-/* hotkeys.c: shortcut ids, as WM_HOTKEY brings them. */#define LARES_HOTKEY_LAUNCHER     9001
+/* files.c: lares-files.exe (issue #153) */
+void files_init(HINSTANCE hInst);
+void files_open(const wchar_t *initial_path);
+void files_open_ex(const wchar_t *initial_path, const wchar_t *select_name, bool reuse_window);
+void files_on_theme_changed(void);
+bool files_has_open_windows(void);
+int  files_get_window_count(void);
+HWND files_get_first_window(void);
+void files_shutdown(void);
+int  files_snapshot(const wchar_t *png_path);
+void files_set_crumb_root(const wchar_t *root);
+bool files_loaded(void);
+
+/* hotkeys.c: shortcut ids, as WM_HOTKEY brings them. */
+#define LARES_HOTKEY_LAUNCHER     9001
 #define LARES_HOTKEY_SNIP_REGION  9002
 #define LARES_HOTKEY_SNIP_WINDOW  9003
 #define LARES_HOTKEY_SNIP_FULL    9004

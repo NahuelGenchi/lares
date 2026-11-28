@@ -524,19 +524,6 @@ static void tv_get_palette(MtPalette *p) {
     }
 }
 
-bool textview_is_supported_ext(const wchar_t *ext) {
-    if (!ext || !ext[0]) return false;
-    static const wchar_t *exts[] = {
-        L".txt", L".md", L".markdown", L".mkd", L".ini", L".json", L".log", L".bat", L".ps1",
-        L".yml", L".yaml", L".toml", L".csv", L".c", L".h", L".js",
-        L".ts", L".py", L".css", L".html", L".xml", L".reg"
-    };
-    for (int i = 0; i < (int)(sizeof(exts) / sizeof(exts[0])); i++) {
-        if (_wcsicmp(ext, exts[i]) == 0) return true;
-    }
-    return false;
-}
-
 static bool tv_is_md_ext(const wchar_t *ext) {
     if (!ext || !ext[0]) return false;
     return (_wcsicmp(ext, L".md") == 0 ||

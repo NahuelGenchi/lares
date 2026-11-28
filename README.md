@@ -58,7 +58,8 @@ Lares for Windows is getting its own top bar, dock, launcher, Files and viewers,
 | Launcher (Alt+Space) and clipboard history (Alt+V), each with its own switch, off by default | confirmed in tests and drawn in a test copy; not yet used on a real desktop |
 | Process list, and a screenshot tool (Alt+Shift+S, W, F) with its own switch | confirmed in tests and drawn in a test copy; no real capture taken in a check |
 | An image viewer and a text and Markdown editor (`lares-view.exe`), with a Viewers switch | confirmed drawn with made-up files and, in the Checks workflow, opened, measured and ended with its last window |
-| Files, the AirDrop panel and device indicators | planned |
+| Files (`lares-files.exe`) with tabs, Quick Look and drag and drop, with a Files switch | confirmed drawn with a made-up folder and, in the Checks workflow, opened, measured and ended with its last window |
+| The AirDrop panel and device indicators | planned |
 
 ## Build and install
 
@@ -90,4 +91,4 @@ Work is tracked with issues, milestones and pull requests; see [CONTRIBUTING.md]
 
 ## License
 
-GPL-2.0-or-later. The controller artwork, `data/pad/controller.png`, comes from Padlight, by the same author, under the same license; the pixel-art picture the window and the top-bar menu draw, `data/pad/controller.txt`, is traced from it. Xbox is a trademark of Microsoft; Lares is not affiliated with it. The dock's Start button is drawn after Microsoft's Windows XP logo (artwork credit: Microsoft); Windows is a trademark of Microsoft. Share's AirDrop code follows the specification and implementation of [owly](https://github.com/t4t5/owly) (MIT, Copyright (c) 2026 T4T5; see `LICENSES/MIT-owly.txt`).
+GPL-2.0-or-later. The controller artwork, `data/pad/controller.png`, comes from Padlight, by the same author, under the same license; the pixel-art picture the window and the top-bar menu draw, `data/pad/controller.txt`, is traced from it. Xbox is a trademark of Microsoft; Lares is not affiliated with it. The dock's Start button is drawn after Microsoft's Windows XP logo (artwork credit: Microsoft); Windows is a trademark of Microsoft. Quick Look, in the Windows Files, is a trademark of Apple Inc.; Lares is not affiliated with Apple. Share's AirDrop code follows the specification and implementation of [owly](https://github.com/t4t5/owly) (MIT, Copyright (c) 2026 T4T5; see `LICENSES/MIT-owly.txt`).

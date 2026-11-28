@@ -79,17 +79,6 @@ static ARGB v_argb(BYTE a, COLORREF c) {
     return MAKE_ARGB(a, GetRValue(c), GetGValue(c), GetBValue(c));
 }
 
-bool viewer_is_supported_ext(const wchar_t *ext) {
-    if (!ext || !ext[0]) return false;
-    return (_wcsicmp(ext, L".png")  == 0 ||
-            _wcsicmp(ext, L".jpg")  == 0 ||
-            _wcsicmp(ext, L".jpeg") == 0 ||
-            _wcsicmp(ext, L".webp") == 0 ||
-            _wcsicmp(ext, L".bmp")  == 0 ||
-            _wcsicmp(ext, L".gif")  == 0 ||
-            _wcsicmp(ext, L".ico")  == 0);
-}
-
 static void viewer_format_bytes(uint64_t bytes, wchar_t *out, size_t len) {
     if (bytes < 1024ULL) {
         _snwprintf_s(out, len, _TRUNCATE, L"%llu B", (unsigned long long)bytes);

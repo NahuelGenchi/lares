@@ -722,7 +722,7 @@ static void show_item_context_menu(HWND hwnd, int idx, int screen_x, int screen_
     if (!hMenu) return;
 
     if (idx >= 0 && idx < g_item_count && g_items[idx].kind == RENDER_START) {
-        AppendMenuW(hMenu, MF_STRING, 10, L"File Explorer");
+        AppendMenuW(hMenu, MF_STRING, 10, g_cfg.files_enabled ? L"Files" : L"File Explorer");
         AppendMenuW(hMenu, MF_STRING, 21, L"Task Manager");
         AppendMenuW(hMenu, MF_STRING, 23, L"Terminal");
         AppendMenuW(hMenu, MF_STRING, 24, L"Windows Settings");
@@ -747,7 +747,7 @@ static void show_item_context_menu(HWND hwnd, int idx, int screen_x, int screen_
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
         }
 
-        AppendMenuW(hMenu, MF_STRING, 10, L"File Explorer");
+        AppendMenuW(hMenu, MF_STRING, 10, g_cfg.files_enabled ? L"Files" : L"File Explorer");
         append_dock_mode_items(hMenu);
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(hMenu, MF_STRING, 11, L"Lares Settings");

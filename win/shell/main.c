@@ -338,6 +338,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         g_cfg.launcher_enabled = true;
         g_cfg.clipboard_enabled = true;
         g_cfg.screenshot_enabled = true;
+        g_cfg.files_enabled = true;
+        g_cfg.viewers_enabled = true;
         g_cfg.animations = false;
         g_cfg.topbar_autohide = false;
         g_cfg.dock_hide_mode = HIDE_NEVER;
