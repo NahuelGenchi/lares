@@ -409,8 +409,12 @@ static void popup_paint(void) {
         if (hr12 == 0) hr12 = 12;
 
         wchar_t time_s[32], date_s[64];
-        _snwprintf_s(time_s, 32, _TRUNCATE, L"%02d:%02u:%02u %ls", hr12, now.wMinute, now.wSecond,
-                     now.wHour >= 12 ? L"PM" : L"AM");
+        /* In 24-hour time unless the clock is set to 12 (issue #165). */
+        if (g_cfg.clock_24h)
+            _snwprintf_s(time_s, 32, _TRUNCATE, L"%02u:%02u:%02u", now.wHour, now.wMinute, now.wSecond);
+        else
+            _snwprintf_s(time_s, 32, _TRUNCATE, L"%02d:%02u:%02u %ls", hr12, now.wMinute, now.wSecond,
+                         now.wHour >= 12 ? L"PM" : L"AM");
         _snwprintf_s(date_s, 64, _TRUNCATE, L"%ls, %ls %u, %u",
                      dnames[now.wDayOfWeek % 7], mnames[(now.wMonth - 1) % 12], now.wDay, now.wYear);
 

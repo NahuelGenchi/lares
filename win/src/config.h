@@ -87,6 +87,13 @@ struct ShellPrefs {
     bool dock_media = true;
     // [general]
     bool animations = true;
+    // [clock] (issue #165): how the top bar's clock reads
+    bool clock_24h = true;
+    bool clock_seconds = false;
+    bool clock_weekday = true;
+    bool clock_date = true;
+    int clock_date_style = 0;      // 0 dd MMM, 1 MMM d, 2 dd/MM/yyyy, 3 MM/dd/yyyy, 4 yyyy-MM-dd
+    std::string clock_format;      // a picture of the user's own; empty: the choices above
     // [dock-pin N]: when none were ever saved, the shell picks its own first set.
     bool pins_saved = false;
     std::vector<DockPin> pins;

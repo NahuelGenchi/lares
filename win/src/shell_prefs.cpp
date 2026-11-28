@@ -80,6 +80,12 @@ extern "C" void lares_shell_prefs_load(LaresShellPrefs* out)
     out->dock_middle_click_new = p.dock_middle_click_new;
     out->dock_media = p.dock_media;
     out->animations = p.animations;
+    out->clock_24h = p.clock_24h;
+    out->clock_seconds = p.clock_seconds;
+    out->clock_weekday = p.clock_weekday;
+    out->clock_date = p.clock_date;
+    out->clock_date_style = p.clock_date_style;
+    copy(out->clock_format, 64, p.clock_format);
 }
 
 extern "C" bool lares_shell_prefs_save(const LaresShellPrefs* in)
@@ -105,6 +111,12 @@ extern "C" bool lares_shell_prefs_save(const LaresShellPrefs* in)
     p.dock_middle_click_new = in->dock_middle_click_new;
     p.dock_media = in->dock_media;
     p.animations = in->animations;
+    p.clock_24h = in->clock_24h;
+    p.clock_seconds = in->clock_seconds;
+    p.clock_weekday = in->clock_weekday;
+    p.clock_date = in->clock_date;
+    p.clock_date_style = in->clock_date_style >= 0 && in->clock_date_style <= 4 ? in->clock_date_style : 0;
+    p.clock_format = narrow(in->clock_format);
     return lares::save_shell_prefs(path_in_use(), p);
 }
 

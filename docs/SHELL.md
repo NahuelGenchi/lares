@@ -242,7 +242,7 @@ The bar's buttons open one see-through popup at a time (`win/shell/popups.c`, is
 
 | Popup | What it holds |
 | :--- | :--- |
-| Calendar | the time and date, a month to page through, Today; the week starts on Sunday or Monday (`[top-bar] week-starts`) |
+| Calendar | the time (24-hour unless the clock is set to 12, [The clock](#the-clock)) and date, a month to page through, Today; the week starts on Sunday or Monday (`[top-bar] week-starts`) |
 | Keyboard | the keyboard layouts Windows has, to switch the window in front to another |
 | Bluetooth | the devices Windows already knows, connected first; **Scan** looks for new ones only when pressed, because a scan can make Bluetooth audio stutter |
 | Network and Tailscale | the connection, and when Tailscale is installed (found through its service): connect or disconnect, the address to copy, an exit node, and its Windows service, started and stopped on demand with an optional manual start so it costs no memory while off |
@@ -259,6 +259,19 @@ Starting or stopping Tailscale's service needs administrator rights on most PCs.
 | Clicking in the popups, the keyboard switch, the volume slider, connecting Tailscale | | **not checked**: needs a desktop where the shell is in use |
 | Starting and stopping Tailscale's service, with and without the approval prompt | | **not checked**: it would change a service on the development PC |
 | The memory a popup takes, given back when it closes | | **not measured** yet |
+
+### The clock
+
+Issue [#165](https://github.com/NahuelGenchi/lares/issues/165). The bar's clock reads in 24-hour time by default, "Fri 27 Nov, 22:40". A right-click on it opens its own menu (anywhere else on the bar, the bar's menu): **24-hour time** or **12-hour time (AM and PM)**, **Show seconds**, **Show the day of the week**, **Show the date**, a **Date style** submenu showing today's date in five styles, **Custom format...**, **Use the default format**, and **Windows date and time settings**, which opens Windows' own page.
+
+The text comes from a picture string with the letters Windows uses (`win/shell/clockfmt.c`): `d dd ddd dddd` for the day, `M MM MMM MMMM` the month, `yy yyyy` the year, `H HH` and `h hh` the hour in 24 and 12 hours, `m mm` minutes, `s ss` seconds, `t tt` A or AM, and `'quoted text'` as written. The menu's choices build one, `ddd dd MMM, HH:mm` by default; **Custom format...** opens a small box with a live preview for one of the user's own. The choices are kept in `shell.ini`'s `[clock]` group (`hour24`, `seconds`, `weekday`, `date`, `date-style`, `format`). The calendar popup's big time follows the 24-hour choice, and the bar repaints every second only while the clock shows seconds, otherwise once a minute as before.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| Every letter run, quoted text, 12 and 24 hours at midnight and noon, a month out of range, and what a short buffer keeps | `lares-shell-clock-test`, 56 checks, development PC and the Checks workflow | confirmed |
+| The choices round-trip through `shell.ini`, with defaults of 24-hour, day and date | `lares-win-unit` | confirmed |
+| The bar and the calendar in 24-hour time by default | `lares-shell --snapshot`, development PC, looked at | confirmed |
+| The menu, the Date style submenu and the Custom format box on a desktop | | **not checked** here: opening them on the development PC's desktop is what the checks avoid; they were checked on the prototype |
 
 ### The launcher and clipboard history
 

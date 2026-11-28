@@ -225,21 +225,6 @@ static void topbar_show_menu(HWND hwnd, int sx, int sy) {
     }
 }
 
-static void format_clock(wchar_t *buf, size_t len) {
-    static const wchar_t *days[7]   = { L"Sun", L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat" };
-    static const wchar_t *months[12] = { L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
-                                         L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec" };
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    int hr12 = st.wHour % 12;
-    if (hr12 == 0) hr12 = 12;
-    const wchar_t *ampm = (st.wHour >= 12) ? L"PM" : L"AM";
-    _snwprintf_s(buf, len, _TRUNCATE, L"%ls %02u %ls, %02d:%02u %ls",
-                 days[st.wDayOfWeek % 7], st.wDay,
-                 months[(st.wMonth >= 1 && st.wMonth <= 12) ? (st.wMonth - 1) : 0],
-                 hr12, st.wMinute, ampm);
-}
-
 static void add_hit(TopBarHitId id, int x, int y, int w, int h, bool clickable) {
     if (g_hit_count >= TB_MAX_HITS) return;
     g_hits[g_hit_count].id = id;
@@ -308,7 +293,7 @@ void topbar_repaint(void) {
 
     /* === CENTER: Clock / Calendar === */
     wchar_t clock_str[64];
-    format_clock(clock_str, 64);
+    clock_format_now(clock_str, 64); /* clock.c: how the user set it to read */
     float cw = measure_text_width(g, clock_str, L"Segoe UI", font_sz, GP_FONT_BOLD);
     int pill_w = (int)cw + 18;
     int pill_x = (g_tb_w - pill_w) / 2;
@@ -588,8 +573,20 @@ static LRESULT CALLBACK topbar_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
     case WM_RBUTTONUP: {
         POINT pt = { (int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam) };
+        TopBarHit *h = hit_test(pt.x, pt.y);
         ClientToScreen(hwnd, &pt);
-        topbar_show_menu(hwnd, pt.x, pt.y);
+        /* The clock has a menu of its own: how it reads (issue #165). */
+        if (h && h->id == TB_HIT_CLOCK) {
+            g_tb_menu_open = true;
+            bool changed = clock_menu(hwnd, pt.x, pt.y);
+            g_tb_menu_open = false;
+            if (changed) {
+                topbar_repaint();
+                popups_refresh_if_open();
+            }
+        } else {
+            topbar_show_menu(hwnd, pt.x, pt.y);
+        }
         return 0;
     }
 

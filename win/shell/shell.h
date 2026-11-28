@@ -14,6 +14,7 @@
 
 #include "draw.h"
 #include "shell_prefs.h"
+#include "clockfmt.h"
 #include "share_bridge.h"
 #include "indicators.h"
 
@@ -125,6 +126,13 @@ typedef struct {
     bool files_enabled;
     bool airdrop_enabled;   /* the bar's AirDrop button (issue #155) */
     bool indicators_enabled; /* the bar's device indicators (issue #157) */
+    /* How the bar's clock reads (issue #165), from shell.ini's [clock]. */
+    bool clock_24h;
+    bool clock_seconds;
+    bool clock_weekday;
+    bool clock_date;
+    int  clock_date_style;
+    wchar_t clock_format[64];
 } AppConfig;
 
 typedef struct {
@@ -217,6 +225,12 @@ void shell_screen_rect(RECT *out);
 void config_load_all(void);
 void config_save_dock(void);
 void config_save_behaviour(void);
+void config_save_clock(void);
+
+/* clock.c: the bar's clock and its right-click menu (issue #165). */
+void clock_format_now(wchar_t *out, size_t len);
+bool clock_shows_seconds(void);
+bool clock_menu(HWND owner, int sx, int sy);
 /* A pin's picture: absolute, or in Lares' settings folder. */
 void config_resolve_path(const wchar_t *rel, wchar_t *out, size_t out_len);
 
