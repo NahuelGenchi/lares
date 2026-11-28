@@ -307,6 +307,7 @@ add_executable(lares-view WIN32
     shell/view_main.c
     shell/viewer.c
     shell/textview.c
+    shell/filetypes.c
     shell/shell.manifest)
 target_include_directories(lares-view PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/shell
@@ -317,6 +318,22 @@ target_compile_definitions(lares-view PRIVATE COBJMACROS CINTERFACE)
 target_link_libraries(lares-view PRIVATE
     lares_shell_draw lares_crash
     shell32 shlwapi ole32 oleaut32 uuid dwmapi windowscodecs comctl32 comdlg32)
+# lares-files.exe (issue #153): Files, started when a folder is opened in
+# it and ended with its last window. Plain C, on the shell's drawing layer.
+add_executable(lares-files WIN32
+    shell/files_main.c
+    shell/files.c
+    shell/filetypes.c
+    shell/shell.manifest)
+target_include_directories(lares-files PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/shell
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/crash
+    ${LARES_SHARED_INC})
+target_compile_definitions(lares-files PRIVATE COBJMACROS CINTERFACE)
+target_link_libraries(lares-files PRIVATE
+    lares_shell_draw lares_win_core lares_crash
+    shell32 shlwapi ole32 oleaut32 uuid dwmapi windowscodecs comctl32 propsys)
 add_test(NAME lares-shell-test COMMAND lares-shell-test)
 set_tests_properties(lares-shell-test PROPERTIES TIMEOUT 300)
 

@@ -1026,6 +1026,17 @@ static void test_shell_prefs()
           back.pins[1].args == "--new-window" && back.pins[1].icon == "editor.png");
     CHECK(lares::parse_shell_ini("[dock]\nhide=auto-hide\n").dock_hide == lares::DockHide::AutoHide);
 
+    // Files' bookmarks round-trip; one without a path is dropped.
+    lares::ShellPrefs marks;
+    marks.bookmarks.push_back({ "Projects", "D:\\Projects" });
+    marks.bookmarks.push_back({ "Nothing", "" });
+    marks.bookmarks.push_back({ "Photos", "E:\\Photos\\2026" });
+    lares::ShellPrefs marks_back = lares::parse_shell_ini(lares::serialize_shell_ini(marks));
+    CHECK(marks_back.bookmarks.size() == 2);
+    CHECK(marks_back.bookmarks.size() == 2 && marks_back.bookmarks[1].path == "E:\\Photos\\2026" &&
+          marks_back.bookmarks[1].name == "Photos");
+    CHECK(!marks_back.pins_saved); // bookmarks are not dock pins
+
     // An emptied dock stays empty instead of getting the first set back.
     lares::ShellPrefs empty;
     empty.pins_saved = true;
@@ -1064,6 +1075,13 @@ static void test_shell_prefs()
     CHECK(c2.dock && !c2.bar && c2.dock_hide == LARES_DOCK_AUTO_HIDE);
     LaresDockPin pins[4] = {};
     CHECK(lares_shell_pins_load(pins, 4) == 1 && wcscmp(pins[0].name, L"Notes") == 0); // kept by the prefs save
+    LaresBookmark mark = {};
+    wcscpy_s(mark.name, L"Work");
+    wcscpy_s(mark.path, L"D:\\Work");
+    CHECK(lares_shell_bookmarks_save(&mark, 1));
+    LaresBookmark marks_c[4] = {};
+    CHECK(lares_shell_bookmarks_load(marks_c, 4) == 1 && wcscmp(marks_c[0].path, L"D:\\Work") == 0);
+    CHECK(lares_shell_pins_load(pins, 4) == 1); // the pins stay beside the bookmarks
     DeleteFileW(file);
     if (had_file) MoveFileExW(backup.c_str(), file, MOVEFILE_REPLACE_EXISTING);
     SetEnvironmentVariableW(L"LARES_DRY_RUN", had_dry ? old_dry : nullptr);

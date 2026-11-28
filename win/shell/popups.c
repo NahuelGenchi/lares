@@ -911,7 +911,9 @@ static void popup_paint(void) {
             draw_row_hover(g, idx, 8.0f);
             ARGB c = rows[i].danger ? g_theme.danger : g_theme.fg_primary;
             draw_icon_glyph(g, rows[i].glyph, 15.0f, c, (float)(ox + 18), (float)y, 26.0f, 36.0f);
-            draw_text(g, rows[i].label, L"Segoe UI", 13.0f, GP_FONT_REGULAR, c,
+            /* Lares' Files when its switch is on, else File Explorer. */
+            const wchar_t *label = (rows[i].act == ACT_PWR_FILES && g_cfg.files_enabled) ? L"Files" : rows[i].label;
+            draw_text(g, label, L"Segoe UI", 13.0f, GP_FONT_REGULAR, c,
                       (float)(ox + 50), (float)y, (float)(pw - 66), 36.0f, GP_ALIGN_NEAR, GP_ALIGN_CENTER, false);
             y += 40;
         }

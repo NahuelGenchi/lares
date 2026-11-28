@@ -139,6 +139,32 @@ extern "C" bool lares_shell_pins_save(const LaresDockPin* pins, int count)
     return lares::save_shell_prefs(path_in_use(), p);
 }
 
+extern "C" int lares_shell_bookmarks_load(LaresBookmark* out, int max)
+{
+    lares::ShellPrefs p = load_now();
+    int n = 0;
+    for (const lares::FilesBookmark& b : p.bookmarks) {
+        if (!out || n >= max) break;
+        LaresBookmark* d = &out[n++];
+        copy(d->name, LARES_BOOKMARK_NAME, b.name);
+        copy(d->path, LARES_PIN_PATH, b.path);
+    }
+    return n;
+}
+
+extern "C" bool lares_shell_bookmarks_save(const LaresBookmark* marks, int count)
+{
+    lares::ShellPrefs p = load_now();
+    p.bookmarks.clear();
+    for (int i = 0; marks && i < count && p.bookmarks.size() < lares::kMaxFilesBookmarks; ++i) {
+        lares::FilesBookmark b;
+        b.name = narrow(marks[i].name);
+        b.path = narrow(marks[i].path);
+        if (!b.path.empty()) p.bookmarks.push_back(b);
+    }
+    return lares::save_shell_prefs(path_in_use(), p);
+}
+
 extern "C" bool lares_shell_settings_dir(wchar_t* out, size_t cch)
 {
     if (!out || !cch) return false;

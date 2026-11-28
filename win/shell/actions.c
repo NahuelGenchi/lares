@@ -31,7 +31,19 @@ void action_open_start(void) {
     SendInput(4, in, sizeof(INPUT));
 }
 
+/* Lares' Files when its switch is on (lares-files.exe, issue #153), else
+ * File Explorer. */
 void action_open_files(const wchar_t *folder) {
+    if (g_cfg.files_enabled) {
+        wchar_t exe[MAX_PATH];
+        DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+        if (n > 0 && n < MAX_PATH && PathRemoveFileSpecW(exe) &&
+            wcscat_s(exe, MAX_PATH, L"\\lares-files.exe") == 0 && PathFileExistsW(exe)) {
+            wchar_t args[MAX_PATH + 4] = L"";
+            if (folder && folder[0]) _snwprintf_s(args, MAX_PATH + 4, _TRUNCATE, L"\"%ls\"", folder);
+            if ((INT_PTR)ShellExecuteW(NULL, L"open", exe, args[0] ? args : NULL, NULL, SW_SHOWNORMAL) > 32) return;
+        }
+    }
     wchar_t explorer[MAX_PATH];
     if (!lares_windows_program(L"explorer.exe", explorer, MAX_PATH)) return;
     wchar_t args[MAX_PATH + 4] = L"";

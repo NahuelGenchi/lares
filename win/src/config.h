@@ -56,6 +56,14 @@ struct DockPin {
 
 inline constexpr size_t kMaxDockPins = 64;
 
+// A folder bookmarked in Files' sidebar.
+struct FilesBookmark {
+    std::string name;
+    std::string path;
+};
+
+inline constexpr size_t kMaxFilesBookmarks = 16;
+
 struct ShellPrefs {
     // [parts]
     bool bar = false;
@@ -79,6 +87,8 @@ struct ShellPrefs {
     // [dock-pin N]: when none were ever saved, the shell picks its own first set.
     bool pins_saved = false;
     std::vector<DockPin> pins;
+    // [files-bookmark N]
+    std::vector<FilesBookmark> bookmarks;
 
     bool any_part() const
     {

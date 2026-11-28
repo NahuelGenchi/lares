@@ -71,6 +71,19 @@ int lares_shell_pins_load(LaresDockPin *out, int max);
 /* Saves the pins, keeping every other setting as it is in the file. */
 bool lares_shell_pins_save(const LaresDockPin *pins, int count);
 
+/* Files' bookmarked folders (issue #153). */
+#define LARES_BOOKMARK_NAME 64
+
+typedef struct {
+    wchar_t name[LARES_BOOKMARK_NAME];
+    wchar_t path[LARES_PIN_PATH];
+} LaresBookmark;
+
+/* The saved bookmarks, up to max; returns how many. */
+int lares_shell_bookmarks_load(LaresBookmark *out, int max);
+/* Saves the bookmarks, keeping every other setting as it is in the file. */
+bool lares_shell_bookmarks_save(const LaresBookmark *marks, int count);
+
 /* The folder of Lares' settings, %APPDATA%\lares. */
 bool lares_shell_settings_dir(wchar_t *out, size_t cch);
 /* The full path of the settings file in use. */

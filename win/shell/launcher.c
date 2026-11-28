@@ -533,6 +533,8 @@ static void build_launcher_index(void) {
     if (g_cfg.clipboard_enabled)
         add_app(L"Clipboard History (Alt+V)", L"@builtin/clipboard", L"@builtin/clipboard", NULL, L"Lares");
     add_app(L"Processes", L"@builtin/processes", L"@builtin/processes", NULL, L"Lares");
+    if (g_cfg.files_enabled)
+        add_app(L"Files", L"@builtin/files", L"@builtin/files", NULL, L"Lares");
     if (g_cfg.viewers_enabled)
         add_app(L"Text Editor", L"@builtin/editor", L"@builtin/editor", NULL, L"Lares");
     add_app(L"Screenshot (Region)", L"@builtin/screenshot", L"@builtin/screenshot", NULL, L"Lares");
@@ -604,6 +606,10 @@ static void launch_target_item(const wchar_t *target, const wchar_t *umid) {
     if (!target || !target[0]) return;
     if (wcscmp(target, L"@builtin/processes") == 0) {
         action_open_processes();
+        return;
+    }
+    if (wcscmp(target, L"@builtin/files") == 0) {
+        action_open_files(NULL);
         return;
     }
     if (wcscmp(target, L"@builtin/editor") == 0) {

@@ -15,7 +15,7 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | Launcher and clipboard history, each with its own switch | [#148](https://github.com/NahuelGenchi/lares/issues/148) | confirmed: drawn in a test copy, light and dark; switches on and off in tests; not used on a real desktop |
 | Process list, and the screenshot tool with its own switch | [#149](https://github.com/NahuelGenchi/lares/issues/149) | confirmed: drawn in a test copy, light and dark; switch on and off in tests; no capture taken in a check |
 | `lares-view.exe`: the image viewer and the text and Markdown editor, with a Viewers switch | [#151](https://github.com/NahuelGenchi/lares/issues/151) | confirmed drawn with made-up files, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
-| `lares-files.exe`: Files with Quick Look, drag and drop | | planned |
+| `lares-files.exe`: Files with tabs, Quick Look and drag and drop, with a Files switch | [#153](https://github.com/NahuelGenchi/lares/issues/153) | confirmed drawn with a made-up folder, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
 | AirDrop panel on Lares' own sharing code; device indicators | | planned |
 | Per-user file types for Markdown and images (optional) | | planned |
 
@@ -312,11 +312,40 @@ The **Viewers** switch (Settings, **Files and viewers**, off by default) lets La
 | Case | How | Status |
 | :--- | :--- | :--- |
 | Both drawn with a made-up picture and Markdown file, light and dark | `lares-view --snapshot`, development PC, looked at | confirmed |
-| Opened for real with a picture and a Markdown file (the second start handing over to the first), own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once both windows close | the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; the reading is in its log |
+| Opened for real with a picture and a Markdown file (the second start handing over to the first), own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once both windows close | the Checks workflow on GitHub's Windows runner ([#156](https://github.com/NahuelGenchi/lares/pull/156)) | confirmed: 5.4 MB own memory (working set 25.8 MB) with both open |
 | The same steps as a test copy, off the screen | development PC, once: 7.9 MB own memory (working set 23.7 MB) with both open, both windows found and closed, the program gone. A font tool installed on that PC loads Direct2D into every program, so the module check there is left to the workflow | confirmed |
 | Typing, saving, find, zoom and browsing pictures by hand | | **not checked** |
+
+## Files
+
+`lares-files.exe` (`win/shell/files_main.c`, `files.c`, issue [#153](https://github.com/NahuelGenchi/lares/issues/153)) is a file manager of its own, ported from the prototype. Like the viewers it is a separate program: it starts when a folder is opened in it and ends with its last window, so it costs nothing while unused. A second start hands its folder to the running one, which opens it as a tab.
+
+```
+lares-files [FOLDER]           the folder (Home when none), or a file's folder with the file selected
+lares-files --select FILE      the same as a file's path; /select,FILE is understood too
+lares-files --snapshot DIR     draws a made-up folder made inside DIR, then removes it and ends
+```
+
+`LARES_SHELL_ISOLATED=1` makes a test copy, as for the viewers: its windows far off the screen and out of Alt+Tab, a mutex and host of its own, and it never takes the focus. A snapshot's path bar starts at the made-up folder, so a picture never shows the folders above it.
+
+- Tabs (up to 8 per window), back and forward, a sidebar with Home, Desktop, Documents, Downloads, Pictures, Music and Videos (found through Windows, so a moved folder is found where it is), the user's bookmarks and the drives with their free space; a path bar that can be typed into, a filter, list and grid views, an info pane, rename (F2), new folder, copy, cut and paste (as a list of files on the clipboard, which File Explorer reads too), and delete to the Recycle Bin.
+- **Quick Look** (Space): a preview beside the window that does not take the focus, for pictures, Markdown and text; Up and Down step through the neighbours, Enter opens the file, Space or Esc closes it and frees everything it held. Quick Look is a trademark of Apple Inc.; Lares is not affiliated with Apple.
+- Drag and drop inside Files onto folders, bookmarks and drives (moves; Ctrl copies), through Windows' own file operations, so the usual Windows prompts for clashes and the Recycle Bin apply. Dropping files from other programs into Files is not supported yet.
+- The sidebar and list columns can be resized; the sizes last while Files runs. Bookmarks are kept in `shell.ini` (`[files-bookmark N]`), nothing in the program's folder.
+- A folder is read one level at a time on a worker thread; nothing searches drives in the background. Pictures in the grid come through Windows Imaging Component into a cache of at most 48 thumbnails (under 3 MB). Files draws its own icons and menus: no other program's context menu or icon handler is loaded into it.
+- Enter on a picture or a text file opens it in Lares' viewers when the **Viewers** switch is on, else with the program Windows uses for it. **Open in Terminal** uses the terminal found the way [Other programs](#other-programs) describes. Places that only File Explorer can show (This PC, Control Panel, `shell:` folders) are handed to File Explorer.
+
+The **Files** switch (Settings, **Files and viewers**, off by default) makes the dock's Start menu, the power popup and the launcher open Files instead of File Explorer, each labelled **Files** while it is on. File Explorer stays Windows' own: folders opened by other programs, the desktop and Win+E still open File Explorer, and turning the switch off puts the three entries back.
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| Drawn with a made-up folder, light and dark | `lares-files --snapshot`, development PC, looked at | confirmed |
+| Opened for real on a made-up folder of 41 items, a second start handing over another folder as a tab, own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once its window closes | the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; the reading is in its log |
+| The same steps as a test copy, off the screen | development PC, once: 7.3 MB own memory (working set 23.7 MB) with two folders open in tabs, 0 ms of processor time in 30 idle seconds, the focus left where it was, the program gone after its window closed. The font tool on that PC loads Direct2D here too, so the module check is left to the workflow | confirmed |
+| The switch's entries: the power popup says **Files** while it is on | `lares-shell --snapshot`, looked at | confirmed |
+| Browsing, Quick Look, renaming, copying, dragging and deleting by hand | | **not checked**: they change real files, and belong on a test account |
 
 ### Known limits
 
 - The bar and dock are drawn at fixed pixel sizes on the primary screen, as the prototype drew them: at 150% or 200% display scale they are small, and a second screen gets neither. Scaling and more screens belong to the test matrix of stage 4.
-- Start opens Windows' own Start menu until Lares' launcher arrives.
+- Start opens Windows' own Start menu unless the launcher is on.
