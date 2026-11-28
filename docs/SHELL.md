@@ -313,7 +313,7 @@ The **Viewers** switch (Settings, **Files and viewers**, off by default) lets La
 | Case | How | Status |
 | :--- | :--- | :--- |
 | Both drawn with a made-up picture and Markdown file, light and dark | `lares-view --snapshot`, development PC, looked at | confirmed |
-| Opened for real with a picture and a Markdown file (the second start handing over to the first), own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once both windows close | the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; the reading is in its log |
+| Opened for real with a picture and a Markdown file (the second start handing over to the first), own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once both windows close | the Checks workflow on GitHub's Windows runner ([#156](https://github.com/NahuelGenchi/lares/pull/156)) | confirmed: 5.4 MB own memory (working set 25.8 MB) with both open |
 | The same steps as a test copy, off the screen | development PC, once: 7.9 MB own memory (working set 23.7 MB) with both open, both windows found and closed, the program gone. A font tool installed on that PC loads Direct2D into every program, so the module check there is left to the workflow | confirmed |
 | Typing, saving, find, zoom and browsing pictures by hand | | **not checked** |
 
