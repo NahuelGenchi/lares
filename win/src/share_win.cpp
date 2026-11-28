@@ -1103,6 +1103,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
     std::string buf;
     std::vector<std::string> block;
     bool heard = false;
+    std::string last_error;   /* the last block's, kept for when it ends by itself */
     char chunk[2048];
     DWORD n = 0;
     while (ReadFile(from, chunk, sizeof(chunk), &n, nullptr) && n > 0) {
@@ -1122,6 +1123,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
             block.clear();
             if (!ok) continue;
             heard = true;
+            last_error = s.error;
             std::lock_guard<std::mutex> lock(mu_);
             bool was_in_rx = view_.s.has_incoming && view_.s.incoming.state == ShareIncomingState::Receiving;
             bool now_in_rx = s.has_incoming && s.incoming.state == ShareIncomingState::Receiving;
@@ -1168,7 +1170,7 @@ void ShareManager::read_loop(HANDLE from, HANDLE proc)
             view_.error = "lares-share.exe stopped as it started.";
             pending_.clear();
         } else if (!asked && !closing_) {
-            view_.error = "AirDrop stopped.";
+            view_.error = last_error.empty() ? "AirDrop stopped." : last_error;
             pending_.clear();
         }
         if (pending_.empty()) {

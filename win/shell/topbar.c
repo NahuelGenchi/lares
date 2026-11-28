@@ -21,6 +21,7 @@ typedef enum {
     TB_HIT_KEYBOARD,
     TB_HIT_BLUETOOTH,
     TB_HIT_NETWORK,
+    TB_HIT_SHARE,
     TB_HIT_MEDIA,
     TB_HIT_CPU,
     TB_HIT_GPU,
@@ -412,6 +413,21 @@ void topbar_repaint(void) {
         rx -= gap;
     }
 
+    /* 3b. AirDrop, with its own switch (issue #155): the accent while
+     * something is received or sent, a dot while a request waits */
+    if (g_cfg.airdrop_enabled) {
+        int w = 28;
+        rx -= w;
+        draw_hover_bg(g, TB_HIT_SHARE, rx, item_y, w, item_h);
+        add_hit(TB_HIT_SHARE, rx, item_y, w, item_h, true);
+        ARGB sc = airdrop_active() ? g_theme.accent : g_theme.fg_primary;
+        draw_share_icon(g, (float)rx + (float)w * 0.5f, (float)g_tb_h * 0.5f + 0.5f, icon_sz * 0.50f, sc, 1.25f);
+        if (airdrop_pending()) {
+            draw_circle_fill(g, (float)(rx + w - 6), 8.0f, 3.5f, g_theme.danger);
+        }
+        rx -= gap;
+    }
+
     /* 3. Network + Tailscale dot */
     {
         int w = 28;
@@ -556,6 +572,7 @@ static LRESULT CALLBACK topbar_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case TB_HIT_KEYBOARD:  popups_toggle(POPUP_KEYBOARD, anchor_x, anchor_y); break;
         case TB_HIT_BLUETOOTH: popups_toggle(POPUP_BLUETOOTH, anchor_x, anchor_y); break;
         case TB_HIT_NETWORK:   popups_toggle(POPUP_NETWORK, anchor_x, anchor_y); break;
+        case TB_HIT_SHARE:     popups_toggle(POPUP_SHARE, anchor_x, anchor_y); break;
         case TB_HIT_MEDIA:     popups_toggle(POPUP_MEDIA, anchor_x, anchor_y); break;
         case TB_HIT_NOTIF:     popups_toggle(POPUP_NOTIFICATIONS, anchor_x, anchor_y); break;
         case TB_HIT_SCREENSHOT:popups_toggle(POPUP_SCREENSHOT, anchor_x, anchor_y); break;

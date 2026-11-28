@@ -123,6 +123,7 @@ static void reload(void) {
     if (g_cfg.topbar_enabled && !had_bar) topbar_create(g_hInst);
     else if (!g_cfg.topbar_enabled && had_bar) topbar_destroy();
     else topbar_apply_settings();
+    airdrop_apply_settings();
 
     if (g_cfg.dock_enabled && !had_dock) dock_create(g_hInst);
     else dock_apply_settings();
@@ -195,6 +196,10 @@ static LRESULT CALLBACK host_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_LARES_TAILSCALE_UPDATED:
         topbar_repaint();
         popups_on_tailscale_updated();
+        return 0;
+
+    case WM_LARES_SHARE_UPDATED:
+        airdrop_on_updated();
         return 0;
 
     case WM_LARES_BT_SCAN_DONE:
@@ -340,6 +345,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
         g_cfg.screenshot_enabled = true;
         g_cfg.files_enabled = true;
         g_cfg.viewers_enabled = true;
+        g_cfg.airdrop_enabled = true;
         g_cfg.animations = false;
         g_cfg.topbar_autohide = false;
         g_cfg.dock_hide_mode = HIDE_NEVER;
@@ -429,6 +435,50 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
             ok &= popups_snapshot(path);
             popups_close();
         }
+        {
+            /* The AirDrop panel from made-up state: nothing of sharing runs. */
+            static const struct { const char *key; const wchar_t *name, *model; int kind, state; } devs[] = {
+                { "a", L"Ana's iPhone", L"iPhone", LARES_SHARE_KIND_PHONE, LARES_SHARE_DEV_FOUND },
+                { "b", L"Living room iPad", L"iPad", LARES_SHARE_KIND_TABLET, LARES_SHARE_DEV_SENDING },
+                { "c", L"Bruno's MacBook Air", L"MacBook Air", LARES_SHARE_KIND_LAPTOP, LARES_SHARE_DEV_SENT },
+            };
+            LaresShareState s;
+            ZeroMemory(&s, sizeof(s));
+            s.open = s.running = s.receiving = s.browsing = s.wake = true;
+            s.setup = LARES_SHARE_READY;
+            s.link = LARES_SHARE_LINK_UP;
+            s.mode = LARES_SHARE_MODE_EVERYONE;
+            s.left_s = 9 * 60 + 12;
+            s.wake_state = LARES_SHARE_WAKE_ON;
+            s.contact_count = 2;
+            wcscpy_s(s.name, 96, L"This PC");
+            for (int i = 0; i < 3; ++i) {
+                LaresShareDevice *d = &s.devices[s.device_count++];
+                strcpy_s(d->key, sizeof(d->key), devs[i].key);
+                wcscpy_s(d->name, 96, devs[i].name);
+                wcscpy_s(d->model, 48, devs[i].model);
+                d->kind = devs[i].kind;
+                d->state = devs[i].state;
+                d->sent = 41;
+                d->total = 96;
+            }
+            airdrop_set_test_state(&s);
+            popups_toggle(POPUP_SHARE, 400, 40);
+            _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\popup-airdrop.png", snapshot_dir);
+            ok &= popups_snapshot(path);
+            popups_close();
+            s.has_incoming = true;
+            s.in_state = LARES_SHARE_IN_ASKING;
+            wcscpy_s(s.in_sender, 96, L"Ana's iPhone");
+            wcscpy_s(s.in_what, 160, L"Holiday.jpg and 2 more");
+            s.device_count = 1;
+            airdrop_set_test_state(&s);
+            popups_toggle(POPUP_SHARE, 400, 40);
+            _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\popup-airdrop-incoming.png", snapshot_dir);
+            ok &= popups_snapshot(path);
+            popups_close();
+            airdrop_set_test_state(NULL);
+        }
         _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\launcher.png", snapshot_dir);
         ok &= launcher_snapshot(NULL, path);
         _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%ls\\launcher-search.png", snapshot_dir);
@@ -475,6 +525,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow) {
     }
 
     hotkeys_shutdown();
+    airdrop_shutdown();
     if (g_cfg.screenshot_enabled) screenshot_shutdown();
     procmon_shutdown();
     if (g_cfg.clipboard_enabled) clipboard_shutdown();

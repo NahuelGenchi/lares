@@ -16,7 +16,8 @@ Each claim is marked **confirmed** (a recorded check establishes it), **reported
 | Process list, and the screenshot tool with its own switch | [#149](https://github.com/NahuelGenchi/lares/issues/149) | confirmed: drawn in a test copy, light and dark; switch on and off in tests; no capture taken in a check |
 | `lares-view.exe`: the image viewer and the text and Markdown editor, with a Viewers switch | [#151](https://github.com/NahuelGenchi/lares/issues/151) | confirmed drawn with made-up files, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
 | `lares-files.exe`: Files with tabs, Quick Look and drag and drop, with a Files switch | [#153](https://github.com/NahuelGenchi/lares/issues/153) | confirmed drawn with a made-up folder, light and dark; opened, measured and ended with its last window in the Checks workflow; not used on a real desktop here |
-| AirDrop panel on Lares' own sharing code; device indicators | | planned |
+| AirDrop in the top bar, on Lares' own sharing code, with its own switch | [#155](https://github.com/NahuelGenchi/lares/issues/155) | confirmed drawn from made-up state, light and dark; switch on and off in tests; not used with a real device through the bar |
+| Device indicators in the bar for controllers, headphones, keyboard and mouse lighting, remote play | | planned |
 | Per-user file types for Markdown and images (optional) | | planned |
 
 ## Budget
@@ -340,10 +341,31 @@ The **Files** switch (Settings, **Files and viewers**, off by default) makes the
 | Case | How | Status |
 | :--- | :--- | :--- |
 | Drawn with a made-up folder, light and dark | `lares-files --snapshot`, development PC, looked at | confirmed |
-| Opened for real on a made-up folder of 41 items, a second start handing over another folder as a tab, own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once its window closes | the Checks workflow on GitHub's Windows runner | confirmed when the workflow passes; the reading is in its log |
+| Opened for real on a made-up folder of 41 items, a second start handing over another folder as a tab, own memory measured, nothing of Direct3D, Direct2D, WebView2, Chromium or .NET loaded, and the program gone once its window closes | the Checks workflow on GitHub's Windows runner ([#158](https://github.com/NahuelGenchi/lares/pull/158)) | confirmed: 5.6 MB own memory (working set 24.4 MB) with two folders in tabs |
 | The same steps as a test copy, off the screen | development PC, once: 7.3 MB own memory (working set 23.7 MB) with two folders open in tabs, 0 ms of processor time in 30 idle seconds, the focus left where it was, the program gone after its window closed. The font tool on that PC loads Direct2D here too, so the module check is left to the workflow | confirmed |
 | The switch's entries: the power popup says **Files** while it is on | `lares-shell --snapshot`, looked at | confirmed |
 | Browsing, Quick Look, renaming, copying, dragging and deleting by hand | | **not checked**: they change real files, and belong on a test account |
+
+## AirDrop in the top bar
+
+Issue [#155](https://github.com/NahuelGenchi/lares/issues/155). With **AirDrop in the top bar** on (Settings, **Bar and dock**, off by default, and only while the bar is on), the bar gets an AirDrop button beside the network one: in the accent colour while something is received or sent, with a red dot while a request waits for an answer. AirDrop is a trademark of Apple Inc.; Lares is not affiliated with Apple.
+
+It is not a second copy of sharing. `win/shell/airdrop.c` reaches Lares' own sharing code through a small C bridge, `win/src/share_bridge.cpp`: the same `ShareManager`, `lares-share.exe`, Wi-Fi adapter, contacts and Bluetooth wake-up that Lares' Share page uses ([docs/WINDOWS.md](WINDOWS.md)).
+
+- **Receiving**: Off, **Contacts Only** (the contacts saved on Lares' Share page) or **Everyone** for 10 minutes, with the time left.
+- **Nearby devices**: looked for while the panel is open, with Windows' Bluetooth sending the AirDrop wake-up meanwhile, and a line in the panel when Bluetooth is off; a click on one picks files to send to it, and a click while sending cancels.
+- **What comes in**: Accept or Decline, the progress, and **Show in folder** once saved (in Files when that switch is on).
+- **Open AirDrop in Lares** ends the bar's session first and opens the Share page, for the set-up, contacts and the other ways to send.
+
+Nothing of sharing runs until the panel is first opened. When nothing is received, sent or looked for, `lares-share.exe` ends by itself and the adapter powers down; turning the switch off or closing the shell ends it at once. Only one program may drive the adapter: `lares-share.exe` now refuses a second session and says why ("Another Lares program is using the AirDrop adapter. Turn AirDrop off there first."), and Lares' Share page and the panel show that line instead of a bare "AirDrop stopped."
+
+| Case | How | Status |
+| :--- | :--- | :--- |
+| The panel drawn from made-up state (receiving, three made-up devices, a request to accept), light and dark | `lares-shell --snapshot`, development PC, looked at | confirmed |
+| The switch on and off beside the bar: the same shell carries on, and no `lares-share.exe` starts | `lares-shell-test`, stand-in taskbar; ten times in the Checks workflow | confirmed when the workflow passes |
+| The shell's own memory and processor time at rest with the button on | `lares-shell-test --measure 30`, the Checks workflow | confirmed when the workflow passes; the reading is in its log |
+| Receiving, sending and the wake-up with a real iPhone through the panel | | **not checked**: the development PC's adapter and devices are not used by a check; `ShareManager` itself was checked with an iPhone in [#109](https://github.com/NahuelGenchi/lares/issues/109) |
+| The second-session refusal, with Lares' Share page and the panel both open | | **not checked** on hardware |
 
 ### Known limits
 

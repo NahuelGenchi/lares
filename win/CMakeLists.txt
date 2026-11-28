@@ -60,6 +60,7 @@ add_library(lares_win_core STATIC
     src/programs.cpp
     src/remote.cpp
     src/share_win.cpp
+    src/share_bridge.cpp
     src/shell_prefs.cpp
     src/shell_service.cpp
     src/theme.cpp
@@ -279,6 +280,8 @@ add_executable(lares-shell WIN32
     shell/hotkeys.c
     shell/topbar.c
     shell/dock.c
+    shell/airdrop.c
+    $<TARGET_OBJECTS:lares_ble>
     guard/guard_client.c
     guard/state.c
     shell/shell.manifest)
@@ -293,7 +296,7 @@ target_compile_definitions(lares-shell PRIVATE COBJMACROS CINTERFACE)
 target_link_libraries(lares-shell PRIVATE
     lares_shell_draw lares_win_core lares_journal lares_crash
     shell32 shlwapi ole32 oleaut32 uuid dwmapi propsys pdh iphlpapi ws2_32 wlanapi bthprops
-    runtimeobject psapi windowscodecs comctl32 powrprof)
+    runtimeobject psapi windowscodecs comctl32 powrprof comdlg32 windowsapp)
 
 # The shell's switches turned on and off from the outside, through the code
 # Lares' Settings use, against a stand-in taskbar unless --real (issue #145).

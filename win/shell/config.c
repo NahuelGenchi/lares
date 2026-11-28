@@ -65,6 +65,7 @@ void config_load_all(void) {
     g_cfg.topbar_margin = 0;
     g_cfg.start_of_week = p.week_starts_monday ? 1 : 0;
     g_cfg.topbar_autohide = p.bar_auto_hide;
+    g_cfg.airdrop_enabled = p.bar_airdrop;
 
     g_cfg.dock_enabled = p.dock;
     g_cfg.dock_item_size = 40;

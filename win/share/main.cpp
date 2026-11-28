@@ -476,6 +476,21 @@ int main(int argc, char** argv)
         unsigned seconds = argc > 2 ? static_cast<unsigned>(std::strtoul(argv[2], nullptr, 10)) : 10;
         return run_link(std::strcmp(argv[1], "--listen") == 0, seconds ? seconds : 10);
     }
+    /* One session at a time: Lares' window and the top bar (issue #155)
+     * both start this program, and only one may drive the adapter. A second
+     * says so in one block and ends; the mutex goes with the first. */
+    HANDLE one = CreateMutexW(nullptr, TRUE, L"Local\\LaresShareSession");
+    if (one && GetLastError() == ERROR_ALREADY_EXISTS) {
+        _setmode(_fileno(stdout), _O_BINARY);
+        std::fputs("state setup=ready link=failed mode=off media=compatible receiving=0 left=0 browsing=0 "
+                   "sending=0 wake=0 quiet=0\n"
+                   "error Another Lares program is using the AirDrop adapter. Turn AirDrop off there first.\n"
+                   "end\n",
+                   stdout);
+        std::fflush(stdout);
+        return 2;
+    }
+
     /* Out at once once the link is off: a worker still waiting on a peer
      * has nothing left to tell. */
     static Session s;

@@ -175,6 +175,7 @@ ShellPrefs parse_shell_ini(const std::string& text)
         } else if (group == "top-bar") {
             if (key == "auto-hide") p.bar_auto_hide = parse_bool(val, p.bar_auto_hide);
             else if (key == "week-starts") p.week_starts_monday = (val == "monday");
+            else if (key == "airdrop") p.bar_airdrop = parse_bool(val, p.bar_airdrop);
         } else if (group == "dock") {
             if (key == "hide") {
                 if (val == "always-shown") p.dock_hide = DockHide::AlwaysShown;
@@ -230,6 +231,7 @@ std::string serialize_shell_ini(const ShellPrefs& p)
         << "\n[top-bar]\n"
         << "auto-hide=" << b(p.bar_auto_hide) << "\n"
         << "week-starts=" << (p.week_starts_monday ? "monday" : "sunday") << "\n"
+        << "airdrop=" << b(p.bar_airdrop) << "\n"
         << "\n[dock]\n"
         << "hide=" << dock_hide_name(p.dock_hide) << "\n"
         << "window-counts=" << b(p.dock_window_counts) << "\n"
