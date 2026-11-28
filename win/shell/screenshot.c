@@ -672,7 +672,7 @@ static LRESULT CALLBACK toast_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 wchar_t open_p[MAX_PATH];
                 wcsncpy_s(open_p, MAX_PATH, g_saved_path, _TRUNCATE);
                 free_toast_resources();
-                ShellExecuteW(NULL, L"open", open_p, NULL, NULL, SW_SHOWNORMAL);
+                if (!action_open_viewer(0, open_p)) ShellExecuteW(NULL, L"open", open_p, NULL, NULL, SW_SHOWNORMAL);
             } else {
                 toast_save_png();
             }
@@ -682,7 +682,7 @@ static LRESULT CALLBACK toast_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             wchar_t open_p[MAX_PATH];
             wcsncpy_s(open_p, MAX_PATH, g_saved_path, _TRUNCATE);
             free_toast_resources();
-            ShellExecuteW(NULL, L"open", open_p, NULL, NULL, SW_SHOWNORMAL);
+            if (!action_open_viewer(0, open_p)) ShellExecuteW(NULL, L"open", open_p, NULL, NULL, SW_SHOWNORMAL);
         }
         return 0;
     }

@@ -124,6 +124,16 @@ void MainWindow::draw_settings_page(ID2D1RenderTarget* rt, const Palette& pal, f
     });
     y += kPageGap;
 
+    heading(L"Files and viewers");
+    y += boxed(rt, pal, x, y, w, kCardPad, [&](float top) {
+        return toggle(top, L"Viewers",
+                      L"Lares' own image viewer and text and Markdown editor, opened from Lares' launcher and "
+                      L"tools. Windows' own apps stay the default for your files. Turn it off and Lares opens "
+                      L"files with them again.",
+                      nullptr, &shell_prefs_.viewers, unsafe);
+    });
+    y += kPageGap;
+
     /* Size: a dropdown at the right of its row. A size saved by hand
      * between the choices shows as it is, with none of them checked. */
     heading(L"Accessibility");

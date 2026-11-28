@@ -57,7 +57,8 @@ Lares for Windows is getting its own top bar, dock, launcher, Files and viewers,
 | The top bar's popups: calendar, keyboard, Bluetooth, network and Tailscale, media, notifications, power | confirmed drawn in a test copy, light and dark; not yet used on a real desktop |
 | Launcher (Alt+Space) and clipboard history (Alt+V), each with its own switch, off by default | confirmed in tests and drawn in a test copy; not yet used on a real desktop |
 | Process list, and a screenshot tool (Alt+Shift+S, W, F) with its own switch | confirmed in tests and drawn in a test copy; no real capture taken in a check |
-| Files and viewers, the AirDrop panel and device indicators | planned |
+| An image viewer and a text and Markdown editor (`lares-view.exe`), with a Viewers switch | confirmed drawn with made-up files and, in the Checks workflow, opened, measured and ended with its last window |
+| Files, the AirDrop panel and device indicators | planned |
 
 ## Build and install
 

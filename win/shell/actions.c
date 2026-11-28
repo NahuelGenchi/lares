@@ -44,6 +44,24 @@ void action_open_terminal(void) {
     if (lares_find_terminal(exe, MAX_PATH, NULL, 0)) open_file(exe, NULL);
 }
 
+/* A file in Lares' viewers when they are on (issue #151): lares-view.exe,
+ * next to this program. kind 0 is a picture, 1 a text or Markdown file (an
+ * empty path starts a new one). Returns false when they are off or missing,
+ * and the caller opens the file the way Windows does. */
+bool action_open_viewer(int kind, const wchar_t *path) {
+    if (!g_cfg.viewers_enabled) return false;
+    wchar_t exe[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH || !PathRemoveFileSpecW(exe) || wcscat_s(exe, MAX_PATH, L"\\lares-view.exe") != 0)
+        return false;
+    if (!PathFileExistsW(exe)) return false;
+    wchar_t args[MAX_PATH + 16];
+    if (kind == 0) _snwprintf_s(args, MAX_PATH + 16, _TRUNCATE, L"--view \"%ls\"", path ? path : L"");
+    else if (path && path[0]) _snwprintf_s(args, MAX_PATH + 16, _TRUNCATE, L"--text \"%ls\"", path);
+    else wcsncpy_s(args, MAX_PATH + 16, L"--text", _TRUNCATE);
+    return (INT_PTR)ShellExecuteW(NULL, L"open", exe, args, NULL, SW_SHOWNORMAL) > 32;
+}
+
 void action_open_settings(void) {
     open_file(L"ms-settings:", NULL);
 }
